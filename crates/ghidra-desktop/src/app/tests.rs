@@ -244,6 +244,10 @@ fn non_x86_programs_select_executable_addresses_without_using_the_x86_decoder() 
     app.navigate_address(entry + 4);
     assert_eq!(app.selected, Some(entry + 4));
     assert!(app.pending.is_none());
+    app.navigate(entry);
+    assert_eq!(app.selected, Some(entry));
+    assert!(app.pending.is_none());
+    assert!(app.tab == Tab::Pcode);
     app.set_annotation(
         entry + 4,
         Annotation {

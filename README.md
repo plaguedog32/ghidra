@@ -17,8 +17,9 @@ A native Rust desktop rewrite of [Ghidra](https://github.com/NationalSecurityAge
 - Execute bounded, supplied integer P-code programs through the native [P-code foundation](docs/PCODE.md).
 - Lift instructions from SLEIGH source and evaluate supported software floating-point operations; processor coverage is tracked by explicit tests.
 - Inspect selected instructions in the desktop P-code view with cached background source compilation and register-aware operations.
+- Discover 202 shipped language definitions and select a language for P-code inspection with automatic processor context defaults.
 
-Other architectures can be inspected as binary metadata; their instructions are not decoded yet. Decompilation, debugging, Ghidra project compatibility, scripting, and the full upstream processor set remain future work. See the [port status and roadmap](docs/RUST_PORT.md).
+The linear listing and recursive function recovery currently support x86/x64. The P-code view can lift selected addresses through a chosen SLEIGH language; tested probes cover x86-64, ARM7, and MIPS32, including ARM mixed-endian data access. Catalog discovery does not establish support for every processor. Decompilation, debugging, Ghidra project compatibility, scripting, and complete processor coverage remain future work. See the [port status and roadmap](docs/RUST_PORT.md).
 
 ## Build and run
 
@@ -44,6 +45,8 @@ cargo run --release -p ghidra-desktop -- analysis.ghrs
 ```
 
 Build the executable with `cargo build --release -p ghidra-desktop`. It is written to `target/release/ghidra-rs` (`ghidra-rs.exe` on Windows). Rust is required to build it; Java is not required to build or run it. Normal operating-system graphics and native library requirements still apply.
+
+The P-code tab discovers language assets from this checkout's `Ghidra/Processors` folder. For a standalone executable, choose an assets folder in the tab or set `GHIDRA_RS_LANGUAGE_ROOT`. These source data files are required for SLEIGH lifting and are not embedded in the executable. Language selection and overrides currently last for the open binary; saving them in projects remains pending.
 
 ## Development
 

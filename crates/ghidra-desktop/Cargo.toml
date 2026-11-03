@@ -15,6 +15,7 @@ ghidra-core = { path = "../ghidra-core" }
 ghidra-project = { path = "../ghidra-project" }
 ghidra-pcode = { path = "../ghidra-pcode" }
 ghidra-sleigh = { path = "../ghidra-sleigh" }
+ghidra-languages = { path = "../ghidra-languages" }
 eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 rfd = "0.15"
 serde_json = "1"

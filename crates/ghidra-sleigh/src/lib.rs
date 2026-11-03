@@ -3,8 +3,10 @@
 //! This foundation compiles `.slaspec` and included `.sinc` source directly.
 //! It neither invokes Java/C++ nor reads Ghidra's precompiled `.sla` format.
 //! Processor support is measured by tests, not inferred from successful parsing.
-//! Only byte-addressed spaces are admitted by this adapter. The caller must
-//! supply the language's processor-context defaults (normally from `.pspec`).
+//! Only byte-addressed spaces are admitted by this adapter. Catalog loading
+//! applies `.pspec` decode defaults; raw source loading requires caller defaults.
+
+mod catalog;
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -46,6 +48,8 @@ pub struct SleighLanguage {
     spaces: Vec<AddressSpace>,
     code_space: SpaceId,
     userops: Vec<String>,
+    instruction_endianness: Endianness,
+    catalog_context: Option<catalog::CatalogContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +170,8 @@ impl SleighLanguage {
             spaces,
             code_space,
             userops,
+            instruction_endianness: endianness,
+            catalog_context: None,
         })
     }
 
@@ -175,6 +181,11 @@ impl SleighLanguage {
 
     pub fn code_space(&self) -> SpaceId {
         self.code_space
+    }
+
+    /// Byte order declared by the source decoder. RAM data byte order can differ.
+    pub fn instruction_endianness(&self) -> Endianness {
+        self.instruction_endianness
     }
 
     /// CALLOTHER input zero indexes this table. Preserving a userop does not
@@ -247,8 +258,18 @@ impl SleighLanguage {
             return Err(Error::AddressOverflow);
         }
         let bytes = &bytes[..bytes.len().min(MAX_DECODE_BYTES)];
+        let mut effective = self
+            .catalog_context
+            .as_ref()
+            .map(|context| context.at(address))
+            .transpose()?
+            .unwrap_or_default();
+        effective.extend(defaults.iter().map(|(name, value)| (name.clone(), *value)));
+        if let Some(context) = &self.catalog_context {
+            effective.extend(context.overrides.clone());
+        }
         let mut baseline = self.spec.new_context();
-        for (name, value) in defaults {
+        for (name, value) in &effective {
             let field = self
                 .spec
                 .field(name)
@@ -283,6 +304,16 @@ impl SleighLanguage {
         for slot in decoded.delay_slots() {
             let slot_length = u32::try_from(slot.len()).map_err(|_| Error::AddressOverflow)?;
             let slot_address = address.checked_add(total).ok_or(Error::AddressOverflow)?;
+            if let Some(context) = &self.catalog_context {
+                let mut slot_defaults = context.at(slot_address)?;
+                slot_defaults.extend(defaults.clone());
+                slot_defaults.extend(context.overrides.clone());
+                if slot_defaults != effective {
+                    return Err(Error::Unsupported(
+                        "processor defaults change inside a delay-slot bundle".into(),
+                    ));
+                }
+            }
             delay_slots.push(DelaySlot {
                 address: slot_address,
                 length: slot_length,

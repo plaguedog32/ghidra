@@ -1,6 +1,8 @@
 use super::*;
 use crate::lifting::{LanguageConfig, LiftRequest, LiftResponse, LiftedView, LiftingWorker};
 
+mod catalog;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SelectionKey {
     generation: u64,
@@ -10,6 +12,7 @@ struct SelectionKey {
 
 #[derive(Default)]
 pub(super) struct PcodeState {
+    catalog: catalog::CatalogState,
     source: String,
     context: String,
     revision: u64,
@@ -37,6 +40,7 @@ impl PcodeState {
         self.generation = self.generation.wrapping_add(1);
         self.invalidate();
         self.source.clear();
+        self.catalog.definition = None;
         self.context.clear();
         self.history.clear();
     }
@@ -76,6 +80,7 @@ impl PcodeState {
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context, selected: Option<u64>) {
+        self.catalog.poll(ctx);
         for _ in 0..4 {
             let response = match self.worker.as_ref().map(LiftingWorker::try_recv) {
                 Some(Ok(Some(response))) => response,
@@ -98,7 +103,7 @@ impl PcodeState {
     fn request(&mut self, image: &ghidra_core::BinaryImage, address: u64) {
         let key = self.key(address);
         let prepared = parse_context(&self.context).and_then(|context| {
-            if self.source.trim().is_empty() {
+            if self.source.trim().is_empty() && self.catalog.definition.is_none() {
                 return Err("Choose a processor language or SLEIGH source specification".into());
             }
             let bytes = crate::lifting::instruction_window(image, address)?;
@@ -120,7 +125,14 @@ impl PcodeState {
             id,
             generation: self.generation,
             config: LanguageConfig {
-                source: PathBuf::from(self.source.trim()),
+                source: self
+                    .catalog
+                    .definition
+                    .as_ref()
+                    .and_then(|definition| definition.source.available_path())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(self.source.trim())),
+                definition: self.catalog.definition.clone(),
                 context,
                 revision: self.source_epoch,
             },
@@ -228,9 +240,21 @@ impl Workbench {
         }
         let mut edited = false;
         let mut settings_focused = false;
+        if self.pcode.catalog.ui(ui) {
+            self.pcode.source = self
+                .pcode
+                .catalog
+                .definition
+                .as_ref()
+                .and_then(|definition| definition.source.path.as_ref())
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            edited = true;
+        }
         ui.horizontal(|ui| {
             ui.label("SLEIGH source");
-            let response = ui.add(
+            let response = ui.add_enabled(
+                self.pcode.catalog.definition.is_none(),
                 egui::TextEdit::singleline(&mut self.pcode.source)
                     .desired_width(ui.available_width() - 95.0)
                     .hint_text("Processor .slaspec file"),
@@ -243,16 +267,17 @@ impl Workbench {
                     .pick_file()
             {
                 self.pcode.source = path.display().to_string();
+                self.pcode.catalog.definition = None;
                 edited = true;
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Context");
+            ui.label("Context overrides");
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.pcode.context)
                     .char_limit(4096)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Explicit processor defaults, e.g. longMode=1 addrsize=2 opsize=1"),
+                    .hint_text("Optional overrides; catalog defaults are applied automatically"),
             );
             edited |= response.changed();
             settings_focused |= response.has_focus();
@@ -316,6 +341,7 @@ impl Workbench {
             self.pcode.request(&loaded.image, address);
         }
         ui.separator();
+        ui.label(RichText::new("Each inspection starts from processor defaults. Flow-dependent mode changes require explicit context overrides.").small().color(MUTED));
         if let Some((failed, error)) = &self.pcode.error
             && *failed == key
         {
@@ -333,7 +359,7 @@ impl Workbench {
                     .monospace()
                     .color(ACCENT),
             );
-            if ui.button("Copy P-code JSON").clicked() {
+            if ui.button("Copy lift JSON").clicked() {
                 ui.ctx().copy_text(view.json.clone());
             }
         });

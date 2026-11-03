@@ -11,6 +11,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-core/src/linkage.rs` | Imports, exports, and relocation records with format-specific coverage warnings |
 | `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
 | `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
+| `crates/ghidra-languages` | Bounded `.ldefs` catalog discovery, asset resolution, and `.pspec` context/tracked settings |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
@@ -28,7 +29,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | --- | --- | --- |
 | Native desktop | Rust window, file opening, linked inspection views, cached background P-code lifting | Full docking/workspace system, accessibility and workflow refinement |
 | Binary formats | PE, ELF, and single-architecture Mach-O inspection | Additional formats, universal/fat Mach-O selection, richer loader semantics and relocations |
-| Processor support | x86/x64 desktop decoding; source-based SLEIGH lifting probes for x86-64, ARM7 LE/BE, MIPS32 LE/BE | Automatic language/context selection, broader specification and semantic coverage, other processors in desktop |
+| Processor support | x86/x64 listing; 202 catalog definitions; desktop language selection and processor defaults; lifting probes for x86-64, ARM7 LE/BE/mixed-endian, MIPS32 LE/BE | Automatic binary-to-language matching, flow-aware context propagation, broader semantic coverage, architecture-neutral function recovery |
 | Metadata | Entry point, sections, symbols, ASCII strings, imports/exports, relocation records | Remaining linkage formats, relocation application, debug information and types |
 | Code analysis | Linear listing and bounded recursive discovery from entry points, symbols and direct calls; reachable basic blocks | Indirect targets, jump tables, exception paths, speculative discovery, data/code separation |
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
@@ -116,25 +117,26 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 116 default workspace tests pass, plus five explicitly run upstream SLEIGH probes. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement, asynchronous desktop state, P-code integer/software-float semantics, execution bounds, source lifting, compiled-source reuse and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window.
+- All 150 default workspace tests pass, plus six explicitly run upstream SLEIGH probes through the catalog path. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement, asynchronous desktop state, P-code integer/software-float semantics, execution bounds, catalog/XML/path handling, context precedence, mixed-endian source lifting, compiled-source reuse and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
 - The same Java-free environment compiled this checkout's x86-64 SLEIGH source, lifted `MOV RAX,42`, and executed the resulting P-code to produce `RAX = 42`.
+- The catalog-based CLI also discovered 202 languages and lifted/executed that instruction without explicit context arguments in the same restricted environment.
 - Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
-The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), and P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343). Later increments must pass their own runs before inheriting that cross-platform claim.
+The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), and the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127). Later increments must pass their own runs before inheriting that cross-platform claim.
 
 ## Path to full replacement
 
 1. **Harden the desktop foundation.** Extend the current project, annotation, navigation and function workflows with project collections, richer loaders, searching, and dependable error recovery.
 2. **Extend the analysis model.** Add types, data references, memory regions and analysis dependencies. Integrate the current source lifter with function recovery and desktop views.
-3. **Expand processors and executable formats.** Load language catalogs and processor-context defaults, audit all retained specs, add calling conventions, and validate instruction/ABI/loader behavior before claiming compatibility.
+3. **Expand processors and executable formats.** Extend the loaded language catalogs and processor defaults with binary matching, calling conventions and broader source/semantic audits. Validate instruction/ABI/loader behavior before claiming compatibility.
 4. **Add native decompilation.** Build SSA/dataflow, optimization, type recovery and structured-code generation on the P-code foundation. The retained C++ implementation is reference material; the native Rust application does not invoke it.
 5. **Replace larger workflows.** Add debugger backends, tracing, scripting, extensions, project compatibility and collaboration in independently testable stages.
 
-The existing native decompiler is not a drop-in replacement for the Java framework. Its Ghidra-facing process asks the Java client for memory, symbols, types, p-code, and other services. A future native integration must implement those services or use a standalone architecture. Likewise, upstream processor compilation through Gradle still invokes Java; a Java-free SLEIGH path would need the native compiler or a Rust replacement.
+The existing C++ decompiler is not a drop-in replacement for the Java framework. Its Ghidra-facing process asks the Java client for memory, symbols, types, p-code, and other services. A Rust decompiler must implement those services or use a standalone architecture. The current Rust SLEIGH path replaces upstream Gradle processor compilation for explicitly tested source probes; complete processor coverage remains unverified.
 
 Full parity remains a larger project. Each stage should ship a usable native result and record its verified support rather than counting a launcher change as a completed port.
 

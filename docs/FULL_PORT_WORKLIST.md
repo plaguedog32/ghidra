@@ -21,7 +21,7 @@ The main framework areas still require these coverage gates:
 
 Feature families also remain: full decompiler, assembler/patching, debugger and trace backends, symbol/debug formats, data archives, strings/encodings, diff/version tracking, function matching/BSim, scripting, extension APIs, shared repositories and collaboration. Java plugins and scripts require a native replacement/migration path; the Rust application cannot execute Java bytecode while also removing its JVM dependency.
 
-The processor gate is per-language: compile this checkout's source, load `.ldefs`/`.pspec` context defaults and ABI configuration, decode/lift reference instructions, validate register aliases and endian/memory behavior, then test control flow, delay slots, userops and unusual widths. Five selected specification probes currently pass. The remaining specs and complete ISA semantics remain unverified.
+The processor gate is per-language: compile this checkout's source, load `.ldefs`/`.pspec` context defaults and ABI configuration, decode/lift reference instructions, validate register aliases and endian/memory behavior, then test control flow, delay slots, userops and unusual widths. All 202 shipped language definitions and their processor specs are read natively; six selected lifting probes currently pass through that catalog path. ABI parsing, flow-aware context analysis, the remaining specs and complete ISA semantics remain unverified.
 
 The decompiler gate requires a genuine P-code-to-structured-output pipeline: SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. A disassembly listing or an operation dump does not satisfy it.
 

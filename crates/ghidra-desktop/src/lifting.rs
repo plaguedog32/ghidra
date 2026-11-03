@@ -11,6 +11,8 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageConfig {
     pub source: PathBuf,
+    /// Catalog recipe supplies processor context and distinct data byte order.
+    pub definition: Option<ghidra_languages::LanguageDefinition>,
     pub context: BTreeMap<String, u64>,
     /// Explicit reload invalidates the compiled-source cache.
     pub revision: u64,
@@ -112,7 +114,6 @@ impl LiftingWorker {
 
 struct Compiled {
     config: LanguageConfig,
-    generation: u64,
     language: SleighLanguage,
     names: BTreeMap<(SpaceId, u64, u32), String>,
 }
@@ -120,6 +121,7 @@ struct Compiled {
 #[derive(Default)]
 struct CompilerCache {
     compiled: Option<Compiled>,
+    failed: Option<(LanguageConfig, String)>,
 }
 
 impl CompilerCache {
@@ -129,27 +131,49 @@ impl CompilerCache {
             .as_ref()
             .is_some_and(|cache| cache.config == request.config);
         if !cache_hit {
-            let language =
-                SleighLanguage::from_spec(&request.config.source, &request.config.context)
-                    .map_err(|e| e.to_string())?;
-            let mut names = BTreeMap::new();
-            for register in language.registers().map_err(|e| e.to_string())? {
-                names
-                    .entry((register.space, register.offset, register.size))
-                    .or_insert(register.name);
+            if let Some((config, error)) = &self.failed
+                && *config == request.config
+            {
+                return Err(error.clone());
             }
-            self.compiled = Some(Compiled {
-                config: request.config.clone(),
-                generation: request.generation,
-                language,
-                names,
-            });
+            let compiled = (|| {
+                let language = match &request.config.definition {
+                    Some(definition) => {
+                        SleighLanguage::from_language(definition, &request.config.context)
+                    }
+                    None => {
+                        SleighLanguage::from_spec(&request.config.source, &request.config.context)
+                    }
+                }
+                .map_err(|e| e.to_string())?;
+                let mut names = BTreeMap::new();
+                for register in language.registers().map_err(|e| e.to_string())? {
+                    names
+                        .entry((register.space, register.offset, register.size))
+                        .or_insert(register.name);
+                }
+                Ok::<_, String>(Compiled {
+                    config: request.config.clone(),
+                    language,
+                    names,
+                })
+            })();
+            match compiled {
+                Ok(compiled) => {
+                    self.compiled = Some(compiled);
+                    self.failed = None;
+                }
+                Err(error) => {
+                    self.failed = Some((request.config.clone(), error.clone()));
+                    return Err(error);
+                }
+            }
         }
         let cache = self.compiled.as_mut().expect("successful compilation");
-        if cache.generation != request.generation {
-            cache.language.reset_context();
-            cache.generation = request.generation;
-        }
+        // Manual selections are independent inspections, not disassembly flow.
+        // Applying address-ordered globalset commits across selections makes
+        // ARM/Thumb decoding depend on navigation history.
+        cache.language.reset_context();
         let decoded =
             cache
                 .language
@@ -175,22 +199,7 @@ impl CompilerCache {
                     format!("{output}{}({args})", op.opcode.mnemonic())
                 })
                 .collect();
-            #[derive(serde::Serialize)]
-            struct Export<'a> {
-                schema_version: u32,
-                spaces: &'a [AddressSpace],
-                code_space: SpaceId,
-                userops: &'a [String],
-                instruction: &'a PcodeInstruction,
-            }
-            let json = serde_json::to_string_pretty(&Export {
-                schema_version: 1,
-                spaces,
-                code_space: cache.language.code_space(),
-                userops: cache.language.userops(),
-                instruction: &decoded.instruction,
-            })
-            .map_err(|e| e.to_string())?;
+            let json = crate::pcode_cli::lifted_json(&cache.language, &decoded, request.address)?;
             Ok(LiftedView {
                 instruction: decoded.instruction,
                 disassembly: decoded.text,

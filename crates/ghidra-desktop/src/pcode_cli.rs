@@ -6,6 +6,46 @@ use std::{
 };
 
 pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Result<(), String> {
+    let (address, bytes, context) = lift_arguments(address, hex, contexts)?;
+    let mut language =
+        ghidra_sleigh::SleighLanguage::from_spec(spec, &context).map_err(|e| e.to_string())?;
+    let lifted = language
+        .decode(address, &bytes)
+        .map_err(|e| e.to_string())?;
+    print_lifted(&language, lifted, address)
+}
+
+pub fn list_languages(root: &Path) -> Result<(), String> {
+    let catalog = ghidra_languages::Catalog::discover(root).map_err(|e| e.to_string())?;
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    serde_json::to_writer_pretty(&mut writer, &catalog).map_err(|e| e.to_string())?;
+    writeln!(writer).map_err(|e| e.to_string())
+}
+
+pub fn lift_language(
+    root: &Path,
+    id: &str,
+    address: &str,
+    hex: &str,
+    contexts: &[String],
+) -> Result<(), String> {
+    let (address, bytes, context) = lift_arguments(address, hex, contexts)?;
+    let catalog = ghidra_languages::Catalog::discover(root).map_err(|e| e.to_string())?;
+    let definition = catalog
+        .by_id(id)
+        .ok_or_else(|| format!("Unknown language ID: {id}"))?;
+    let mut language = ghidra_sleigh::SleighLanguage::from_language(definition, &context)
+        .map_err(|e| e.to_string())?;
+    let lifted = language
+        .decode(address, &bytes)
+        .map_err(|e| e.to_string())?;
+    print_lifted(&language, lifted, address)
+}
+
+type LiftArguments = (u64, Vec<u8>, std::collections::BTreeMap<String, u64>);
+
+fn lift_arguments(address: &str, hex: &str, contexts: &[String]) -> Result<LiftArguments, String> {
     let address = u64::from_str_radix(
         address.trim_start_matches("0x").trim_start_matches("0X"),
         16,
@@ -20,7 +60,13 @@ pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Resul
         let (name, value) = argument
             .split_once('=')
             .ok_or("Context overrides use name=value")?;
-        let value = if let Some(hex) = value.strip_prefix("0x") {
+        if name.is_empty() {
+            return Err("Processor context field name is empty".into());
+        }
+        let value = if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
             u64::from_str_radix(hex, 16)
         } else {
             value.parse()
@@ -30,11 +76,36 @@ pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Resul
             return Err(format!("Duplicate context field: {name}"));
         }
     }
-    let mut language =
-        ghidra_sleigh::SleighLanguage::from_spec(spec, &context).map_err(|e| e.to_string())?;
-    let lifted = language
-        .decode(address, &bytes)
-        .map_err(|e| e.to_string())?;
+    Ok((address, bytes, context))
+}
+
+fn print_lifted(
+    language: &ghidra_sleigh::SleighLanguage,
+    lifted: ghidra_sleigh::LiftedInstruction,
+    address: u64,
+) -> Result<(), String> {
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    write_lifted(&mut writer, language, &lifted, address)?;
+    writeln!(writer).map_err(|e| e.to_string())
+}
+
+pub fn lifted_json(
+    language: &ghidra_sleigh::SleighLanguage,
+    lifted: &ghidra_sleigh::LiftedInstruction,
+    address: u64,
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    write_lifted(&mut bytes, language, lifted, address)?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn write_lifted(
+    writer: &mut impl Write,
+    language: &ghidra_sleigh::SleighLanguage,
+    lifted: &ghidra_sleigh::LiftedInstruction,
+    address: u64,
+) -> Result<(), String> {
     #[derive(serde::Serialize)]
     struct Register {
         name: String,
@@ -48,6 +119,7 @@ pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Resul
     }
     #[derive(serde::Serialize)]
     struct Output<'a> {
+        schema: &'static str,
         schema_version: u32,
         disassembly: &'a str,
         length: u32,
@@ -71,6 +143,7 @@ pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Resul
         })
         .collect();
     let output = Output {
+        schema: "ghidra-rs.lifted-instruction",
         schema_version: 1,
         disassembly: &lifted.text,
         length: lifted.length,
@@ -95,11 +168,7 @@ pub fn lift(spec: &Path, address: &str, hex: &str, contexts: &[String]) -> Resul
             max_operations: 100_000,
         },
     };
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
-    serde_json::to_writer_pretty(&mut writer, &output).map_err(|e| e.to_string())?;
-    writeln!(writer).map_err(|e| e.to_string())?;
-    Ok(())
+    serde_json::to_writer_pretty(writer, &output).map_err(|e| e.to_string())
 }
 
 fn parse_hex(text: &str) -> Result<Vec<u8>, String> {

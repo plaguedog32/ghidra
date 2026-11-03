@@ -261,6 +261,14 @@ impl Workbench {
         if self.pending.is_some() {
             return;
         }
+        if self
+            .loaded
+            .as_ref()
+            .is_some_and(|loaded| !loaded.image.supports_x86_disassembly())
+        {
+            self.navigate_address(address);
+            return;
+        }
         self.goto = format!("{address:X}");
         if let Some(loaded) = &self.loaded {
             if let Some(index) = loaded
@@ -709,7 +717,7 @@ impl Workbench {
                     }
                 }
                 if ui.button("Entry point").clicked() {
-                    self.navigate(self.loaded.as_ref().unwrap().image.entry);
+                    self.navigate_address(self.loaded.as_ref().unwrap().image.entry);
                 }
             });
             ui.separator();

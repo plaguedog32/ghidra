@@ -1097,6 +1097,7 @@ version = "0.3.0"
 dependencies = [
  "eframe",
  "ghidra-core",
+ "ghidra-languages",
  "ghidra-pcode",
  "ghidra-project",
  "ghidra-sleigh",
@@ -1145,7 +1146,9 @@ dependencies = [
 name = "ghidra-sleigh"
 version = "0.3.0"
 dependencies = [
+ "ghidra-languages",
  "ghidra-pcode",
+ "tempfile",
  "thiserror 2.0.21",
  "wazabin-sleigh",
 ]

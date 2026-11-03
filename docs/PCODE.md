@@ -22,11 +22,23 @@ This is an intermediate representation and execution foundation, not a completed
 
 ## Source-based instruction lifting
 
-The desktop P-code tab can inspect any selected file-backed executable address. Choose a `.slaspec` source, supply the processor context defaults, and select **Lift selected instruction**. **Follow selection** updates the view when the selected address changes; **Next instruction** advances by the lifter's semantic extent, including delay slots. Compilation runs in a persistent background worker and is reused until the language settings change or **Reload source** is selected. Queued requests are coalesced, and results from old programs or selections are discarded.
+The desktop P-code tab can inspect any selected file-backed executable address. Choose a language ID from the catalog and select **Lift selected instruction**. Its `.pspec` decode defaults are applied automatically; optional context overrides take precedence. A raw `.slaspec` source can also be selected with caller-supplied defaults. **Follow selection** updates the view when the selected address changes; **Next instruction** advances by the lifter's semantic extent, including delay slots. Compilation runs in a persistent background worker and is reused until the language settings change or **Reload source** is selected. Queued requests are coalesced, and results from old programs or selections are discarded. Failed compilations are also cached until settings change or an explicit reload.
 
-Processor defaults can vary by address. They form the decode baseline beneath previously recorded `globalset` context commits. Loading another binary resets those commits without requiring a source recompile. The native desktop can select addresses in non-x86 programs without interpreting their bytes through the x86 decoder.
+Processor defaults can vary by address. The adapter reads only context sets for the compiled language's code space, applies matching ranges in file order, and keeps tracked register values separate. Values exceeding the decoder's 64-bit context API are rejected. Explicit overrides win over processor defaults. The lower-level lifter preserves recorded `globalset` commits for callers implementing a flow analysis; the desktop resets these before every independent inspection so unrelated selections cannot change one another's decoding. Flow-dependent modes currently require explicit overrides. The native desktop can select addresses in non-x86 programs without interpreting their bytes through the x86 decoder.
 
-`ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using pinned `wazabin-sleigh` 0.1.15 and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Context defaults must currently be supplied explicitly; automatic `.pspec`/`.ldefs` language selection remains work to do.
+`ghidra-languages` reads the real `.ldefs` and `.pspec` files in Rust. This checkout contains 202 language variants in 53 catalog files; all their processor specs parse without diagnostics. XML and file discovery are bounded, DTDs are rejected, and asset references stay within the chosen root without following symlinks or junctions. Missing and ambiguous assets are reported. Compiler specs are recorded as references; their calling-convention semantics are not implemented.
+
+`ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using pinned `wazabin-sleigh` 0.1.15 and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Catalog loading validates instruction byte order separately from RAM data byte order, preserving register alias layout for mixed-endian variants. Catalog presence does not prove that a language compiles or has correct instruction semantics.
+
+```sh
+cargo run -p ghidra-desktop -- --languages Ghidra/Processors
+cargo run -p ghidra-desktop -- --lift-language \
+  Ghidra/Processors x86:LE:64:default 1000 4889d8
+```
+
+The desktop finds assets in an ancestor checkout's `Ghidra/Processors` directory, or uses `GHIDRA_RS_LANGUAGE_ROOT`. **Choose folder** selects another catalog root. No processor is guessed from ambiguous binary metadata. The source assets remain external to the executable. Language choices and overrides are not yet saved in `.ghrs` projects.
+
+The raw source command remains available:
 
 ```sh
 cargo run -p ghidra-desktop -- --lift-pcode \
@@ -34,12 +46,12 @@ cargo run -p ghidra-desktop -- --lift-pcode \
   1000 4889d8 longMode=1 addrsize=2 opsize=1
 ```
 
-Output includes disassembly, register storage, named userops, delay slots, and a `program` object in the execution command's input format. Initialize any registers or memory read by that program before executing it. A single lifted instruction does not initialize an emulated process.
+The CLI and desktop **Copy lift JSON** use schema `ghidra-rs.lifted-instruction`, version 1. Output includes disassembly, register storage, named userops, delay slots, and a `program` object in the execution command's input format. Extract that object and initialize any registers or memory it reads before executing it. A single lifted instruction does not initialize an emulated process.
 
-Nine default compiler/lifter fixtures pass, including endian-aware memory, context commits, delay slots, and concrete Rust execution. Additional opt-in probes passed for this checkout's x86-64, ARM7 LE/BE, and MIPS32 LE/BE sources:
+Fourteen default compiler/lifter integration tests pass, including endian-aware memory, context precedence, tracked/context separation, delay slots, and concrete Rust execution. Six additional opt-in probes passed through the catalog path for this checkout's x86-64, ARM7 LE/BE, MIPS32 LE/BE, and ARM7 little-instruction/big-data sources:
 
 ```sh
 cargo test -p ghidra-sleigh --test upstream_specs -- --ignored --test-threads=1
 ```
 
-These are bounded instruction probes, not processor-wide parity. The adapter rejects ROM and word-addressed spaces and unsupported operations; current source/compiler coverage must be established per specification. The compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode. Its same-width extensions are explicitly converted to identity `COPY` operations while retaining strict P-code validation.
+These are bounded instruction probes, not processor-wide parity. The adapter rejects ROM and word-addressed spaces, catalog space truncation, changing defaults within a delay-slot bundle, and unsupported operations; current source/compiler coverage must be established per specification. The compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode. Its same-width extensions are explicitly converted to identity `COPY` operations while retaining strict P-code validation.

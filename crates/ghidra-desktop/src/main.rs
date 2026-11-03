@@ -12,7 +12,7 @@ fn main() -> eframe::Result {
     match first.as_deref().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
+                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --languages ROOT\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(());
@@ -85,6 +85,43 @@ fn main() -> eframe::Result {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
+            }
+            return Ok(());
+        }
+        Some("--languages") => {
+            let Some(root) = args.next() else {
+                eprintln!("--languages requires a language catalog root");
+                std::process::exit(2);
+            };
+            if args.next().is_some() {
+                eprintln!("--languages accepts one root directory");
+                std::process::exit(2);
+            }
+            if let Err(error) = pcode_cli::list_languages(&PathBuf::from(root)) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        Some("--lift-language") => {
+            let (Some(root), Some(id), Some(address), Some(bytes)) =
+                (args.next(), args.next(), args.next(), args.next())
+            else {
+                eprintln!(
+                    "--lift-language requires ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]"
+                );
+                std::process::exit(2);
+            };
+            let context: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+            if let Err(error) = pcode_cli::lift_language(
+                &PathBuf::from(root),
+                &id.to_string_lossy(),
+                &address.to_string_lossy(),
+                &bytes.to_string_lossy(),
+                &context,
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
             }
             return Ok(());
         }

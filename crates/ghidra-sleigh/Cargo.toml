@@ -10,4 +10,8 @@ publish = false
 [dependencies]
 sleigh = { package = "wazabin-sleigh", version = "=0.1.15", features = ["unstable-syntax"] }
 ghidra-pcode = { path = "../ghidra-pcode" }
+ghidra-languages = { path = "../ghidra-languages" }
 thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

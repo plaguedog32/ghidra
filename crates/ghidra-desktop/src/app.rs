@@ -7,6 +7,7 @@ use ghidra_core::Analysis;
 use ghidra_project::{Annotation, Project};
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 
+mod pcode;
 #[cfg(test)]
 mod tests;
 mod views;
@@ -30,6 +31,7 @@ enum Tab {
     Functions,
     Linkage,
     Bookmarks,
+    Pcode,
 }
 
 enum WorkResult {
@@ -57,6 +59,7 @@ pub struct Workbench {
     approve_close: bool,
     linkage_mode: usize,
     saving: bool,
+    pcode: pcode::PcodeState,
 }
 
 impl Workbench {
@@ -105,6 +108,7 @@ impl Workbench {
             approve_close: false,
             linkage_mode: 0,
             saving: false,
+            pcode: Default::default(),
         }
     }
 
@@ -149,19 +153,50 @@ impl Workbench {
             self.saving = false;
             match result {
                 Ok(WorkResult::Loaded(loaded)) => {
+                    self.pcode.clear_for_image();
                     let restore = loaded.metadata.last_address;
-                    self.selected = restore.or_else(|| {
-                        loaded
-                            .analysis
-                            .as_ref()
-                            .and_then(|a| a.instructions.first().map(|i| i.address))
-                    });
+                    self.selected = restore
+                        .or_else(|| {
+                            loaded
+                                .analysis
+                                .as_ref()
+                                .and_then(|a| a.instructions.first().map(|i| i.address))
+                        })
+                        .or_else(|| {
+                            loaded
+                                .image
+                                .sections
+                                .iter()
+                                .find(|s| {
+                                    s.executable
+                                        && s.size.min(s.file_size) > 0
+                                        && loaded.image.entry >= s.address
+                                        && loaded.image.entry - s.address < s.size.min(s.file_size)
+                                })
+                                .map(|_| loaded.image.entry)
+                        })
+                        .or_else(|| {
+                            loaded
+                                .image
+                                .sections
+                                .iter()
+                                .find(|s| s.executable && s.size.min(s.file_size) > 0)
+                                .map(|s| s.address)
+                        });
                     self.goto = self.selected.map(|a| format!("{a:X}")).unwrap_or_default();
                     self.path = loaded.name.clone();
                     self.status = format!(
-                        "{} bytes imported · analysis is a bounded linear sweep",
-                        loaded.image.bytes().len()
+                        "{} bytes imported · {}",
+                        loaded.image.bytes().len(),
+                        if loaded.image.supports_x86_disassembly() {
+                            "listing uses a bounded linear sweep"
+                        } else {
+                            "select a processor language to inspect P-code"
+                        }
                     );
+                    if !loaded.image.supports_x86_disassembly() {
+                        self.tab = Tab::Pcode;
+                    }
                     self.error = None;
                     self.hex_offset = 0;
                     self.scroll_to = Some(0);
@@ -553,7 +588,7 @@ impl Workbench {
                     });
             });
         if let Some(address) = jump {
-            self.navigate(address);
+            self.navigate_address(address);
         }
     }
 
@@ -566,7 +601,7 @@ impl Workbench {
             let Some(loaded) = &self.loaded else { ui.label(RichText::new("Import a file to begin").color(MUTED)); return; };
             if let Some(error) = &loaded.analysis_error { ui.colored_label(GOLD, error); }
             for warning in &loaded.image.warnings { ui.colored_label(GOLD, warning); }
-            let Some(analysis) = &loaded.analysis else { return; };
+            if let Some(analysis) = &loaded.analysis {
             key_value(ui, "Instructions", &analysis.instructions.len().to_string());
             key_value(ui, "Basic blocks", &analysis.blocks.len().to_string());
             key_value(ui, "References", &analysis.references.len().to_string());
@@ -590,13 +625,17 @@ impl Workbench {
                     if ui.button(format!("{from:016X}  {kind}")).clicked() { jump = Some(*from); }
                 }
             } else { ui.label(RichText::new("Select an instruction in the listing").color(MUTED)); }
+            } else if let Some(address) = self.selected {
+                label_heading(ui, "SELECTED ADDRESS");
+                ui.label(RichText::new(format!("{address:016X}")).monospace().color(ACCENT));
+            }
             ui.add_space(10.0);
             ui.separator();
             ui.add_enabled_ui(self.pending.is_none(), |ui| self.annotation_editor(ui));
             });
         });
         if let Some(address) = jump {
-            self.navigate(address);
+            self.navigate_address(address);
         }
     }
 
@@ -642,6 +681,7 @@ impl Workbench {
                     (Tab::Functions, "Functions"),
                     (Tab::Linkage, "Linkage"),
                     (Tab::Bookmarks, "Bookmarks"),
+                    (Tab::Pcode, "P-code"),
                 ] {
                     ui.selectable_value(&mut self.tab, tab, label);
                 }
@@ -682,6 +722,7 @@ impl Workbench {
                 Tab::Functions => self.functions(ui),
                 Tab::Linkage => self.linkage(ui),
                 Tab::Bookmarks => self.bookmarks(ui),
+                Tab::Pcode => self.pcode_view(ui),
             }
         });
     }
@@ -747,6 +788,7 @@ impl Workbench {
                     .on_hover_text(annotation.map(|a| a.comment.as_str()).unwrap_or_default());
                 if response.clicked() {
                     self.selected = Some(instruction.address);
+                    self.goto = format!("{:X}", instruction.address);
                 }
                 response.context_menu(|ui| {
                     if ui.button("Copy instruction").clicked() {
@@ -887,7 +929,7 @@ impl Workbench {
                 });
         });
         if let Some(address) = jump {
-            self.navigate(address);
+            self.navigate_address(address);
         }
     }
 
@@ -940,7 +982,7 @@ impl Workbench {
             );
         }
         if let Some(address) = jump {
-            self.navigate(address);
+            self.navigate_address(address);
         }
     }
 }
@@ -948,6 +990,7 @@ impl Workbench {
 impl eframe::App for Workbench {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
+        self.pcode.poll(ctx, self.selected);
         if ctx.input(|i| i.viewport().close_requested()) {
             self.handle_close_request(ctx);
         }

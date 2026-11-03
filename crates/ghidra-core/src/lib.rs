@@ -275,6 +275,12 @@ impl BinaryImage {
         &self.bytes
     }
 
+    /// Whether this image can use the built-in x86/x64 linear decoder.
+    /// Other processors can be inspected through a selected SLEIGH language.
+    pub fn supports_x86_disassembly(&self) -> bool {
+        self.x86
+    }
+
     /// Decode from `address` to the end of its executable section, subject to
     /// `max_instructions`. Zero-fill tails and disk alignment padding are excluded.
     pub fn disassemble(&self, address: u64, max_instructions: usize) -> Result<Analysis, Error> {

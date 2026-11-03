@@ -216,10 +216,28 @@ impl SleighLanguage {
     }
 
     pub fn decode(&mut self, address: u64, bytes: &[u8]) -> Result<LiftedInstruction, Error> {
-        guard(|| self.decode_inner(address, bytes))
+        self.decode_with_defaults(address, bytes, &BTreeMap::new())
     }
 
-    fn decode_inner(&mut self, address: u64, bytes: &[u8]) -> Result<LiftedInstruction, Error> {
+    /// Address-specific processor defaults sit beneath recorded `globalset`
+    /// effects. They are recomputed for every request and cannot leak into the
+    /// next address. Global/user overrides supplied at compilation remain the
+    /// baseline for fields absent from `defaults`.
+    pub fn decode_with_defaults(
+        &mut self,
+        address: u64,
+        bytes: &[u8],
+        defaults: &BTreeMap<String, u64>,
+    ) -> Result<LiftedInstruction, Error> {
+        guard(|| self.decode_inner(address, bytes, defaults))
+    }
+
+    fn decode_inner(
+        &mut self,
+        address: u64,
+        bytes: &[u8],
+        defaults: &BTreeMap<String, u64>,
+    ) -> Result<LiftedInstruction, Error> {
         let code = self
             .spaces
             .iter()
@@ -229,6 +247,19 @@ impl SleighLanguage {
             return Err(Error::AddressOverflow);
         }
         let bytes = &bytes[..bytes.len().min(MAX_DECODE_BYTES)];
+        let mut baseline = self.spec.new_context();
+        for (name, value) in defaults {
+            let field = self
+                .spec
+                .field(name)
+                .ok_or_else(|| Error::Context(format!("unknown field {name}")))?;
+            self.spec
+                .set_context_field(&mut baseline, field.id, *value)
+                .map_err(|e| Error::Context(format!("{name}: {e}")))?;
+        }
+        self.context
+            .set_default_context(baseline)
+            .map_err(|e| Error::Context(e.to_string()))?;
         let context = self.context.context_at(address);
         let decoded = Decoder::new(&self.spec)
             .decode_one(address, bytes, &context)

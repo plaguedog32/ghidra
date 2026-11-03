@@ -22,6 +22,10 @@ This is an intermediate representation and execution foundation, not a completed
 
 ## Source-based instruction lifting
 
+The desktop P-code tab can inspect any selected file-backed executable address. Choose a `.slaspec` source, supply the processor context defaults, and select **Lift selected instruction**. **Follow selection** updates the view when the selected address changes; **Next instruction** advances by the lifter's semantic extent, including delay slots. Compilation runs in a persistent background worker and is reused until the language settings change or **Reload source** is selected. Queued requests are coalesced, and results from old programs or selections are discarded.
+
+Processor defaults can vary by address. They form the decode baseline beneath previously recorded `globalset` context commits. Loading another binary resets those commits without requiring a source recompile. The native desktop can select addresses in non-x86 programs without interpreting their bytes through the x86 decoder.
+
 `ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using pinned `wazabin-sleigh` 0.1.15 and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Context defaults must currently be supplied explicitly; automatic `.pspec`/`.ldefs` language selection remains work to do.
 
 ```sh

@@ -96,6 +96,9 @@ impl Workbench {
     }
 
     pub(super) fn navigate_address(&mut self, address: u64) {
+        if self.pending.is_some() {
+            return;
+        }
         let Some(loaded) = &self.loaded else {
             return;
         };
@@ -115,7 +118,13 @@ impl Workbench {
             .find(|s| address >= s.address && address - s.address < s.size);
         if let Some(section) = section {
             if section.executable {
-                self.navigate(address);
+                if loaded.image.supports_x86_disassembly() {
+                    self.navigate(address);
+                } else {
+                    self.selected = Some(address);
+                    self.goto = format!("{address:X}");
+                    self.tab = Tab::Pcode;
+                }
             } else if address - section.address < section.file_size {
                 self.hex_offset =
                     (section.file_offset + address - section.address) as usize / 16 * 16;

@@ -1,5 +1,6 @@
 mod app;
 mod demo;
+mod lifting;
 mod pcode_cli;
 mod report;
 

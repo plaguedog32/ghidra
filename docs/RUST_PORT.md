@@ -26,7 +26,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 
 | Capability | First milestone | Remaining work |
 | --- | --- | --- |
-| Native desktop | Rust window, file opening, linked inspection views | Full docking/workspace system, accessibility and workflow refinement |
+| Native desktop | Rust window, file opening, linked inspection views, cached background P-code lifting | Full docking/workspace system, accessibility and workflow refinement |
 | Binary formats | PE, ELF, and single-architecture Mach-O inspection | Additional formats, universal/fat Mach-O selection, richer loader semantics and relocations |
 | Processor support | x86/x64 desktop decoding; source-based SLEIGH lifting probes for x86-64, ARM7 LE/BE, MIPS32 LE/BE | Automatic language/context selection, broader specification and semantic coverage, other processors in desktop |
 | Metadata | Entry point, sections, symbols, ASCII strings, imports/exports, relocation records | Remaining linkage formats, relocation application, debug information and types |
@@ -116,7 +116,7 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 106 default workspace tests pass, plus five explicitly run upstream SLEIGH probes. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement, asynchronous desktop state, P-code integer/software-float semantics, execution bounds, and source lifting. The desktop tests also render every inspection view through egui without requiring a native window.
+- All 116 default workspace tests pass, plus five explicitly run upstream SLEIGH probes. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement, asynchronous desktop state, P-code integer/software-float semantics, execution bounds, source lifting, compiled-source reuse and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
@@ -124,7 +124,7 @@ Local validation on Windows with Rust 1.99.1:
 - Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
-The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), and project/function/linkage commit `f9f0af37b7` passed in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993). The expanded P-code/SLEIGH increment must pass its own run before inheriting that cross-platform claim.
+The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), and P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343). Later increments must pass their own runs before inheriting that cross-platform claim.
 
 ## Path to full replacement
 

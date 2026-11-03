@@ -47,6 +47,38 @@ fn raw_source_and_include_compile_into_pcode_that_executes_in_rust() {
 }
 
 #[test]
+fn address_defaults_do_not_leak_or_overwrite_committed_context() {
+    let mut language =
+        SleighLanguage::from_spec(&fixture("tiny.slaspec"), &BTreeMap::new()).unwrap();
+    let phase_one = BTreeMap::from([("phase".into(), 1)]);
+    assert_eq!(
+        language
+            .decode_with_defaults(0x1000, &[6], &phase_one)
+            .unwrap()
+            .text,
+        "mode"
+    );
+    assert_eq!(language.decode(0x1000, &[6]).unwrap().text, "base");
+    language.decode(0x1000, &[5]).unwrap();
+    let phase_zero = BTreeMap::from([("phase".into(), 0)]);
+    assert_eq!(
+        language
+            .decode_with_defaults(0x1001, &[6], &phase_zero)
+            .unwrap()
+            .text,
+        "mode"
+    );
+    assert!(
+        language
+            .decode_with_defaults(0x1001, &[6], &BTreeMap::from([("phase".into(), 2)]))
+            .is_err()
+    );
+    assert_eq!(language.decode(0x1001, &[6]).unwrap().text, "mode");
+    language.reset_context();
+    assert_eq!(language.decode(0x1001, &[6]).unwrap().text, "base");
+}
+
+#[test]
 fn memory_space_and_userop_identifiers_are_preserved() {
     let mut language =
         SleighLanguage::from_spec(&fixture("tiny.slaspec"), &BTreeMap::new()).unwrap();

@@ -209,6 +209,7 @@ fn every_desktop_view_renders_with_loaded_project_state() {
         Tab::Functions,
         Tab::Linkage,
         Tab::Bookmarks,
+        Tab::Pcode,
     ] {
         app.tab = tab;
         let input = egui::RawInput {
@@ -226,4 +227,31 @@ fn every_desktop_view_renders_with_loaded_project_state() {
         });
         assert!(!output.shapes.is_empty());
     }
+}
+
+#[test]
+fn non_x86_programs_select_executable_addresses_without_using_the_x86_decoder() {
+    let mut bytes = demo::pe64();
+    bytes[0x84..0x86].copy_from_slice(&0xaa64_u16.to_le_bytes());
+    let loaded = report::load_bytes("ARM64 metadata".into(), bytes).unwrap();
+    assert!(!loaded.image.supports_x86_disassembly());
+    assert!(loaded.analysis.is_none());
+    let entry = loaded.image.entry;
+    let mut app = Workbench::empty();
+    deliver(&mut app, Ok(WorkResult::Loaded(loaded)));
+    assert_eq!(app.selected, Some(entry));
+    assert!(app.tab == Tab::Pcode);
+    app.navigate_address(entry + 4);
+    assert_eq!(app.selected, Some(entry + 4));
+    assert!(app.pending.is_none());
+    app.set_annotation(
+        entry + 4,
+        Annotation {
+            label: "decode_here".into(),
+            ..Default::default()
+        },
+    );
+    assert!(app.dirty);
+    let context = egui::Context::default();
+    let _ = context.run(egui::RawInput::default(), |ctx| app.inspector(ctx));
 }

@@ -16,6 +16,7 @@ A native Rust desktop rewrite of [Ghidra](https://github.com/NationalSecurityAge
 - Navigate linked desktop views and export structured analysis as JSON.
 - Execute bounded, supplied integer P-code programs through the native [P-code foundation](docs/PCODE.md).
 - Lift instructions from SLEIGH source and evaluate supported software floating-point operations; processor coverage is tracked by explicit tests.
+- Inspect selected instructions in the desktop P-code view with cached background source compilation and register-aware operations.
 
 Other architectures can be inspected as binary metadata; their instructions are not decoded yet. Decompilation, debugging, Ghidra project compatibility, scripting, and the full upstream processor set remain future work. See the [port status and roadmap](docs/RUST_PORT.md).
 

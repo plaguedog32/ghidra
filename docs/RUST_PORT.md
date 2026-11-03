@@ -1,6 +1,6 @@
 # Rust port: status and development
 
-The goal is a useful Ghidra replacement that builds and runs without Java. The current deliverable is an initial native desktop application with a Rust binary-analysis core. It does not claim feature parity with Ghidra.
+The goal is a Ghidra replacement that builds and runs without Java. The current deliverable is a native desktop and analysis foundation with projects, function recovery, P-code execution, and source-based instruction lifting. It does not claim feature parity with Ghidra.
 
 ## Current architecture
 
@@ -10,6 +10,8 @@ The goal is a useful Ghidra replacement that builds and runs without Java. The c
 | `crates/ghidra-core/src/functions.rs` | Bounded recursive function discovery and reachable control-flow blocks |
 | `crates/ghidra-core/src/linkage.rs` | Imports, exports, and relocation records with format-specific coverage warnings |
 | `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
+| `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
+| `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
 | `iced-x86` | Rust x86/x64 instruction decoding and instruction flow information |
@@ -18,7 +20,7 @@ The goal is a useful Ghidra replacement that builds and runs without Java. The c
 
 The executable does not launch the imported program. It reads binary data for inspection. Input parsing and decoding are bounded; malformed and unsupported inputs should produce errors rather than launch another tool.
 
-The root Cargo workspace builds only the Rust crates. The retained `Ghidra/`, `GhidraBuild/`, `GPL/`, and Gradle source trees are upstream reference material, not Cargo build inputs. No Java runtime, JNI bridge, C++ decompiler process, or Java-backed extension is used by this milestone.
+The root Cargo workspace builds the Rust crates and their native platform helpers. It does not compile the retained Java/C++ application or invoke Gradle. Tests read the upstream opcode table as text, and source-lifting probes use retained processor language data. No Java runtime, JNI bridge, Ghidra C++ decompiler process, or Java-backed extension is used.
 
 ## Feature status
 
@@ -26,12 +28,13 @@ The root Cargo workspace builds only the Rust crates. The retained `Ghidra/`, `G
 | --- | --- | --- |
 | Native desktop | Rust window, file opening, linked inspection views | Full docking/workspace system, accessibility and workflow refinement |
 | Binary formats | PE, ELF, and single-architecture Mach-O inspection | Additional formats, universal/fat Mach-O selection, richer loader semantics and relocations |
-| Processor support | x86 and x86-64 instruction decoding | Other processors, processor language selection, SLEIGH compatibility |
+| Processor support | x86/x64 desktop decoding; source-based SLEIGH lifting probes for x86-64, ARM7 LE/BE, MIPS32 LE/BE | Automatic language/context selection, broader specification and semantic coverage, other processors in desktop |
 | Metadata | Entry point, sections, symbols, ASCII strings, imports/exports, relocation records | Remaining linkage formats, relocation application, debug information and types |
 | Code analysis | Linear listing and bounded recursive discovery from entry points, symbols and direct calls; reachable basic blocks | Indirect targets, jump tables, exception paths, speculative discovery, data/code separation |
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
-| Decompilation | Not implemented | P-code or another lifting IR, dataflow, type recovery, structured output |
+| P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
+| Decompilation | Not implemented; P-code foundation available | SSA/dataflow, type recovery, simplification and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -62,6 +65,15 @@ sudo apt-get install -y build-essential pkg-config libgtk-3-dev \
 ```
 
 These are native application build requirements. Neither the Cargo workflow nor the executable needs a JDK or JRE. Runtime graphics drivers and platform libraries are still required. Linux file dialogs may use the desktop portal service.
+
+On Windows, use a Visual Studio developer shell or initialize its compiler/SDK environment in the current PowerShell process before building:
+
+```powershell
+. ./scripts/Enter-NativeBuild.ps1
+cargo build --locked --release -p ghidra-desktop
+```
+
+The SLEIGH dependency is a Rust source compiler/lifter. Its stack-management dependency uses small platform-native build helpers, so Windows SDK headers are needed in addition to the linker. This does not introduce a Java or Ghidra C++ runtime dependency.
 
 ## Commands
 
@@ -104,25 +116,29 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 49 workspace tests pass. They cover generated PE/ELF/Mach-O, linkage addresses and relocations, malformed input, address overflow, recursive discovery and budgets, portable project integrity/atomic replacement, and asynchronous desktop state preservation. The desktop tests also render every inspection view through egui without requiring a native window.
+- All 106 default workspace tests pass, plus five explicitly run upstream SLEIGH probes. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement, asynchronous desktop state, P-code integer/software-float semantics, execution bounds, and source lifting. The desktop tests also render every inspection view through egui without requiring a native window.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
+- The same Java-free environment compiled this checkout's x86-64 SLEIGH source, lifted `MOV RAX,42`, and executed the resulting P-code to produce `RAX = 42`.
+- Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
-The initial desktop commit `dd4736d2a1` passed Windows, Linux, and macOS checks and release builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407). The expanded project/function/linkage increment must pass its own CI run before inheriting that cross-platform claim.
+The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), and project/function/linkage commit `f9f0af37b7` passed in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993). The expanded P-code/SLEIGH increment must pass its own run before inheriting that cross-platform claim.
 
 ## Path to full replacement
 
-1. **Harden the desktop foundation.** Broaden real-binary fixtures, improve imports/exports and relocations, add address navigation, project persistence, annotations, and dependable error recovery.
-2. **Build a reusable analysis model.** Represent functions, types, data references, memory regions, and analysis dependencies independently of the UI. Add instruction-to-IR lifting and recursive discovery with explicit confidence and bounds.
-3. **Expand processors and executable formats.** Introduce decoder/lifter interfaces and processor-specific calling conventions. Validate against known instruction, ABI, and loader fixtures before claiming compatibility.
-4. **Add native decompilation.** Implement or port lifting, dataflow, type recovery, and structured-code generation. Ghidra's native C++ decompiler is useful reference material, but using it would create a Rust+C++ application, not an all-Rust implementation.
+1. **Harden the desktop foundation.** Extend the current project, annotation, navigation and function workflows with project collections, richer loaders, searching, and dependable error recovery.
+2. **Extend the analysis model.** Add types, data references, memory regions and analysis dependencies. Integrate the current source lifter with function recovery and desktop views.
+3. **Expand processors and executable formats.** Load language catalogs and processor-context defaults, audit all retained specs, add calling conventions, and validate instruction/ABI/loader behavior before claiming compatibility.
+4. **Add native decompilation.** Build SSA/dataflow, optimization, type recovery and structured-code generation on the P-code foundation. The retained C++ implementation is reference material; the native Rust application does not invoke it.
 5. **Replace larger workflows.** Add debugger backends, tracing, scripting, extensions, project compatibility and collaboration in independently testable stages.
 
 The existing native decompiler is not a drop-in replacement for the Java framework. Its Ghidra-facing process asks the Java client for memory, symbols, types, p-code, and other services. A future native integration must implement those services or use a standalone architecture. Likewise, upstream processor compilation through Gradle still invokes Java; a Java-free SLEIGH path would need the native compiler or a Rust replacement.
 
 Full parity remains a larger project. Each stage should ship a usable native result and record its verified support rather than counting a launcher change as a completed port.
+
+See [PCODE.md](PCODE.md) for executable examples and documented semantic boundaries, and [FULL_PORT_WORKLIST.md](FULL_PORT_WORKLIST.md) for the remaining framework coverage gates.
 
 ## Upstream and licensing
 

@@ -1,0 +1,10 @@
+:nop is op=0 { }
+:inc is op=1 { r0 = r0 + 1; }
+:copy is op=2 { r1 = r0; }
+:load is op=3 { r0 = *[ram]:4 r1; }
+:user is op=4 { custom(r0); }
+:setmode is op=5 [ phase=1; globalset(inst_next,phase); ] { r0 = 0; }
+:mode is op=6 & phase=1 { r0 = 7; }
+:base is op=6 & phase=0 { r0 = 8; }
+:identityext is op=7 { r0 = sext(r0); }
+:delayed is op=16 { delayslot(1); goto inst_next; }

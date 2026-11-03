@@ -1,0 +1,13 @@
+[package]
+name = "ghidra-sleigh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure Rust SLEIGH source compiler and explicit p-code adapter"
+publish = false
+
+[dependencies]
+sleigh = { package = "wazabin-sleigh", version = "=0.1.15", features = ["unstable-syntax"] }
+ghidra-pcode = { path = "../ghidra-pcode" }
+thiserror = "2"

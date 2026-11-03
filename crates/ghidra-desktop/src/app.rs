@@ -374,11 +374,7 @@ impl Workbench {
                         .size(11.0),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("0.2  /  DESKTOP FOUNDATION")
-                            .small()
-                            .color(MUTED),
-                    );
+                    ui.label(RichText::new("0.3  /  NATIVE CORE").small().color(MUTED));
                 });
             });
             ui.add_space(8.0);

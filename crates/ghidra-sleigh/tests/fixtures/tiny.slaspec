@@ -1,0 +1,8 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [ r0 r1 ctx ];
+define context ctx phase=(0,0);
+define pcodeop custom;
+define token instruction_byte(8) op=(0,7);
+@include "tiny.sinc"

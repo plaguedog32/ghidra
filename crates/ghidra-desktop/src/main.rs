@@ -1,5 +1,6 @@
 mod app;
 mod demo;
+mod pcode_cli;
 mod report;
 
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ fn main() -> eframe::Result {
     match first.as_deref().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
+                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(());
@@ -65,6 +66,43 @@ fn main() -> eframe::Result {
                 std::process::exit(1);
             }
             println!("Project saved");
+            return Ok(());
+        }
+        Some("--run-pcode") => {
+            let Some(path) = args.next() else {
+                eprintln!("--run-pcode requires a JSON program");
+                std::process::exit(2);
+            };
+            if args.next().is_some() {
+                eprintln!("--run-pcode accepts one JSON program");
+                std::process::exit(2);
+            }
+            match pcode_cli::execute(&PathBuf::from(path)) {
+                Ok(true) => {}
+                Ok(false) => std::process::exit(3),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
+        Some("--lift-pcode") => {
+            let (Some(spec), Some(address), Some(bytes)) = (args.next(), args.next(), args.next())
+            else {
+                eprintln!("--lift-pcode requires SPEC HEX_ADDRESS HEX_BYTES [context=value ...]");
+                std::process::exit(2);
+            };
+            let context: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+            if let Err(error) = pcode_cli::lift(
+                &PathBuf::from(spec),
+                &address.to_string_lossy(),
+                &bytes.to_string_lossy(),
+                &context,
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
             return Ok(());
         }
         Some(flag) if flag.starts_with('-') && flag != "--demo" => {

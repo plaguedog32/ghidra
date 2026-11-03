@@ -14,6 +14,8 @@ A native Rust desktop rewrite of [Ghidra](https://github.com/NationalSecurityAge
 - Inspect imports, exports, and relocation records, including PE import address table slots.
 - Add labels, comments, and bookmarks; save them with the original binary in an integrity-checked `.ghrs` project.
 - Navigate linked desktop views and export structured analysis as JSON.
+- Execute bounded, supplied integer P-code programs through the native [P-code foundation](docs/PCODE.md).
+- Lift instructions from SLEIGH source and evaluate supported software floating-point operations; processor coverage is tracked by explicit tests.
 
 Other architectures can be inspected as binary metadata; their instructions are not decoded yet. Decompilation, debugging, Ghidra project compatibility, scripting, and the full upstream processor set remain future work. See the [port status and roadmap](docs/RUST_PORT.md).
 
@@ -54,6 +56,6 @@ The [Rust workflow](.github/workflows/rust-desktop.yml) checks and builds the na
 
 ## Upstream source and license
 
-The original Ghidra source remains in this fork as a reference for subsequent porting. It is not part of the Rust Cargo build. The [original README](docs/UPSTREAM_README.md) describes the upstream Java application and its separate build process.
+The original Ghidra source remains as a reference for subsequent porting. Cargo does not compile its Java/C++ application; tests read opcode definitions as text and the Rust lifter uses processor language data. The [original README](docs/UPSTREAM_README.md) describes the upstream Java application and its separate build process.
 
 This fork is not an official NSA release. The upstream [LICENSE](LICENSE) and [NOTICE](NOTICE) are retained. New Rust workspace code uses Apache-2.0; dependencies retain their own licenses.

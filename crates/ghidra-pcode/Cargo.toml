@@ -1,0 +1,18 @@
+[package]
+name = "ghidra-pcode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native Rust p-code model and bounded bit-vector semantics"
+publish = false
+
+[dependencies]
+num-bigint = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+rustc_apfloat = "0.2.3"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

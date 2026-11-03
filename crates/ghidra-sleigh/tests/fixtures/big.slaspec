@@ -1,0 +1,8 @@
+define endian=big;
+define alignment=2;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [ r0 ];
+define token instruction_word(16) op=(0,15);
+:inc is op=0x1234 { r0 = r0 + 1; }
+:load is op=0x1235 { r0 = *[ram]:4 0x2000:4; }

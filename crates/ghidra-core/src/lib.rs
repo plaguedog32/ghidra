@@ -4,6 +4,9 @@
 //! discovery. Blocks describe the decoded range; successors can point outside it.
 //! No Ghidra Java classes, JVM, JNI, native decompiler, or external processes are used.
 
+pub mod functions;
+pub mod linkage;
+
 use std::collections::{BTreeSet, HashSet};
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Formatter, IntelFormatter, OpKind};

@@ -2,7 +2,7 @@
 
 A native Rust desktop rewrite of [Ghidra](https://github.com/NationalSecurityAgency/ghidra), developed in this fork toward removing the Java runtime requirement.
 
-**This is the first desktop milestone, not a complete Ghidra replacement.** The Rust application opens binaries and provides inspection, x86/x64 disassembly, and basic analysis. Its Cargo build and runtime do not invoke Java, JNI, Gradle, or the upstream Java application.
+**This is an ongoing port, not a complete Ghidra replacement.** The Rust application opens binaries, recovers directly reachable x86/x64 functions, inspects linkage, and saves portable projects with annotations. Its Cargo build and runtime do not invoke Java, JNI, Gradle, or the upstream Java application.
 
 ## First milestone
 
@@ -10,7 +10,10 @@ A native Rust desktop rewrite of [Ghidra](https://github.com/NationalSecurityAge
 - Inspect entry points, sections, symbols, and printable ASCII strings.
 - Disassemble x86 and x86-64 executable code.
 - Inspect direct branch/call references and basic blocks from bounded linear disassembly.
-- Navigate the desktop views and export analysis through the headless JSON command.
+- Discover functions by following direct calls and reachable branches, with explicit recovery limits.
+- Inspect imports, exports, and relocation records, including PE import address table slots.
+- Add labels, comments, and bookmarks; save them with the original binary in an integrity-checked `.ghrs` project.
+- Navigate linked desktop views and export structured analysis as JSON.
 
 Other architectures can be inspected as binary metadata; their instructions are not decoded yet. Decompilation, debugging, Ghidra project compatibility, scripting, and the full upstream processor set remain future work. See the [port status and roadmap](docs/RUST_PORT.md).
 
@@ -33,6 +36,8 @@ Try the embedded x64 sample or obtain a JSON analysis without opening a window:
 ```sh
 cargo run --release -p ghidra-desktop -- --demo
 cargo run --release -p ghidra-desktop -- --analyze /path/to/program
+cargo run --release -p ghidra-desktop -- --create-project /path/to/program analysis.ghrs
+cargo run --release -p ghidra-desktop -- analysis.ghrs
 ```
 
 Build the executable with `cargo build --release -p ghidra-desktop`. It is written to `target/release/ghidra-rs` (`ghidra-rs.exe` on Windows). Rust is required to build it; Java is not required to build or run it. Normal operating-system graphics and native library requirements still apply.

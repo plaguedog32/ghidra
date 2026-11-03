@@ -7,6 +7,9 @@ The goal is a useful Ghidra replacement that builds and runs without Java. The c
 | Component | Responsibility |
 | --- | --- |
 | `crates/ghidra-core` | Binary parsing, section/address mapping, symbols, ASCII strings, x86/x64 decoding, direct references, and basic blocks |
+| `crates/ghidra-core/src/functions.rs` | Bounded recursive function discovery and reachable control-flow blocks |
+| `crates/ghidra-core/src/linkage.rs` | Imports, exports, and relocation records with format-specific coverage warnings |
+| `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
 | `iced-x86` | Rust x86/x64 instruction decoding and instruction flow information |
@@ -24,17 +27,21 @@ The root Cargo workspace builds only the Rust crates. The retained `Ghidra/`, `G
 | Native desktop | Rust window, file opening, linked inspection views | Full docking/workspace system, accessibility and workflow refinement |
 | Binary formats | PE, ELF, and single-architecture Mach-O inspection | Additional formats, universal/fat Mach-O selection, richer loader semantics and relocations |
 | Processor support | x86 and x86-64 instruction decoding | Other processors, processor language selection, SLEIGH compatibility |
-| Metadata | Entry point, sections, symbols, ASCII strings | Rich imports/exports, relocations, debug information and types |
-| Code analysis | Bounded linear disassembly, direct branch/call references, local basic blocks | Recursive discovery, reliable function recovery, data/code separation, indirect target resolution |
-| Navigation | Addresses and selectable binary/analysis items | Full cross-reference navigation and annotations |
+| Metadata | Entry point, sections, symbols, ASCII strings, imports/exports, relocation records | Remaining linkage formats, relocation application, debug information and types |
+| Code analysis | Linear listing and bounded recursive discovery from entry points, symbols and direct calls; reachable basic blocks | Indirect targets, jump tables, exception paths, speculative discovery, data/code separation |
+| Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | Decompilation | Not implemented | P-code or another lifting IR, dataflow, type recovery, structured output |
-| Projects | No upstream project compatibility | Native project storage, persistence, migration and optional import of Ghidra projects |
+| Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
 | Collaboration | Not implemented | Shared projects, synchronization and access controls |
 
-Disassembly is a linear sweep of a bounded executable region, not proof that every decoded byte is reachable code. References cover direct control-flow targets; indirect calls and jumps are not resolved. The basic blocks describe that decoded region rather than a recovered whole-program control-flow graph. Stripped binaries may have few or no symbols.
+The normal disassembly listing is a linear sweep of a bounded executable region, not proof that every decoded byte is reachable code. The Functions view instead follows reachable branches and direct calls, avoiding a sweep after returns and unconditional jumps. Discovery is globally bounded, reports instruction conflicts and shared tails, and does not resolve indirect targets, jump tables or exception paths. A function marked complete means this traversal found no known gap; it does not prove a complete semantic function. Stripped binaries may have few or no symbols.
+
+The Linkage view reads PE32/64 normal imports with IAT slot addresses, named/ordinal exports and base relocations; ELF traditional imports/exports and section/dynamic relocation records; and traditional Mach-O symbol-table/section relocation metadata. Delayed imports, forwarded exports, sectionless ELF dynamic tables, RELR, and newer Mach-O dyld formats have explicit coverage warnings. Relocations are inspected, not applied; in-place implicit addends are not evaluated.
+
+Native projects preserve the original binary, labels, comments, bookmarks, and the last selected address. `.ghrs` version 1 uses a fixed header, bounded JSON metadata, original image bytes, and separate SHA-256 integrity checks. These checks detect corruption and do not authenticate authorship. Saving validates mapped addresses and uses a temporary sibling plus atomic replacement. The desktop prompts before discarding unsaved annotations and blocks edits while replacing or saving a project. This format is separate from upstream Ghidra projects.
 
 Metadata support does not imply decoder support: an ARM executable can be inspected without pretending its bytes are x86 instructions. Address mapping and decoding errors must be presented explicitly.
 
@@ -73,6 +80,10 @@ cargo run --release -p ghidra-desktop -- --demo
 # JSON analysis without opening a desktop window
 cargo run --release -p ghidra-desktop -- --analyze /path/to/program
 
+# Create or reopen a portable native project
+cargo run --release -p ghidra-desktop -- --create-project /path/to/program analysis.ghrs
+cargo run --release -p ghidra-desktop -- analysis.ghrs
+
 # Reproducible release build
 cargo build --locked --release -p ghidra-desktop
 ```
@@ -93,13 +104,13 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 12 workspace tests pass, including generated PE, ELF, thin Mach-O, malformed-input, address-overflow, branch/block, and desktop import/report tests.
+- All 49 workspace tests pass. They cover generated PE/ELF/Mach-O, linkage addresses and relocations, malformed input, address overflow, recursive discovery and budgets, portable project integrity/atomic replacement, and asynchronous desktop state preservation. The desktop tests also render every inspection view through egui without requiring a native window.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
-Linux and macOS checks are configured in CI. Their status must be read from the actual run; the Windows checks do not establish cross-platform success.
+The initial desktop commit `dd4736d2a1` passed Windows, Linux, and macOS checks and release builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407). The expanded project/function/linkage increment must pass its own CI run before inheriting that cross-platform claim.
 
 ## Path to full replacement
 

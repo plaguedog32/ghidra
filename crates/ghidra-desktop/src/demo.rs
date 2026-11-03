@@ -61,7 +61,7 @@ mod tests {
         assert!(analysis.blocks.len() >= 3);
         let report: serde_json::Value =
             serde_json::from_str(&crate::report::json(&loaded).unwrap()).unwrap();
-        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["schema_version"], 2);
         assert!(
             !report["analysis"]["instructions"]
                 .as_array()

@@ -3,7 +3,13 @@ use crate::{
     report::{self, Loaded},
 };
 use eframe::egui::{self, Color32, RichText};
+use ghidra_core::Analysis;
+use ghidra_project::{Annotation, Project};
 use std::{path::PathBuf, sync::mpsc, time::Duration};
+
+#[cfg(test)]
+mod tests;
+mod views;
 
 const ACCENT: Color32 = Color32::from_rgb(100, 215, 183);
 const MUTED: Color32 = Color32::from_rgb(141, 157, 177);
@@ -21,11 +27,20 @@ enum Tab {
     Strings,
     Sections,
     Blocks,
+    Functions,
+    Linkage,
+    Bookmarks,
+}
+
+enum WorkResult {
+    Loaded(Loaded),
+    Disassembled(Analysis),
+    Saved { path: PathBuf, revision: u64 },
 }
 
 pub struct Workbench {
     loaded: Option<Loaded>,
-    pending: Option<mpsc::Receiver<Result<Loaded, String>>>,
+    pending: Option<mpsc::Receiver<Result<WorkResult, String>>>,
     status: String,
     error: Option<String>,
     path: String,
@@ -35,9 +50,23 @@ pub struct Workbench {
     selected: Option<u64>,
     scroll_to: Option<usize>,
     hex_offset: usize,
+    dirty: bool,
+    revision: u64,
+    pending_open: Option<Input>,
+    confirm_close: bool,
+    approve_close: bool,
+    linkage_mode: usize,
+    saving: bool,
 }
 
 impl Workbench {
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if (self.dirty || self.saving) && !self.approve_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close = true;
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<Input>) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = Color32::from_rgb(21, 27, 36);
@@ -49,7 +78,15 @@ impl Workbench {
         style.spacing.item_spacing = egui::vec2(10.0, 8.0);
         style.spacing.button_padding = egui::vec2(12.0, 7.0);
         cc.egui_ctx.set_style(style);
-        let mut app = Self {
+        let mut app = Self::empty();
+        if let Some(input) = initial {
+            app.open(input);
+        }
+        app
+    }
+
+    fn empty() -> Self {
+        Self {
             loaded: None,
             pending: None,
             status: "Ready to inspect a binary".into(),
@@ -61,14 +98,28 @@ impl Workbench {
             selected: None,
             scroll_to: None,
             hex_offset: 0,
-        };
-        if let Some(input) = initial {
-            app.open(input);
+            dirty: false,
+            revision: 0,
+            pending_open: None,
+            confirm_close: false,
+            approve_close: false,
+            linkage_mode: 0,
+            saving: false,
         }
-        app
     }
 
     fn open(&mut self, input: Input) {
+        if self.pending.is_some() {
+            return;
+        }
+        if self.dirty {
+            self.pending_open = Some(input);
+            return;
+        }
+        self.begin_open(input);
+    }
+
+    fn begin_open(&mut self, input: Input) {
         if self.pending.is_some() {
             return;
         }
@@ -81,7 +132,7 @@ impl Workbench {
                 Input::Path(path) => report::load_path(&path),
                 Input::Demo => report::load_bytes("Synthetic sample · PE64".into(), demo::pe64()),
             };
-            let _ = tx.send(result);
+            let _ = tx.send(result.map(WorkResult::Loaded));
         });
     }
 
@@ -95,12 +146,16 @@ impl Workbench {
         });
         if let Some(result) = result {
             self.pending = None;
+            self.saving = false;
             match result {
-                Ok(loaded) => {
-                    self.selected = loaded
-                        .analysis
-                        .as_ref()
-                        .and_then(|a| a.instructions.first().map(|i| i.address));
+                Ok(WorkResult::Loaded(loaded)) => {
+                    let restore = loaded.metadata.last_address;
+                    self.selected = restore.or_else(|| {
+                        loaded
+                            .analysis
+                            .as_ref()
+                            .and_then(|a| a.instructions.first().map(|i| i.address))
+                    });
                     self.goto = self.selected.map(|a| format!("{a:X}")).unwrap_or_default();
                     self.path = loaded.name.clone();
                     self.status = format!(
@@ -111,6 +166,40 @@ impl Workbench {
                     self.hex_offset = 0;
                     self.scroll_to = Some(0);
                     self.loaded = Some(loaded);
+                    self.dirty = false;
+                    self.revision = 0;
+                    if let Some(address) = restore {
+                        self.navigate_address(address);
+                    }
+                }
+                Ok(WorkResult::Disassembled(analysis)) => {
+                    self.selected = analysis.instructions.first().map(|i| i.address);
+                    self.goto = self.selected.map(|a| format!("{a:X}")).unwrap_or_default();
+                    self.scroll_to = Some(0);
+                    if let Some(loaded) = &mut self.loaded {
+                        loaded.analysis = Some(analysis);
+                        loaded.analysis_error = None;
+                        loaded.analysis_method = "linear sweep";
+                    }
+                    self.error = None;
+                    self.status = "Disassembly range updated".into();
+                }
+                Ok(WorkResult::Saved { path, revision }) => {
+                    if let Some(loaded) = &mut self.loaded {
+                        loaded.project_path = Some(path.clone());
+                    }
+                    if self.revision == revision {
+                        self.dirty = false;
+                    }
+                    self.status = format!("Project saved to {}", path.display());
+                    if !self.dirty {
+                        if let Some(input) = self.pending_open.take() {
+                            self.begin_open(input);
+                        } else if self.confirm_close {
+                            self.approve_close = true;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
                 }
                 Err(error) => {
                     self.status = "Operation failed".into();
@@ -150,19 +239,13 @@ impl Workbench {
                 return;
             }
             let image = loaded.image.clone();
-            let name = loaded.name.clone();
             let (tx, rx) = mpsc::channel();
             self.pending = Some(rx);
             self.status = format!("Disassembling at {address:016X}…");
             std::thread::spawn(move || {
                 let result = image
                     .disassemble(address, report::INSTRUCTION_LIMIT)
-                    .map(|analysis| Loaded {
-                        name,
-                        image,
-                        analysis: Some(analysis),
-                        analysis_error: None,
-                    })
+                    .map(WorkResult::Disassembled)
                     .map_err(|e| e.to_string());
                 let _ = tx.send(result);
             });
@@ -188,6 +271,96 @@ impl Workbench {
         }
     }
 
+    fn save_project(&mut self, save_as: bool) {
+        if self.pending.is_some() {
+            return;
+        }
+        let Some(loaded) = &mut self.loaded else {
+            return;
+        };
+        let path = if !save_as {
+            loaded.project_path.clone()
+        } else {
+            None
+        }
+        .or_else(|| {
+            rfd::FileDialog::new()
+                .set_title("Save native project")
+                .set_file_name("analysis.ghrs")
+                .add_filter("Ghidra Rust project", &["ghrs"])
+                .save_file()
+        });
+        let Some(path) = path else {
+            return;
+        };
+        loaded.metadata.last_address = self.selected;
+        let project = Project {
+            metadata: loaded.metadata.clone(),
+            image: loaded.image.clone(),
+        };
+        let revision = self.revision;
+        let (tx, rx) = mpsc::channel();
+        self.pending = Some(rx);
+        self.saving = true;
+        self.status = "Saving project…".into();
+        std::thread::spawn(move || {
+            let result = project
+                .save(&path)
+                .map(|()| WorkResult::Saved { path, revision })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+    }
+
+    fn unsaved_dialog(&mut self, ctx: &egui::Context) {
+        if self.pending_open.is_none() && !self.confirm_close {
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("unsaved_project")).show(ctx, |ui| {
+            ui.heading(if self.dirty {
+                "Save project changes?"
+            } else {
+                "Finish saving project?"
+            });
+            ui.label(if self.dirty {
+                "Labels, comments, and bookmarks have unsaved changes."
+            } else if self.saving {
+                "The project is being saved. Closing will wait for the result."
+            } else {
+                "The save did not finish successfully. Retry, or close without saving."
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(self.pending.is_none(), egui::Button::new("Save project"))
+                    .clicked()
+                {
+                    self.save_project(false);
+                }
+                if ui
+                    .add_enabled(self.pending.is_none(), egui::Button::new("Discard changes"))
+                    .clicked()
+                {
+                    if let Some(input) = self.pending_open.take() {
+                        self.begin_open(input);
+                    } else {
+                        self.approve_close = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    self.confirm_close = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.pending_open = None;
+                    self.confirm_close = false;
+                }
+            });
+        });
+        if response.should_close() {
+            self.pending_open = None;
+            self.confirm_close = false;
+        }
+    }
+
     fn toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(8.0);
@@ -202,7 +375,7 @@ impl Workbench {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("0.1  /  DESKTOP MILESTONE")
+                        RichText::new("0.2  /  DESKTOP FOUNDATION")
                             .small()
                             .color(MUTED),
                     );
@@ -243,6 +416,45 @@ impl Workbench {
                 }
             });
             ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        self.loaded.is_some() && self.pending.is_none(),
+                        egui::Button::new("Save project"),
+                    )
+                    .clicked()
+                {
+                    self.save_project(false);
+                }
+                if ui
+                    .add_enabled(
+                        self.loaded.is_some() && self.pending.is_none(),
+                        egui::Button::new("Save as…"),
+                    )
+                    .clicked()
+                {
+                    self.save_project(true);
+                }
+                if ui
+                    .add_enabled(self.pending.is_none(), egui::Button::new("Open project…"))
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Native project", &["ghrs"])
+                        .pick_file()
+                {
+                    self.open(Input::Path(path));
+                }
+                if let Some(loaded) = &self.loaded {
+                    ui.label(
+                        RichText::new(format!(
+                            "{}{}",
+                            loaded.metadata.name,
+                            if self.dirty { "  • unsaved" } else { "" }
+                        ))
+                        .color(if self.dirty { GOLD } else { MUTED }),
+                    );
+                }
+            });
         });
     }
 
@@ -352,6 +564,7 @@ impl Workbench {
     fn inspector(&mut self, ctx: &egui::Context) {
         let mut jump = None;
         egui::SidePanel::right("inspector").default_width(260.0).width_range(210.0..=450.0).resizable(true).show(ctx, |ui| {
+            egui::ScrollArea::vertical().id_salt("inspector_scroll").show(ui, |ui| {
             ui.add_space(10.0);
             label_heading(ui, "ANALYSIS");
             let Some(loaded) = &self.loaded else { ui.label(RichText::new("Import a file to begin").color(MUTED)); return; };
@@ -361,9 +574,9 @@ impl Workbench {
             key_value(ui, "Instructions", &analysis.instructions.len().to_string());
             key_value(ui, "Basic blocks", &analysis.blocks.len().to_string());
             key_value(ui, "References", &analysis.references.len().to_string());
-            if analysis.truncated { ui.colored_label(GOLD, "Instruction limit reached. Navigate to a later address to continue."); }
+            if analysis.truncated { ui.colored_label(GOLD, "Analysis is incomplete or reached its instruction limit."); }
             ui.add_space(8.0);
-            ui.label(RichText::new("Linear sweep of one code section. Data embedded in code may decode as instructions.").small().color(MUTED));
+            ui.label(RichText::new(if loaded.analysis_method == "linear sweep" { "Linear sweep of one code section. Data embedded in code may decode as instructions." } else { "Reachable function code. Indirect targets and shared tails may remain unresolved." }).small().color(MUTED));
             ui.add_space(10.0); ui.separator(); ui.add_space(8.0);
             label_heading(ui, "SELECTED INSTRUCTION");
             if let Some(instruction) = self.selected.and_then(|a| analysis.instructions.iter().find(|i| i.address == a)) {
@@ -373,12 +586,18 @@ impl Workbench {
                 ui.add_space(8.0);
                 if let Some(target) = instruction.target && ui.button(format!("Follow {target:016X}")).clicked() { jump = Some(target); }
                 label_heading(ui, "INCOMING REFERENCES");
-                let refs: Vec<_> = analysis.references.iter().filter(|r| r.to == instruction.address).collect();
-                if refs.is_empty() { ui.label(RichText::new("None in this analysis range").small().color(MUTED)); }
-                for reference in refs.iter().take(100) {
-                    if ui.button(format!("{:016X}  {}", reference.from, reference.kind)).clicked() { jump = Some(reference.from); }
+                let refs: std::collections::BTreeSet<_> = analysis.references.iter()
+                    .chain(loaded.functions.functions.iter().flat_map(|f| f.references.iter()))
+                    .filter(|r| r.to == instruction.address).map(|r| (r.from, r.kind.as_str())).collect();
+                if refs.is_empty() { ui.label(RichText::new("None recovered in this program").small().color(MUTED)); }
+                for (from, kind) in refs.iter().take(100) {
+                    if ui.button(format!("{from:016X}  {kind}")).clicked() { jump = Some(*from); }
                 }
             } else { ui.label(RichText::new("Select an instruction in the listing").color(MUTED)); }
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_enabled_ui(self.pending.is_none(), |ui| self.annotation_editor(ui));
+            });
         });
         if let Some(address) = jump {
             self.navigate(address);
@@ -417,13 +636,16 @@ impl Workbench {
                 });
                 return;
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (tab, label) in [
                     (Tab::Listing, "Disassembly"),
                     (Tab::Hex, "Hex"),
                     (Tab::Strings, "Strings"),
                     (Tab::Sections, "Sections"),
                     (Tab::Blocks, "Basic blocks"),
+                    (Tab::Functions, "Functions"),
+                    (Tab::Linkage, "Linkage"),
+                    (Tab::Bookmarks, "Bookmarks"),
                 ] {
                     ui.selectable_value(&mut self.tab, tab, label);
                 }
@@ -446,7 +668,7 @@ impl Workbench {
                             .trim_start_matches("0X"),
                         16,
                     ) {
-                        Ok(address) => self.navigate(address),
+                        Ok(address) => self.navigate_address(address),
                         Err(_) => self.error = Some("Enter a hexadecimal virtual address".into()),
                     }
                 }
@@ -461,6 +683,9 @@ impl Workbench {
                 Tab::Strings => self.strings(ui),
                 Tab::Sections => self.sections(ui),
                 Tab::Blocks => self.blocks(ui),
+                Tab::Functions => self.functions(ui),
+                Tab::Linkage => self.linkage(ui),
+                Tab::Bookmarks => self.bookmarks(ui),
             }
         });
     }
@@ -502,21 +727,28 @@ impl Workbench {
                     .map(|b| format!("{b:02X}"))
                     .collect::<Vec<_>>()
                     .join(" ");
+                let annotation = loaded.metadata.annotations.get(&instruction.address);
+                let label = annotation
+                    .filter(|a| !a.label.is_empty())
+                    .map(|a| format!("  ; {}", a.label))
+                    .unwrap_or_default();
                 let text = format!(
-                    "{:016X}    {:<44}  {}",
-                    instruction.address, bytes, instruction.text
+                    "{:016X}    {:<44}  {}{}",
+                    instruction.address, bytes, instruction.text, label
                 );
                 let color = if instruction.target.is_some() {
                     GOLD
                 } else {
                     Color32::from_rgb(205, 215, 228)
                 };
-                let response = ui.add_sized(
-                    [ui.available_width().max(820.0), row_height],
-                    egui::Button::new(RichText::new(text).monospace().color(color))
-                        .selected(self.selected == Some(instruction.address))
-                        .frame(false),
-                );
+                let response = ui
+                    .add_sized(
+                        [ui.available_width().max(820.0), row_height],
+                        egui::Button::new(RichText::new(text).monospace().color(color))
+                            .selected(self.selected == Some(instruction.address))
+                            .frame(false),
+                    )
+                    .on_hover_text(annotation.map(|a| a.comment.as_str()).unwrap_or_default());
                 if response.clicked() {
                     self.selected = Some(instruction.address);
                 }
@@ -720,6 +952,20 @@ impl Workbench {
 impl eframe::App for Workbench {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.handle_close_request(ctx);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+            self.save_project(false);
+        }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::S,
+            )
+        }) {
+            self.save_project(true);
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
             self.pick_file();
         }
@@ -747,6 +993,7 @@ impl eframe::App for Workbench {
         self.sidebar(ctx);
         self.inspector(ctx);
         self.center(ctx);
+        self.unsaved_dialog(ctx);
     }
 }
 

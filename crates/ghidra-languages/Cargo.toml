@@ -1,0 +1,17 @@
+[package]
+name = "ghidra-languages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Java-free language catalog: .ldefs language definitions and .pspec processor context defaults"
+publish = false
+
+[dependencies]
+ghidra-pcode = { path = "../ghidra-pcode" }
+quick-xml = "0.41"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ghidra-core", "crates/ghidra-desktop", "crates/ghidra-project", "crates/ghidra-pcode", "crates/ghidra-sleigh"]
+members = ["crates/ghidra-core", "crates/ghidra-desktop", "crates/ghidra-languages", "crates/ghidra-project", "crates/ghidra-pcode", "crates/ghidra-sleigh"]
 resolver = "2"
 
 [workspace.package]

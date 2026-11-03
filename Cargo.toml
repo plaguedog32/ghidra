@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/ghidra-core", "crates/ghidra-desktop"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[profile.release]
+lto = "thin"
+strip = true
+

@@ -90,3 +90,7 @@ core.*
 __pycache__
 
 gradle.lockfile
+
+# Native Rust build output (keep the application lockfile reproducible).
+/target/
+!/Cargo.lock

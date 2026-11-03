@@ -1,0 +1,15 @@
+[package]
+name = "ghidra-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Java-free binary loading and x86 analysis for the Rust Ghidra port"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "intel", "instr_info"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+

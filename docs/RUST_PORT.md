@@ -640,9 +640,10 @@ types, ABI return values or structured decompilation.
 The preceding value checkpoint's CI run `41844505885` passed stable and Rust
 1.88 jobs on Windows and Linux. Both macOS jobs were cancelled before any
 runner was assigned; GitHub annotated hosted ARM64 capacity constraints, with
-no failed test/build step. The newer simplification run `41847716217` is
-queued. macOS verification remains open until those jobs execute; the ARM64
-matrix target is retained.
+no failed test/build step. The simplification run `41847716217` likewise passed
+all four Windows/Linux jobs, while its two macOS jobs never acquired a runner.
+The newer combined run `41854064085` is queued. macOS verification remains open
+until those jobs execute; the ARM64 matrix target is retained.
 
 ### Parallel-copy scheduling and phi lowering
 

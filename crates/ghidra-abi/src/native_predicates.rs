@@ -63,7 +63,8 @@ pub struct NativePredicateMatch {
 pub struct NativePrototypeTypes<'a> {
     pub result: NativeTypeId,
     pub parameters: &'a [NativeTypeId],
-    /// The first variable parameter slot; the end of the list is legal.
+    /// `None` models firstVarArgSlot=-1. `Some(n)` is the first variable
+    /// parameter slot; the end of the list is legal.
     pub first_vararg: Option<usize>,
 }
 
@@ -124,7 +125,7 @@ impl From<NativeTypeError> for NativePredicateError {
         match error {
             NativeTypeError::Conversion(error) => Self::Conversion(error),
             NativeTypeError::UnknownSource(ty) => Self::UnknownType(ty),
-            // Direct native-ID queries preserve the native ID namespace.
+            // Preserve remaining graph errors, including the native ID namespace.
             other => Self::Graph(other),
         }
     }

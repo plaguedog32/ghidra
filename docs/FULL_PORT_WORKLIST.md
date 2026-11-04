@@ -75,8 +75,15 @@ The APIs have independent review approval and still need integration into
 signature allocation and call effects; graph conversion alone does not meet
 the decompiler gate.
 
+Direct native-object predicate queries now cover synthesized types and native
+prototype IDs, with independent approval at `0123268173`. Full rule dispatch
+and per-member actions remain governed by the source-derived
+[native allocation contract](NATIVE_MEMBER_ALLOCATION.md).
+ELF RELR metadata inspection remains pending under its
+[loader contract](ELF_RELR_PORT_CONTRACT.md); relocations are not applied.
+
 The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
-839 workspace tests, 23 doctests and the release executable pass.
+846 workspace tests, 23 doctests and the release executable pass.
 MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
 CI run 41839264716 passed the locked Rust 1.88 tests/doc examples and stable
 checks/source probes/release builds on Windows, Linux and macOS at source

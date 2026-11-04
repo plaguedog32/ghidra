@@ -1687,18 +1687,20 @@ Semantic rejection, including the primitive maximum, is `false`; resource
 exhaustion is a `Limit` error. A conversion failure is an error only when a
 reached filter evaluates that type.
 
-The source-ID methods above remain the Java-transport bridge. Direct native
+The source-ID methods address converted source objects and use the same
+native filter semantics. Direct native
 objects can be queried with `matches_filter_native`, `matches_rule_native`
 and `homogeneous_float_aggregate_native`. `NativePrototypeTypes` carries
 native IDs for the result and parameter list. These entry points accept
 decoder-synthesized bitfield bases, Unknown-byte arrays and opaque union
-fields; no source ID is invented for them. IDs belong to the supplied graph.
+fields; no source ID is invented for them. IDs belong to the supplied graph;
+an equally numbered ID from another graph cannot be detected.
 Unknown native IDs retain the native error namespace, while failed source
 conversions remain deferred until a reached filter reads the object.
 
 Both ID paths share the same evaluator and work accounting. Prototype
 validation borrows the supplied slice and creates no translated parameter
-list. Five directed native-ID test groups cover synthetic objects in both
+list. Seven directed native-ID test groups cover synthetic objects in both
 byte orders, native prototype qualifiers, short-circuit/error precedence,
 HFA details and every lower work budget. An absolute 21-unit rule pin checks
 header, parameter, size-list and qualifier charges. Source/native queries
@@ -1708,8 +1710,13 @@ wrong ID-domain bounds/resolution, forced conversion during preflight, missing
 parameter charges or ID checks, conversion before filter validation, wrong
 datatype-at targets and source/native error-domain confusion. The scratch
 source was restored and the parent source hash stayed unchanged. This API
-extension is awaiting independent review; the earlier approval below applies
-to the preceding implementation.
+extension received independent approval at `0123268173`. The reviewer checked
+the retained native source, reran the directed/native/source-oracle suites on
+stable and Rust 1.88, and added six separate probes covering invalid HFA IDs,
+preflight order, reached failed qualifier targets, old/new equivalence across
+budget combinations, graph-local IDs and maximal work limits. Committed
+regressions now also pin those public boundary paths. Full rule dispatch and
+action execution remain separate work.
 
 ## Native validation evidence
 

@@ -560,3 +560,174 @@ fn source_bridge_queries_keep_the_same_results_errors_and_work() {
         }
     }
 }
+
+#[test]
+fn native_hfa_invalid_ids_preserve_limit_and_conversion_order() {
+    let f = fixture(Endianness::Little);
+    for ty in [
+        NativeTypeId(f.graph.native_count()),
+        NativeTypeId(usize::MAX),
+    ] {
+        assert_eq!(
+            f.graph
+                .homogeneous_float_aggregate_native(ty, None, Default::default()),
+            Err(NativePredicateError::Graph(NativeTypeError::UnknownNative(
+                ty
+            ))),
+        );
+        assert_eq!(
+            f.graph.homogeneous_float_aggregate_native(
+                ty,
+                None,
+                NativePredicateLimits {
+                    max_work: 0,
+                    ..Default::default()
+                },
+            ),
+            Err(NativePredicateError::Limit("work")),
+        );
+    }
+    assert_eq!(
+        f.graph
+            .homogeneous_float_aggregate_native(id(f.incomplete), None, Default::default()),
+        Err(NativePredicateError::Conversion(
+            NativeConversionError::Incomplete(f.incomplete)
+        )),
+    );
+}
+
+#[test]
+fn native_rule_preflight_and_reached_qualifiers_report_the_first_fault() {
+    let f = fixture(Endianness::Little);
+    let result_id = NativeTypeId(usize::MAX);
+    let candidate_id = NativeTypeId(usize::MAX - 1);
+    let parameter_id = NativeTypeId(f.graph.native_count());
+    let parameters = [f.array, parameter_id];
+    let prototype = NativePrototypeTypes {
+        result: result_id,
+        parameters: &parameters,
+        first_vararg: None,
+    };
+    let any = rule(filter(DatatypeClass::Any), vec![]);
+    let query = |candidate, prototype, limits| {
+        f.graph
+            .matches_rule_native(&any, candidate, prototype, 0, limits)
+    };
+    let unknown = |ty| {
+        Err(NativePredicateError::Graph(NativeTypeError::UnknownNative(
+            ty,
+        )))
+    };
+    assert_eq!(
+        query(candidate_id, prototype, Default::default()),
+        unknown(result_id)
+    );
+    assert_eq!(
+        query(
+            candidate_id,
+            NativePrototypeTypes {
+                result: f.int,
+                ..prototype
+            },
+            Default::default()
+        ),
+        unknown(candidate_id),
+    );
+    let prototype = NativePrototypeTypes {
+        result: f.int,
+        ..prototype
+    };
+    assert_eq!(
+        query(f.int, prototype, Default::default()),
+        unknown(parameter_id)
+    );
+    assert_eq!(
+        query(
+            candidate_id,
+            prototype,
+            NativePredicateLimits {
+                max_parameters: 1,
+                ..Default::default()
+            }
+        ),
+        Err(NativePredicateError::Limit("parameters")),
+    );
+    // Header and first parameter use exactly two work units. Exhaustion
+    // wins before checking the invalid second parameter's ID.
+    assert_eq!(
+        query(
+            f.int,
+            prototype,
+            NativePredicateLimits {
+                max_work: 2,
+                ..Default::default()
+            }
+        ),
+        Err(NativePredicateError::Limit("work"))
+    );
+    assert_eq!(
+        query(
+            f.int,
+            prototype,
+            NativePredicateLimits {
+                max_work: 3,
+                ..Default::default()
+            }
+        ),
+        unknown(parameter_id)
+    );
+
+    let parameters = [f.array, id(f.incomplete)];
+    let prototype = NativePrototypeTypes {
+        result: id(f.incomplete),
+        parameters: &parameters,
+        first_vararg: None,
+    };
+    for index in [-1, -42, 1] {
+        let reached = rule(
+            filter(DatatypeClass::Any),
+            vec![RuleQualifier::DatatypeAt {
+                index,
+                datatype: filter(DatatypeClass::Any),
+            }],
+        );
+        assert_eq!(
+            f.graph
+                .matches_rule_native(&reached, f.int, prototype, 0, Default::default()),
+            Err(NativePredicateError::Conversion(
+                NativeConversionError::Incomplete(f.incomplete)
+            )),
+        );
+    }
+    let outside = rule(
+        filter(DatatypeClass::Any),
+        vec![RuleQualifier::DatatypeAt {
+            index: 2,
+            datatype: filter(DatatypeClass::Any),
+        }],
+    );
+    assert_eq!(
+        f.graph
+            .matches_rule_native(&outside, f.int, prototype, 0, Default::default())
+            .unwrap()
+            .rejection,
+        Some(PredicateRejection::Qualifier(0)),
+    );
+    let stopped = rule(
+        filter(DatatypeClass::Any),
+        vec![
+            RuleQualifier::Position { index: 1 },
+            RuleQualifier::DatatypeAt {
+                index: 1,
+                datatype: filter(DatatypeClass::Any),
+            },
+        ],
+    );
+    assert_eq!(
+        f.graph
+            .matches_rule_native(&stopped, f.int, prototype, 0, Default::default())
+            .unwrap()
+            .rejection,
+        Some(PredicateRejection::Qualifier(0)),
+    );
+}

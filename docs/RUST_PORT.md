@@ -131,7 +131,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
 ```
 
-The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produces native release executables on Windows, Linux, and macOS. A separate three-host matrix tests all workspace targets and doctests with exactly Rust 1.88.0. It contains no Java installation or Gradle step. The old `build-ghidra.yml` remains restricted to the upstream `master` branch for reference maintenance; it is not the Rust build.
+The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produces native release executables on Windows, Linux, and both ARM64 and Intel macOS hosts. A matching four-host matrix tests all workspace targets and doctests with exactly Rust 1.88.0. It contains no Java installation or Gradle step. The old `build-ghidra.yml` remains restricted to the upstream `master` branch for reference maintenance; it is not the Rust build.
 
 ## Validation of this milestone
 
@@ -162,7 +162,7 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 839 default workspace tests and
+The current analysis/ABI/datatype/SSA tree passes 846 default workspace tests and
 23 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
@@ -188,6 +188,8 @@ evaluation-order gaps; both have regression fixes and independent re-review
 approval at `51850a14ba`. Compiler `storage`/`a` aliases now follow document order
 and validate both values. Eight opt-in native general/dual-class join probes
 pass in a Rust 1.88 release build, including x86-64 GCC and MIPS64 LE/BE.
+Native-object predicate queries now accept synthesized datatype identities
+directly, with independent approval at `0123268173`; details are recorded below.
 Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
@@ -735,6 +737,15 @@ cancelled with runner ID 0 and no steps; GitHub again annotated hosted ARM64
 capacity constraints. macOS verification of these increments remains open
 until those jobs execute; the ARM64 matrix target is retained.
 
+Desktop integration run `41865643693` and dual-class ABI run `41871171918`
+also passed all four Windows/Linux jobs. The latter included all three compiled
+dual-class source profiles. Its two macOS jobs were cancelled with runner ID 0;
+the native job again recorded hosted ARM64 capacity constraints. The workflow
+now additionally includes the supported `macos-15-intel` host in both matrices,
+with architecture-specific artifact names. This expands host coverage; the
+new Intel jobs and the existing ARM64 jobs must execute before inheriting a
+cross-platform claim for the current increment.
+
 ### Desktop reduced-expression inspection
 
 Dataflow now offers **Reduced expressions**, built lazily from the completed
@@ -872,6 +883,30 @@ CI now runs the three dual-class compiled-source profiles explicitly.
 
 This supplies one datatype-driven rule action, not whole-signature allocation,
 rule dispatch, call effects or a desktop calling-convention workflow.
+
+### Rule matching on native objects
+
+`NativeTypeGraph` now exposes direct native-ID filter, rule and HFA queries,
+with `NativePrototypeTypes` carrying result/parameter IDs. Decoder-synthesized
+bitfield bases, byte arrays and opaque union fields can be tested without a
+fabricated source ID. Both public ID paths share the native evaluator;
+source-ID results, errors, deferred conversions and work charges remain
+unchanged. Prototype validation borrows the supplied slice, performs bounded
+ID checks and leaves conversions to filters that are actually reached.
+
+Independent review approved `0123268173` with no required changes. Six
+separate probes checked native error domains, result/candidate/parameter
+validation order, reached failed qualifier targets, detailed equivalence
+across budgets and graph-local identities. Seven committed test groups now
+pin those paths, synthetic objects in both byte orders, HFA behavior, exact
+limits and an absolute 21-unit rule cost. All ten compiling scratch mutations
+were caught, with source restoration and an unchanged parent source hash.
+
+The combined tree passes 846 default workspace tests and 23 doctests on
+stable and Rust 1.88, workspace Clippy and Rust 1.88 rustdoc with warnings
+denied, formatting and both Windows release builds. Java-free raw/function
+default and simplified report bytes remain unchanged. These are query APIs;
+the full dispatcher, actions, signatures and call effects remain incomplete.
 
 ### Saved pause: expression inspection milestone
 

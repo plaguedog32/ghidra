@@ -134,8 +134,8 @@ succeeds. A child failure wins immediately.
 
 Full rule dispatch does not exist yet. Extraction can return synthesized
 NativeTypeId objects with no source TypeId. New direct native-ID predicate
-entry points and `NativePrototypeTypes` address that representation gap;
-their independent review is pending. The future dispatcher must use those
+entry points and `NativePrototypeTypes` address that representation gap,
+with independent review approval at `0123268173`. The future dispatcher must use those
 native objects directly instead of inventing a source-ID translation.
 Class-only support can be a staged API, but omitted storage must remain
 explicitly unsupported until its actual dispatch contract is available.

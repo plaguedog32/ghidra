@@ -129,3 +129,11 @@ cargo run -p ghidra-desktop -- --compiler-spec \
 The `ghidra-rs.compiler-spec` version 1 JSON contains the typed declarations and coverage diagnostics. It captures data organization, stack and return-address metadata, ordered parameter entries/groups/joins, prototype rules, aliases and merged models, clobbered/unaffected registers, and injection text. All 107 distinct referenced compiler specs parse with no diagnostics; 178 prototypes, 1551 entries, 230 rules, 28 groups and 92 join entries are captured. Those counts establish data coverage, not ABI correctness for native calls.
 
 Register names and address spaces remain unresolved. No parameter storage is allocated, model rule is evaluated, merged ABI is scored, or injection text is compiled/executed. Compiler context/tracked settings are captured but are not yet applied by the instruction lifter. `is_fully_modeled()` describes captured declarations, not an executable calling convention. The empty upstream emulator `mock.cspec` is rejected as malformed XML. ABI resolution, argument/return assignment, and integration with function analysis remain required.
+
+Compiler-spec reading has separate semantic-work, diagnostic-count and diagnostic-byte
+budgets in addition to the XML bounds. Exhaustion returns an error instead of a
+partial specification. Conflicting parameter groups stop at the first conflict;
+large valid groups can exhaust the configurable work budget. Static injection
+bodies must be nonempty and last in their payload; their original text is retained,
+without compilation. Numeric size lists and nonnegative Java-int fields are
+validated separately from address offsets.

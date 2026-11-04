@@ -13,7 +13,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
 | `crates/ghidra-graph` | Bounded traversal, SCCs, dominators/frontiers, natural loops, and finite-exit-path post-dominators |
 | `crates/ghidra-cfg` | Raw P-code control flow, operation identities, instruction-entry provenance, calls and explicit terminal outcomes |
-| `crates/ghidra-ssa` | Bounded generic unpruned SSA construction and independent reaching-definition verification |
+| `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware scalar storage, abstract memory dependencies, temporary lifetimes, opaque effects and P-code-to-SSA adaptation |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
@@ -39,7 +39,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | Native P-code CFGs and alias-aware SSA; x86/x64 function lifting, Dataflow view and headless reports | Other processor function flows, liveness pruning, dataflow simplification, ABI/type recovery and structured output |
+| Decompilation | Native P-code CFGs and alias-aware liveness-pruned SSA; x86/x64 function lifting, Dataflow view and headless reports | Other processor function flows, dataflow simplification, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -122,8 +122,8 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 Local validation on Windows with Rust 1.99.1:
 
 - Workspace tests cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, language/processor/compiler XML data, context precedence, per-token byte order, mixed-endian source lifting, compiled-source reuse, checked continuation and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window. Nine opt-in processor probes cover seven source configurations, the worker's Thumb IT continuation, and recovered x86 function lifting/SSA/execution.
-- The graph crate contributes 12 integration tests and a doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. P-code CFG/SSA now uses the graph crate; desktop function-graph integration remains pending.
-- P-code CFG tests cover relative/native control flow, calls, explicit terminal exits, no-ops, delay extents and instruction-frame provenance. SSA tests include path-execution oracles, undefined entry values, entry loops, irreducible graphs, exact limits and 100,000-node inputs. The adapter adds register-alias joins, memory versions, opaque effects, frame resets, concrete-machine trace comparisons, and bounded large-loop behavior. SSA is unpruned; whole-space memory tokens are conservative dependencies, not pointer disambiguation or decompiled output.
+- The graph crate contributes 12 integration tests and a doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. P-code CFG/SSA uses the graph crate; the desktop lists function CFG nodes, while graphical layout remains pending.
+- P-code CFG tests cover relative/native control flow, calls, explicit terminal exits, no-ops, delay extents and instruction-frame provenance. SSA tests include path-execution oracles, undefined entry values, entry loops, irreducible graphs, exact limits and 100,000-node inputs. The adapter adds register-alias joins, memory versions, opaque effects, frame resets, concrete-machine trace comparisons, and bounded large-loop behavior. Application analysis now uses liveness-pruned SSA; whole-space memory tokens are conservative dependencies, not pointer disambiguation or decompiled output.
 - The headless analysis command passes nine report/schema tests and two process-level tests, including a Java-free subprocess and empty stdout on argument/input failures. The optimized executable also analyzed `alias-branch.json` with `JAVA_HOME` empty and `PATH` restricted to Windows system files: 5 nodes, 10 SSA values and 1 phi, with verification enabled. Concrete `sum-loop.json` execution still returns 6 in 14 operations in the same environment.
 - Function analysis tests cover binary/source boundary agreement, catalog compatibility, context-commit rejection, incomplete recovery, bounded display text, compilation reuse, unknown calls, queue coalescing and stale responses. Populated function/storage views render through egui without changing project state. The real x86 source probe lifts a recovered PE loop function to verified SSA and executes its P-code to return 3.
 - The optimized `--analyze-function` command also lifts the retained PE32 WinHelloCPP entry at `401E46` with no Java available: 135 recovered instructions, 151 graph nodes, 10,967 SSA values and 2,206 phis. Its 32 calls use marked conservative effects, and incomplete recovery remains explicit. This is native dataflow inspection, not structured decompiled output.
@@ -142,9 +142,45 @@ Local validation on Windows with Rust 1.99.1:
 
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.
 
-## Pause checkpoint
+## Development checkpoint
 
-Work is paused at the user's request. The latest integrated feature commit is
+Work resumed after the saved pause below. Generic liveness-pruned SSA is now
+integrated at `f95bede4b6`, preserving the original unpruned constructor. Its
+independent review approved the change: 43 supplied tests passed, an exhaustive
+oracle checked 332,940 small programs, and focused probes rejected 57,593 removed
+live phis and 34,032 dead-phi mutations. These finite probes do not prove all inputs.
+
+The P-code adapter now requests pruning by default, preserves instruction-entry
+temporary resets, and reports the actual mode in JSON and the desktop. Library
+callers can still request unpruned placement. A 10,000-instruction loop retains
+all frame resets and needs zero temporary phis under a 100-phi cap; unpruned
+construction still fails explicitly at that cap. Expression simplification,
+ABI/type recovery and structured decompiler output remain required.
+
+The compiler context-diagnostic budget gap has an implementation fix: the shared
+reader emits diagnostics directly into the compiler reader's budgets, stops when
+rejected, clips quoted text before formatting, and checks budgets before cloning
+paths. All 90 language tests and language Clippy pass, including real catalog
+specs, exact long-path budget boundaries and early cancellation regressions.
+Independent re-review of the complete compiler hardening remains pending, as
+does review of the function worker, Dataflow UI and application pruning wiring.
+
+The next decompiler stages are def-use indexing, expression/dataflow
+simplification, ABI/storage resolution, type propagation and structured output.
+The full replacement goal remains active and unfinished.
+
+This continuation passes 361 default workspace tests, six doctests, formatting
+and workspace Clippy with warnings denied. The release executable builds and
+reports verified pruned SSA with `JAVA_HOME` empty and `PATH` restricted to
+Windows System32. `alias-branch.json` retains its one live phi. The retained
+WinHelloCPP entry still has 135 instructions and 151 graph nodes, now with
+10,953 values and 2,192 phis. Its opaque calls retain conservative dependencies
+and incomplete recovery remains explicit. These checks do not establish full
+Ghidra parity or cross-platform validation of this unpublished increment.
+
+### Previous pause
+
+Work was paused at the user's request. The latest integrated feature commit then was
 `fcd1c108cda0b48e5fb8b270dbf8e922778e2caa` on `rust-desktop`. The source and
 documentation are committed locally; these later increments have not been pushed.
 The full Ghidra replacement goal remains unfinished.
@@ -156,7 +192,8 @@ run separately and passed. Java-free release checks cover supplied P-code and
 the retained PE32 function described above. The Dataflow views have headless egui
 render tests; native click-through verification remains unavailable.
 
-Resume with these items:
+Outstanding items recorded at that pause (the continuation above supersedes their
+implementation status):
 
 1. Review the new binary-function worker, Dataflow UI, context-commit reporting
    and `--analyze-function` command. The earlier storage/SSA adapter and

@@ -709,20 +709,34 @@ fn long_native_loop_scopes_remain_iterative_and_bounded() {
         })
         .collect();
     let cfg = cfg(instructions, Endianness::Little);
-    // Every lexical temp has a definition. Unpruned phi placement across this
-    // huge loop is intentionally bounded rather than allowed quadratic output.
-    let result = PcodeSsa::new(
-        cfg,
-        &[],
-        AnalysisOptions::native(),
-        AnalysisLimits {
-            ssa: ghidra_ssa::Limits {
-                max_phis: 100,
-                ..Default::default()
-            },
+    // Every lexical temp has a definition, but it is killed on native entry and
+    // written before use. These temps require no live loop phis.
+    let limits = AnalysisLimits {
+        ssa: ghidra_ssa::Limits {
+            max_phis: 100,
             ..Default::default()
         },
+        ..Default::default()
+    };
+    let pruned = PcodeSsa::new(cfg.clone(), &[], AnalysisOptions::native(), limits).unwrap();
+    assert_eq!(pruned.ssa().placement(), ghidra_ssa::PhiPlacement::Pruned);
+    assert_eq!(pruned.ssa().phi_count(), 0);
+    pruned.ssa().verify(pruned.raw()).unwrap();
+    assert_eq!(
+        pruned
+            .cfg()
+            .edges()
+            .iter()
+            .enumerate()
+            .filter(|(edge, _)| pruned.edge_reset(*edge).is_some())
+            .count(),
+        count as usize,
+        "native-entry resets remain even when their dead phis are pruned"
     );
+    // Callers can still request the original bounded unpruned construction.
+    let mut unpruned = AnalysisOptions::native();
+    unpruned.phi_placement = ghidra_ssa::PhiPlacement::Unpruned;
+    let result = PcodeSsa::new(cfg, &[], unpruned, limits);
     assert!(matches!(
         result,
         Err(AnalysisError::Ssa(ghidra_ssa::Error::LimitExceeded { .. }))

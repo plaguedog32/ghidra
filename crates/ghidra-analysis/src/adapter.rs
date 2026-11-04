@@ -4,7 +4,9 @@ use std::sync::Arc;
 use ghidra_cfg::{Arrival, Cfg, EdgeId, ProgramPoint, Statement};
 use ghidra_graph::{Graph, NodeId};
 use ghidra_pcode::{PcodeOperation, SpaceKind, Varnode};
-use ghidra_ssa::{EntryState, RawProgram, RawStatement, Ssa, StatementId, VariableId};
+use ghidra_ssa::{
+    EntryState, PhiPlacement, RawProgram, RawStatement, Ssa, StatementId, VariableId,
+};
 use thiserror::Error;
 
 use crate::{
@@ -46,6 +48,8 @@ pub struct AnalysisOptions {
     pub unique_scope: UniqueScope,
     pub unknown_effects: UnknownEffectPolicy,
     pub entry: EntryPolicy,
+    /// Pruning omits phis for storage that is dead on entry to the join.
+    pub phi_placement: PhiPlacement,
 }
 
 impl AnalysisOptions {
@@ -54,6 +58,7 @@ impl AnalysisOptions {
             unique_scope: UniqueScope::Instruction,
             unknown_effects: UnknownEffectPolicy::Reject,
             entry: EntryPolicy::default(),
+            phi_placement: PhiPlacement::Pruned,
         }
     }
 
@@ -444,7 +449,7 @@ impl PcodeSsa {
             }
         }
         let graph = Arc::new(Graph::new(node_count, edges, limits.graph)?);
-        let ssa = Ssa::construct(graph, cfg.entry(), &raw, limits.ssa)?;
+        let ssa = Ssa::construct_with(graph, cfg.entry(), &raw, limits.ssa, options.phi_placement)?;
         Ok(Self {
             cfg,
             layout,

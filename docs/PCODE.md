@@ -67,8 +67,10 @@ nonreturning behavior remain unmodeled.
 
 Memory uses abstract whole-space dependency tokens. Aliased registers use
 disjoint scalar cells with the byte order of their own space. Neither is pointer
-disambiguation or type recovery. SSA is currently unpruned and may contain dead
-phis; resource limits bound their growth. This output is an analysis format,
+disambiguation or type recovery. SSA uses liveness pruning, omitting phis for
+storage that is dead on entry to a join. Resource limits bound live-in pairs,
+phis and work; exhaustion is an error. The JSON `policies.ssa_form` records the
+actual placement mode. This output is an analysis format,
 not structured decompiled code or an execution-input format.
 
 Input is limited to a regular JSON file of 16 MiB. Native analysis phases have
@@ -120,7 +122,7 @@ policy; `analysis` contains the P-code analysis schema described above.
 
 Each function is limited to 5,000 native instructions, 100,000 lifted operations,
 4,096 bytes of display text per instruction and 4 MiB total display text, plus
-the native analysis budgets and a 64 MiB JSON cap. SSA is currently unpruned.
+the native analysis budgets and a 64 MiB JSON cap. SSA uses liveness pruning.
 There is no ABI/type recovery, indirect-target resolution, expression
 simplification or structured decompiled output yet. Instruction-boundary checks
 and SSA verification do not establish complete instruction-semantic parity.

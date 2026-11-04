@@ -155,13 +155,19 @@ construction, and SSA each have separate finite budgets. SSA runs two graph
 analyses with separate graph budgets, and an explicit `ssa().verify(raw())`
 starts its own budgets. Ordinary Rust allocation failure is not caught.
 
-SSA is unpruned, so instruction-local variables in a large native loop can
-produce many dead phis. The phi/work limits stop that growth explicitly. This
-adapter does not perform liveness pruning, constant propagation, pointer
-disambiguation, call resolution, type inference, or out-of-SSA conversion.
+Both `AnalysisOptions::native()` and `pcode_program()` use liveness-pruned SSA:
+joins receive a phi only for storage that is live on entry. Native-entry resets
+still define undefined temporary state; pruning does not extend a temporary's
+lifetime. Callers can set `phi_placement = ghidra_ssa::PhiPlacement::Unpruned`
+to retain the original construction. `ssa().placement()` reports the actual
+mode. Sparse live-in pairs, phis and work have separate limits; exhaustion is
+an error, without falling back to another mode. This adapter does not perform
+constant propagation, pointer disambiguation, call resolution, type inference,
+or out-of-SSA conversion.
 
 Adapter tests cover partial-register diamonds in both byte orders, memory-token
 versions, opaque clobbers, native re-entry versus internal backedges, merged
 instruction/no-op boundaries, unreachable metadata, entry policies, exact work
-and count limits, a 10,000-instruction loop, and semantic comparison of renamed
+and count limits, a 10,000-instruction loop that fits a 100-phi cap with no dead
+temporary phis while retaining all native-entry resets, and semantic comparison of renamed
 aliases and loop phis against concrete machine traces.

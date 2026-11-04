@@ -203,7 +203,11 @@ impl Workbench {
         if !view.complete {
             ui.colored_label(GOLD, "Binary function recovery is incomplete. This result covers the recovered instructions.");
         }
-        ui.label(RichText::new("Instruction lengths and bytes checked; instruction-local temporaries start undefined. Memory dependencies use whole address spaces. SSA is currently unpruned.").small().color(MUTED));
+        let placement = match analysis.ssa().placement() {
+            ghidra_ssa::PhiPlacement::Unpruned => "Unpruned SSA.",
+            ghidra_ssa::PhiPlacement::Pruned => "Liveness-pruned SSA.",
+        };
+        ui.label(RichText::new(format!("Instruction lengths and bytes checked; instruction-local temporaries start undefined. Memory dependencies use whole address spaces. {placement}")).small().color(MUTED));
         ui.separator();
         if self.dataflow.show_storage {
             let variables = analysis.layout().variables();

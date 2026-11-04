@@ -12,7 +12,7 @@ use ghidra_cfg::{
 };
 use ghidra_graph::{ImmediateDominator, NaturalLoop, PostDominator};
 use ghidra_pcode::{AddressSpace, PcodeInstruction, machine::ExecutionInput};
-use ghidra_ssa::{EntryState, Predecessor, StatementId, ValueOrigin};
+use ghidra_ssa::{EntryState, PhiPlacement, Predecessor, StatementId, ValueOrigin};
 use serde::Serialize;
 
 const MAX_OUTPUT: usize = 64 * 1024 * 1024;
@@ -482,7 +482,10 @@ fn write_report(analysis: &PcodeSsa, initializers: Initializers) -> Result<Vec<u
                 UnknownEffectPolicy::Reject => "reject",
                 UnknownEffectPolicy::HavocAll => "havoc_all_observed_storage",
             },
-            ssa_form: "unpruned",
+            ssa_form: match ssa.placement() {
+                PhiPlacement::Unpruned => "unpruned",
+                PhiPlacement::Pruned => "pruned",
+            },
             ssa_verified: true,
             memory_model: "whole_address_space",
             initial_state: "symbolic_entry_declarations",
@@ -730,12 +733,41 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_export_reports_the_constructed_phi_placement() {
+        let program = input();
+        let cfg = Arc::new(
+            Cfg::new(
+                CfgInput::new(
+                    program.spaces,
+                    program.code_space,
+                    program.entry,
+                    program.instructions,
+                ),
+                Default::default(),
+            )
+            .unwrap(),
+        );
+        for (placement, expected) in [
+            (PhiPlacement::Unpruned, "unpruned"),
+            (PhiPlacement::Pruned, "pruned"),
+        ] {
+            let mut options = AnalysisOptions::pcode_program();
+            options.phi_placement = placement;
+            let analysis = PcodeSsa::new(cfg.clone(), &[], options, limits()).unwrap();
+            analysis.ssa().verify(analysis.raw()).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&symbolic_json(&analysis).unwrap()).unwrap();
+            assert_eq!(json["policies"]["ssa_form"], expected);
+        }
+    }
+
+    #[test]
     fn sum_loop_schema_links_points_phi_values_and_terminal_outcomes() {
         let report = report(input(), CommandOptions::default());
         assert_eq!(report["schema"], "ghidra-rs.pcode-analysis");
         assert_eq!(report["schema_version"], 1);
         assert_eq!(report["policies"]["unique_scope"], "program");
-        assert_eq!(report["policies"]["ssa_form"], "unpruned");
+        assert_eq!(report["policies"]["ssa_form"], "pruned");
         assert_eq!(report["policies"]["ssa_verified"], true);
         assert_eq!(report["natural_loops"].as_array().unwrap().len(), 1);
         let header = report["natural_loops"][0]["header"].as_u64().unwrap() as usize;

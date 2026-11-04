@@ -72,7 +72,7 @@ fn little_instruction_big_data_load_preserves_register_alias_layout() {
     fs::write(directory.path().join("tiny.slaspec"), source).unwrap();
     definition.endian = Endianness::Big;
     let mut language = SleighLanguage::from_language(&definition, &BTreeMap::new()).unwrap();
-    assert_eq!(language.instruction_endianness(), Endianness::Little);
+    assert_eq!(language.source_endianness(), Endianness::Little);
     assert!(
         language
             .spaces()
@@ -107,12 +107,14 @@ fn little_instruction_big_data_load_preserves_register_alias_layout() {
 #[test]
 fn incompatible_endian_and_truncated_spaces_fail_explicitly() {
     let (_directory, mut definition) = recipe("<processor_spec/>", "");
+    definition.endian = Endianness::Big;
     definition.instruction_endian = Endianness::Big;
     assert!(
         matches!(SleighLanguage::from_language(&definition, &BTreeMap::new()),
-        Err(Error::Unsupported(message)) if message.contains("instruction byte order"))
+        Err(Error::Unsupported(message)) if message.contains("data/instruction byte order"))
     );
     definition.instruction_endian = Endianness::Little;
+    definition.endian = Endianness::Little;
     definition.truncated_spaces.push(TruncatedSpace {
         space: "ram".into(),
         size: 2,
@@ -166,4 +168,43 @@ fn context_changes_inside_delay_bundles_are_rejected_before_commits() {
     assert!(matches!(language.decode(0x1000, &[16, 6]),
         Err(Error::Unsupported(message)) if message.contains("delay-slot")));
     assert_eq!(language.decode(0x1001, &[6]).unwrap().text, "base");
+}
+
+#[test]
+fn instruction_token_endian_can_differ_from_global_storage_order() {
+    let (directory, mut definition) = recipe("<processor_spec/>", "");
+    let source = include_str!("fixtures/big.slaspec").replace(
+        "define token instruction_word(16)",
+        "define token instruction_word(16) endian=little",
+    );
+    fs::write(directory.path().join("tiny.slaspec"), source).unwrap();
+    definition.endian = Endianness::Big;
+    definition.instruction_endian = Endianness::Little;
+    let mut language = SleighLanguage::from_language(&definition, &BTreeMap::new()).unwrap();
+    assert_eq!(language.source_endianness(), Endianness::Big);
+    assert_eq!(language.decode(0x1000, &[0x34, 0x12]).unwrap().text, "inc");
+    assert!(language.decode(0x1000, &[0x12, 0x34]).is_err());
+}
+
+#[test]
+fn explicit_overrides_have_the_same_precedence_for_raw_and_catalog_loading() {
+    let (_directory, definition) = recipe(CONTEXT, "");
+    let explicit = BTreeMap::from([("phase".into(), 1)]);
+    let mut catalog = SleighLanguage::from_language(&definition, &explicit).unwrap();
+    let mut raw =
+        SleighLanguage::from_spec(definition.source.available_path().unwrap(), &explicit).unwrap();
+    let per_call = BTreeMap::from([("phase".into(), 0)]);
+    assert_eq!(
+        raw.decode_with_defaults(0x1001, &[6], &per_call)
+            .unwrap()
+            .text,
+        "mode"
+    );
+    assert_eq!(
+        catalog
+            .decode_with_defaults(0x1001, &[6], &per_call)
+            .unwrap()
+            .text,
+        "mode"
+    );
 }

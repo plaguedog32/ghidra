@@ -10,7 +10,6 @@ use crate::{Error, SleighLanguage, guard};
 pub(super) struct CatalogContext {
     processor: ProcessorSpec,
     code_space: String,
-    pub(super) overrides: BTreeMap<String, u64>,
 }
 
 impl CatalogContext {
@@ -70,10 +69,15 @@ impl SleighLanguage {
             )));
         }
         let mut language = Self::from_spec(source, &BTreeMap::new())?;
-        if language.instruction_endianness != definition.instruction_endian {
+        // Match SleighLanguage's compatibility rule. A source's global endian
+        // declaration is also its register-storage layout, while individual
+        // instruction tokens can override that byte order (e.g. AArch64 BE).
+        if language.source_endianness != definition.endian
+            && definition.instruction_endian == definition.endian
+        {
             return Err(Error::Unsupported(format!(
-                "language {} declares {:?} instruction byte order, source declares {:?}",
-                definition.id, definition.instruction_endian, language.instruction_endianness
+                "language {} declares {:?} data/instruction byte order, source declares {:?}",
+                definition.id, definition.endian, language.source_endianness
             )));
         }
         let code_space = language
@@ -114,8 +118,8 @@ impl SleighLanguage {
         language.catalog_context = Some(CatalogContext {
             processor,
             code_space,
-            overrides: overrides.clone(),
         });
+        language.explicit_context = overrides.clone();
         Ok(language)
     }
 }

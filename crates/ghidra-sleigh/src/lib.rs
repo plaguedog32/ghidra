@@ -48,7 +48,8 @@ pub struct SleighLanguage {
     spaces: Vec<AddressSpace>,
     code_space: SpaceId,
     userops: Vec<String>,
-    instruction_endianness: Endianness,
+    source_endianness: Endianness,
+    explicit_context: BTreeMap<String, u64>,
     catalog_context: Option<catalog::CatalogContext>,
 }
 
@@ -170,7 +171,8 @@ impl SleighLanguage {
             spaces,
             code_space,
             userops,
-            instruction_endianness: endianness,
+            source_endianness: endianness,
+            explicit_context: overrides.clone(),
             catalog_context: None,
         })
     }
@@ -183,9 +185,10 @@ impl SleighLanguage {
         self.code_space
     }
 
-    /// Byte order declared by the source decoder. RAM data byte order can differ.
-    pub fn instruction_endianness(&self) -> Endianness {
-        self.instruction_endianness
+    /// Global `define endian` storage order. Instruction tokens can override
+    /// this, so it is not the byte order of every instruction in the source.
+    pub fn source_endianness(&self) -> Endianness {
+        self.source_endianness
     }
 
     /// CALLOTHER input zero indexes this table. Preserving a userop does not
@@ -232,8 +235,9 @@ impl SleighLanguage {
 
     /// Address-specific processor defaults sit beneath recorded `globalset`
     /// effects. They are recomputed for every request and cannot leak into the
-    /// next address. Global/user overrides supplied at compilation remain the
-    /// baseline for fields absent from `defaults`.
+    /// next address. Explicit overrides supplied at language loading win over
+    /// these defaults for both raw-source and catalog languages; recorded
+    /// context commits take precedence over that baseline.
     pub fn decode_with_defaults(
         &mut self,
         address: u64,
@@ -265,9 +269,7 @@ impl SleighLanguage {
             .transpose()?
             .unwrap_or_default();
         effective.extend(defaults.iter().map(|(name, value)| (name.clone(), *value)));
-        if let Some(context) = &self.catalog_context {
-            effective.extend(context.overrides.clone());
-        }
+        effective.extend(self.explicit_context.clone());
         let mut baseline = self.spec.new_context();
         for (name, value) in &effective {
             let field = self
@@ -307,7 +309,7 @@ impl SleighLanguage {
             if let Some(context) = &self.catalog_context {
                 let mut slot_defaults = context.at(slot_address)?;
                 slot_defaults.extend(defaults.clone());
-                slot_defaults.extend(context.overrides.clone());
+                slot_defaults.extend(self.explicit_context.clone());
                 if slot_defaults != effective {
                     return Err(Error::Unsupported(
                         "processor defaults change inside a delay-slot bundle".into(),

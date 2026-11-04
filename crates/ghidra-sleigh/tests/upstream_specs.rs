@@ -117,7 +117,7 @@ fn upstream_mips32_big_endian_source_compiles_and_lifts() {
 #[ignore = "compiles the full retained ARM7 mixed-endian specification"]
 fn upstream_arm7_little_instructions_big_data_load_executes() {
     let mut language = language("ARM:LEBE:32:v7LEInstruction");
-    assert_eq!(language.instruction_endianness(), Endianness::Little);
+    assert_eq!(language.source_endianness(), Endianness::Little);
     let lifted = language.decode(0x1000, &[0x00, 0x00, 0x91, 0xe5]).unwrap();
     let mut machine = Machine::new(language.spaces().to_vec(), 65536).unwrap();
     for register in language.registers().unwrap() {
@@ -148,5 +148,41 @@ fn upstream_arm7_little_instructions_big_data_load_executes() {
             .unwrap()
             .to_u64(),
         Some(0x12345678)
+    );
+}
+
+#[test]
+#[ignore = "compiles the full retained AArch64 big-data/little-token specification"]
+fn upstream_aarch64_big_data_little_instruction_tokens_execute() {
+    let mut language = language("AARCH64:BE:64:v8A");
+    assert_eq!(language.source_endianness(), Endianness::Big);
+    let mov = language.decode(0x1000, &[0x20, 0x00, 0x80, 0xd2]).unwrap();
+    assert!(mov.text.contains("mov"));
+    let mut machine = Machine::new(language.spaces().to_vec(), 65536).unwrap();
+    machine
+        .run(&[mov.instruction], language.code_space(), 0x1000, 1000)
+        .unwrap();
+    let x0 = language.register("x0").unwrap();
+    assert_eq!(machine.read_varnode(&x0).unwrap().to_u64(), Some(1));
+    let load = language.decode(0x1004, &[0x20, 0x00, 0x40, 0xf9]).unwrap();
+    machine
+        .write_varnode(
+            &language.register("x1").unwrap(),
+            &Value::from_u64(8, 0x2000).unwrap(),
+        )
+        .unwrap();
+    machine
+        .map_bytes(
+            language.code_space(),
+            0x2000,
+            &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
+        )
+        .unwrap();
+    machine
+        .run(&[load.instruction], language.code_space(), 0x1004, 1000)
+        .unwrap();
+    assert_eq!(
+        machine.read_varnode(&x0).unwrap().to_u64(),
+        Some(0x123456789abcdef0)
     );
 }

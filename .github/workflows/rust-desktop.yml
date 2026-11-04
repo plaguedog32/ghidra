@@ -65,6 +65,8 @@ jobs:
         run: cargo run --locked -p ghidra-desktop -- --run-pcode examples/pcode/sum-loop.json
       - name: Compile and lift retained processor sources
         run: cargo test --locked -p ghidra-sleigh --test upstream_specs -- --ignored --test-threads=1
+      - name: Verify Thumb IT context during desktop stepping
+        run: cargo test --locked -p ghidra-desktop upstream_thumb_it -- --ignored
       - name: Build native release
         run: cargo build --locked --release -p ghidra-desktop
       - name: Upload Windows executable

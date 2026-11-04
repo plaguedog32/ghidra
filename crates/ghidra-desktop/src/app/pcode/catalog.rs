@@ -395,7 +395,7 @@ mod tests {
         app.poll(&egui::Context::default());
         let address = app.selected.unwrap();
         app.pcode
-            .request(&app.loaded.as_ref().unwrap().image, address);
+            .request(&app.loaded.as_ref().unwrap().image, address, None);
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(response) = app.pcode.worker.as_ref().unwrap().try_recv().unwrap() {

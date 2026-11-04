@@ -152,7 +152,12 @@ impl PcodeState {
         }
     }
 
-    fn request(&mut self, image: &ghidra_core::BinaryImage, address: u64) {
+    fn request(
+        &mut self,
+        image: &ghidra_core::BinaryImage,
+        address: u64,
+        continuation: Option<u64>,
+    ) {
         let key = self.key(address);
         let prepared = parse_context(&self.context).and_then(|context| {
             if self.catalog.wanted.is_some() && self.catalog.definition.is_none() {
@@ -178,6 +183,7 @@ impl PcodeState {
         let worker = self.worker.get_or_insert_with(LiftingWorker::spawn);
         let request = LiftRequest {
             id,
+            continuation,
             generation: self.generation,
             config: LanguageConfig {
                 source: self
@@ -282,6 +288,7 @@ impl Workbench {
                 })
             });
         let mut navigation = None;
+        let mut continuation = None;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -303,6 +310,7 @@ impl Workbench {
                     self.pcode.history.push(address);
                 }
                 navigation = next;
+                continuation = self.pcode.view.as_ref().map(|(_, view)| view.request_id);
             }
             if let Some(address) = current {
                 ui.label(
@@ -357,10 +365,11 @@ impl Workbench {
             ui.label(RichText::new("Raw source settings apply to this session. Choose a catalog language to save processor settings in a project.").small().color(MUTED));
         }
         if edited {
+            continuation = None;
             self.pcode.invalidate();
             self.processor_configuration_changed();
         }
-        let mut lift = false;
+        let mut lift = continuation.is_some();
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -369,10 +378,12 @@ impl Workbench {
                 )
                 .clicked()
             {
+                continuation = None;
                 lift = true;
             }
             ui.checkbox(&mut self.pcode.automatic, "Follow selection");
             if ui.button("Reload source").clicked() {
+                continuation = None;
                 self.pcode.source_epoch = self.pcode.source_epoch.wrapping_add(1);
                 self.pcode.invalidate();
                 lift = true;
@@ -413,10 +424,10 @@ impl Workbench {
             && self.pending.is_none()
             && let Some(loaded) = &self.loaded
         {
-            self.pcode.request(&loaded.image, address);
+            self.pcode.request(&loaded.image, address, continuation);
         }
         ui.separator();
-        ui.label(RichText::new("Each inspection starts from processor defaults. Flow-dependent mode changes require explicit context overrides.").small().color(MUTED));
+        ui.label(RichText::new("Next instruction preserves decode context. Other selections start from processor defaults and may need surrounding flow context.").small().color(MUTED));
         if let Some((failed, error)) = &self.pcode.error
             && *failed == key
         {
@@ -440,7 +451,7 @@ impl Workbench {
         });
         ui.label(
             RichText::new(format!(
-                "{} operations · next {:016X} · {} delay slots · {}",
+                "{} operations · next {:016X} · {} delay slots · {} · {}",
                 view.instruction.ops.len(),
                 view.next_address,
                 view.delay_slots,
@@ -448,6 +459,11 @@ impl Workbench {
                     "compiled language reused"
                 } else {
                     "language compiled"
+                },
+                if view.context_continued {
+                    "continued context"
+                } else {
+                    "independent context"
                 }
             ))
             .small()

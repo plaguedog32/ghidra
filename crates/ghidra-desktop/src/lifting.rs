@@ -20,6 +20,8 @@ pub struct LanguageConfig {
 
 pub struct LiftRequest {
     pub id: u64,
+    /// Previous displayed request, only for an explicit Next-instruction step.
+    pub continuation: Option<u64>,
     pub generation: u64,
     pub config: LanguageConfig,
     pub address: u64,
@@ -35,6 +37,8 @@ pub struct LiftResponse {
 }
 
 pub struct LiftedView {
+    pub request_id: u64,
+    pub context_continued: bool,
     pub instruction: PcodeInstruction,
     pub disassembly: String,
     pub next_address: u64,
@@ -116,6 +120,13 @@ struct Compiled {
     config: LanguageConfig,
     language: SleighLanguage,
     names: BTreeMap<(SpaceId, u64, u32), String>,
+    last: Option<DecodeState>,
+}
+
+struct DecodeState {
+    id: u64,
+    generation: u64,
+    next_address: u64,
 }
 
 #[derive(Default)]
@@ -130,6 +141,21 @@ impl CompilerCache {
             .compiled
             .as_ref()
             .is_some_and(|cache| cache.config == request.config);
+        if let Some(previous) = request.continuation {
+            let valid = cache_hit
+                && self
+                    .compiled
+                    .as_ref()
+                    .and_then(|cache| cache.last.as_ref())
+                    .is_some_and(|last| {
+                        last.id == previous
+                            && last.generation == request.generation
+                            && last.next_address == request.address
+                    });
+            if !valid {
+                return Err("Previous decode context is unavailable or no longer matches this step. Lift the previous instruction again before continuing.".into());
+            }
+        }
         if !cache_hit {
             if let Some((config, error)) = &self.failed
                 && *config == request.config
@@ -156,6 +182,7 @@ impl CompilerCache {
                     config: request.config.clone(),
                     language,
                     names,
+                    last: None,
                 })
             })();
             match compiled {
@@ -170,10 +197,11 @@ impl CompilerCache {
             }
         }
         let cache = self.compiled.as_mut().expect("successful compilation");
-        // Manual selections are independent inspections, not disassembly flow.
-        // Applying address-ordered globalset commits across selections makes
-        // ARM/Thumb decoding depend on navigation history.
-        cache.language.reset_context();
+        // Arbitrary selections cannot inherit navigation history. Only a
+        // checked step from the last displayed result carries decode context.
+        if request.continuation.is_none() {
+            cache.language.reset_context();
+        }
         let decoded =
             cache
                 .language
@@ -201,6 +229,8 @@ impl CompilerCache {
                 .collect();
             let json = crate::pcode_cli::lifted_json(&cache.language, &decoded, request.address)?;
             Ok(LiftedView {
+                request_id: request.id,
+                context_continued: request.continuation.is_some(),
                 instruction: decoded.instruction,
                 disassembly: decoded.text,
                 next_address: decoded.next_address,
@@ -209,6 +239,11 @@ impl CompilerCache {
                 json,
                 cache_hit,
             })
+        });
+        cache.last = result.as_ref().ok().map(|view| DecodeState {
+            id: request.id,
+            generation: request.generation,
+            next_address: view.next_address,
         });
         if poisoned {
             self.compiled = None;

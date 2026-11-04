@@ -8,6 +8,7 @@ fn fixture() -> PathBuf {
 fn request(id: u64, address: u64, byte: u8) -> LiftRequest {
     LiftRequest {
         id,
+        continuation: None,
         generation: 1,
         config: LanguageConfig {
             source: fixture(),
@@ -76,6 +77,87 @@ fn worker_eventually_delivers_latest_coalesced_selection() {
             break;
         }
     }
+}
+
+#[test]
+fn explicit_next_steps_preserve_context_and_reject_stale_chains() {
+    let mut compiler = CompilerCache::default();
+    let first = compiler.lift(&request(1, 0x1000, 5)).unwrap();
+    let mut next = request(2, first.next_address, 6);
+    next.continuation = Some(first.request_id);
+    let mode = compiler.lift(&next).unwrap();
+    assert_eq!(mode.disassembly, "mode");
+    assert!(mode.context_continued);
+    assert!(mode.cache_hit);
+    next.id = 3;
+    next.address = 0x5000;
+    assert!(compiler.lift(&next).is_err());
+    next.address = mode.next_address;
+    assert!(compiler.lift(&next).is_err());
+    next.continuation = Some(mode.request_id);
+    next.generation += 1;
+    assert!(compiler.lift(&next).is_err());
+    next.generation -= 1;
+    next.config.revision += 1;
+    assert!(compiler.lift(&next).is_err());
+    next.config.revision -= 1;
+    let independent = compiler.lift(&request(4, 0x5000, 6)).unwrap();
+    assert_eq!(independent.disassembly, "base");
+    assert!(!independent.context_continued);
+    let mut failed_step = request(5, independent.next_address, 0xff);
+    failed_step.continuation = Some(independent.request_id);
+    assert!(compiler.lift(&failed_step).is_err());
+    failed_step.id = 6;
+    failed_step.bytes = vec![6];
+    assert!(compiler.lift(&failed_step).is_err());
+    failed_step.continuation = None;
+    assert_eq!(compiler.lift(&failed_step).unwrap().disassembly, "base");
+}
+
+#[test]
+#[ignore = "compiles the retained ARM7 source and checks Thumb IT continuation"]
+fn upstream_thumb_it_next_instruction_retains_the_condition() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Ghidra/Processors");
+    let catalog = ghidra_languages::Catalog::discover(&root).unwrap();
+    let definition = catalog.by_id("ARM:LE:32:v7").unwrap();
+    let mut first = request(1, 0x1000, 0);
+    first.config.definition = Some(definition.clone());
+    first.config.source = definition.source.available_path().unwrap().to_path_buf();
+    first.config.context.insert("TMode".into(), 1);
+    first.bytes = vec![0x08, 0xbf]; // IT EQ
+    let mut compiler = CompilerCache::default();
+    let it = compiler.lift(&first).unwrap();
+    assert_eq!(it.next_address, 0x1002);
+    let mut next = first;
+    next.id = 2;
+    next.address = it.next_address;
+    next.bytes = vec![0x01, 0x20]; // MOV inside the IT block
+    next.continuation = Some(it.request_id);
+    let conditional = compiler.lift(&next).unwrap();
+    assert!(conditional.context_continued);
+    assert!(
+        conditional.disassembly.contains(".eq"),
+        "{}",
+        conditional.disassembly
+    );
+    assert!(
+        conditional
+            .instruction
+            .ops
+            .iter()
+            .any(|op| op.opcode == ghidra_pcode::Opcode::Cbranch)
+    );
+    next.id = 3;
+    next.continuation = None;
+    let independent = compiler.lift(&next).unwrap();
+    assert!(independent.disassembly.contains("movs"));
+    assert!(
+        !independent
+            .instruction
+            .ops
+            .iter()
+            .any(|op| op.opcode == ghidra_pcode::Opcode::Cbranch)
+    );
 }
 
 #[test]

@@ -4,10 +4,11 @@
 //! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
 //! evaluated separately, over either the Java datatype view or the converted
 //! native decompiler view (`NativeTypeGraph`). Selected-pool assignments,
-//! ordered resource effects, the native `<join>` action and the
-//! graph-driven `<join_dual_class>` action support rule execution; the full
-//! rule dispatcher and signature allocator remain unimplemented. See the
-//! crate README for those boundaries.
+//! ordered resource effects, the native `<join>` action, the graph-driven
+//! `<join_dual_class>` action and the one-value native fallback primitive
+//! (`assignAddressFallback`) support rule execution; the full rule
+//! dispatcher and signature allocator remain unimplemented. See the crate
+//! README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
@@ -37,8 +38,10 @@ pub use fallback::{
     FallbackBatch, FallbackError, FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest,
     FallbackUsage, GroupState, JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig,
     JoinError, JoinLimits, JoinNoFit, JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind,
-    JoinStorage, JoinUsage, OccupiedExtent, PoolAssignment, PoolRequest, SlotRange,
-    StackThresholdIndexing, UnexecutedDeclarations,
+    JoinStorage, JoinUsage, NativeCandidate, NativeFallbackAllocation, NativeFallbackAssignment,
+    NativeFallbackError, NativeFallbackLimits, NativeFallbackOutcome, NativeFallbackRequest,
+    NativeFallbackUsage, NativeSlotOverflow, OccupiedExtent, PoolAssignment, PoolRequest,
+    SlotRange, StackThresholdIndexing, UnexecutedDeclarations,
 };
 pub use native_alignments::{
     NativeAlignmentError, NativeAlignmentLimits, NativeAlignmentMap, NativeAlignmentOrigin,

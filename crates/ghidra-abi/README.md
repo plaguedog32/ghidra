@@ -8,8 +8,10 @@ Ghidra C++ process.
 Whole-signature allocation, complete prototype-rule dispatch, injection
 compilation and type recovery remain separate stages. Resource-group planning, placement in
 an explicitly selected pool, the retained declaration-ordered *fallback*
-primitive and the native `<join>` and `<join_dual_class>` rule actions are described below. Successful storage resolution, or a successful
-fallback batch, does not mean that a calling convention is executable.
+primitive, the one-value *native* fallback primitive and the native `<join>`
+and `<join_dual_class>` rule actions are described below. Successful storage
+resolution, or a successful fallback batch, does not mean that a calling
+convention is executable.
 
 ## API and ownership
 
@@ -1432,6 +1434,241 @@ order and the wider-later-tile crop refusal. Spills ending exactly at
 This is source/probe evidence, not a
 live Java or native decompiler comparison.
 
+## Native fallback primitive
+
+`AllocationState::assign_native_fallback(&resources, NativeFallbackRequest,
+FallbackPolicy, NativeFallbackLimits)` runs native
+`ParamListStandard::assignAddressFallback` (fspec.cc:731-758) for one value
+and evaluates `ParamEntry::getAddrBySlot` (fspec.cc:453-494) with the source's
+own arithmetic. It is the explicit fallback primitive: no model rule or
+`pointermax` runs, so it is not `assignAddress`, which tries rules first. It
+is the foundation for per-member rule actions (`MultiMemberAssign`), which
+are not implemented. The published `assign_fallback`, `assign_pool` and
+`place_parameter` keep their exact-congruence alignment and their results.
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::*;
+use ghidra_languages::{CompilerSpec, StorageClass};
+use ghidra_pcode::{AddressSpace, Endianness, SpaceId, SpaceKind};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let space = |id, name: &str, kind| AddressSpace { id: SpaceId(id), name: name.into(),
+    kind, address_size: 4, word_size: 1, endianness: Endianness::Little };
+let registers = vec![RegisterDefinition { name: "sp".into(), space: SpaceId(1),
+    offset: 0, size: 4 }];
+let file = Arc::new(RegisterFile::new(vec![space(0, "ram", SpaceKind::Ram),
+    space(1, "register", SpaceKind::Register)], SpaceId(0), registers,
+    Default::default())?);
+let spec = CompilerSpec::parse_str(r#"<compiler_spec>
+<stackpointer register="sp" space="ram"/><default_proto>
+<prototype name="p" extrapop="0" stackshift="0"><input>
+<pentry minsize="1" maxsize="64" align="8"><addr space="stack" offset="0"/></pentry>
+</input><output/></prototype></default_proto></compiler_spec>"#,
+    None, &Default::default())?;
+let storage = CompilerStorage::new(Arc::new(spec), file, Default::default())?;
+let resources = CompilerResources::new(Arc::new(storage), Default::default())?;
+let mut state = AllocationState::new(&resources, 0, ParameterDirection::Input,
+    Default::default())?;
+let mut place = |size, align| state.assign_native_fallback(&resources,
+    NativeFallbackRequest::new(size, align, StorageClass::General),
+    FallbackPolicy::default(), NativeFallbackLimits::default());
+place(8, 8)?;
+// Cursor 1, type alignment 12: (1 * 8) % 12 = 8, and (12 - 8) / 8 = 0 slots.
+let result = place(12, 12)?;
+let NativeFallbackOutcome::Assigned(value) = &result.outcome else { unreachable!() };
+assert_eq!(value.slots, Some(SlotRange { first: 1, next: 3 }));
+assert_eq!(state.groups(), [GroupState::Available { used_slots: 3 }]);
+# Ok(())
+# }
+```
+
+### Request and selection
+
+A `NativeFallbackRequest` holds the native `getAlignSize()` as
+`aligned_size`, `getAlignment()` as `alignment` (each in `1..=i32::MAX`) and
+an explicit class. The raw `getSize()` is not part of the request:
+`NativeFallbackRequest::for_type(&NativeType, class)` copies the two native
+widths, and a raw-three/aligned-four enum is requested as four bytes. In an
+eight-byte big-endian register it lands at `base+4`; re-requesting its raw
+width would move it to `base+5`. Callers that emit only raw bytes must keep
+this placement's address. The class is never derived from a metatype here.
+
+Every list entry is visited in declaration order, whatever its kind:
+exclusion registers and stack slots, joins, aligned register pools and stack
+pools. An entry whose *first* group is consumed is skipped before the class
+test. `ClassMatch::Exact` (`matchExact == true`, as `MultiMemberAssign` with
+declared storage and `ConsumeAs` use) needs the requested class;
+`GeneralAcceptsAny` also lets a `General` entry take any class. The audited
+native callers are `assignAddress`'s metatype fallback (fspec.cc:784, not
+exact), `MultiMemberAssign` with declared storage (modelrules.cc:1146, exact
+unless its stack flag is set), `ConsumeAs` (modelrules.cc:1486, exact) and
+`HiddenReturnAction` (modelrules.cc:1868, `hiddenret` class, not exact). A
+tried candidate then follows the source order:
+
+1. A width below the minimum is rejected before anything else.
+2. An exclusion entry rejects a nonzero cursor, then a width above its
+   maximum. A declared float extension with a smaller width becomes a
+   `FloatConversion` of the whole container, before (and instead of)
+   justification.
+3. An aligned pool with a type alignment larger than its own computes
+   `(cursor * pool_alignment) % type_alignment` and adds the
+   *floor-divided* waste `(type_alignment - remainder) / pool_alignment`.
+4. The value's slots are ceiling-divided and `cursor + slots` is evaluated
+   before it is compared with the capacity. A rejected candidate writes its
+   waste back to the status, as the source's status reference does, and the
+   scan continues.
+5. Only after a fit are the slot index (counted from the pool end for
+   positive growth), physical storage, justification and next cursor
+   computed, through `place_parameter` at the already aligned cursor with
+   relative alignment one.
+
+Floor division can differ from the exact-congruence placement policy only
+when the type alignment is larger than the pool alignment but not a multiple
+of it. With pool alignment 8, type alignment 12 and cursor 1, native waste is
+`(12 - 8) / 8 = 0`, so the cursor stays 1 (byte 8, not a multiple of 12).
+The published fallback moves it to cursor 3. Power-of-two alignments, and
+type 12 in a 4-byte pool, agree. Success consumes every group of an exclusion
+entry, or advances only the first group's cursor of an aligned pool.
+
+### Native int range
+
+The aligned-branch operations of `getAddrBySlot` are checked against
+`i32::MAX` where the source evaluates them. An overflow is
+`NativeIntRange { site, operation }` with a `NativeSlotOverflow` of
+`CursorBytes` (`slotnum * alignment`), `AlignedCursor` (`slotnum` plus waste)
+or `CursorPlusSlots`, never a capacity `NoFit` and never a wrapped value.
+Results equal to `i32::MAX` are allowed: a cursor plus slots of exactly
+`i32::MAX` can still fit a pool of `i32::MAX` one-byte slots. A fourth
+variant, `Cursor`, refuses a status the native `int4` cannot hold; only the
+exact-congruence APIs can leave one (for example `u32::MAX` after a failed
+fit), and it is refused where aligned arithmetic would read it. Everything
+the source tests first wins: the consumed and class gates, an earlier fit,
+the minimum, and an exclusion entry's nonzero-cursor test. Requests outside
+`1..=i32::MAX` are `InvalidRequest`. Declared geometry outside the int range
+and positive-growth pools that are not a whole number of slots are refused by
+resource construction; the kernel repeats both checks, for tried candidates
+only, as `InvalidDeclaration`.
+
+### Results, transactions and stricter policies
+
+The owned, `Send`, `Sync` and serializable `NativeFallbackAssignment` records
+the model and direction, the request and policy, every rejected candidate
+(entry, site, first group, cursor before and after, and the `NoFit` reason),
+the outcome and the unexecuted declarations. `Assigned` gives the entry,
+site, first group, exclusion flag, cursor, slot range, alignment waste and
+the unchanged `PlacedValue` (pieces with provenance, constant padding, or a
+float conversion with the aligned width as logical size). `NoFit` is the
+source's `fail`; it is not a void return or hidden-return decision.
+
+`Assigned` commits the selected storage and every earlier candidate's waste.
+`NoFit` keeps the waste, matching the source status array and the published
+fallback. Every error restores the entire query, including waste written by
+earlier candidates. With the default `DeclaredRules::Reject`, a list that
+declares rules or `pointermax` is `RulesNotExecuted`; `BypassUnexecuted` runs
+the primitive and reports `UnexecutedDeclarations`.
+
+The selected entry passes the same safeguards as the published fallback,
+where native code would reuse resources or wrap addresses instead:
+`GroupInUse` (another group of the entry is not untouched), `Overlap` (the
+held exclusion pool or used slots share a byte with held storage),
+`Unsupported` for a value leaving its address domain or an aligned join
+pool, and `Placement` for declarations `place_parameter` refuses, such as a
+partial floating join or little-endian reverse stack justification.
+Per-space byte order, join slicing, signed stack coordinates and float
+containers are `place_parameter`'s policies. These checks run only for the
+candidate that fits, so a rejected or skipped candidate never exposes them.
+
+The crate-private kernel behind this API takes the caller's budget, undo
+journal and rejection vector. It charges one request per call, journals every
+status write and extent, and never rolls back by itself. It neither reads nor
+gates on declared rules. A per-member action can therefore run it for each
+member under one budget and restore all members, including the waste of a
+failed member, with one rollback; it needs no state clone per member.
+
+### Bounds and cost
+
+`NativeFallbackLimits` bounds examined entries (default 4 million), group
+references (8 million), journaled group updates (1 million), nested
+placements (4,096; at most one per call), output pieces (65,536), occupied
+extents held after the call (65,536, also checked on entry), source pieces of
+the nested placement (1,024) and work (64 million). The nested placement
+receives only the remaining work and pieces. Every exhaustion is
+`NativeFallbackError::Limit(name)`; a nested output-piece limit is reported as
+`"pieces"`. Invalid requests and declarations, state mismatches, native-int
+overflow, safeguard refusals and placement errors are separate variants.
+
+Work charges, with `lookup(n) = bits(n) + 1`, are 1 for the call, 1 for the
+request, 2 per examined entry (visit and first-group read), 1 per tried
+candidate and 1 per waste write. A fit adds the nested placement's work, 1
+per group of the entry, the held-span charges shared with fallback, an
+occupied-extent lookup per held span, and 1 per status write. The scan is
+linear in entries, with logarithmic lookups; there is no recursion, dense
+state copy, or allocation per payload byte. Rejection records are bounded by
+examined entries.
+
+### Validation evidence
+
+`tests/native_fallback.rs` has 13 tests with hand-derived statuses and
+addresses: floor versus exact alignment (type alignments 12 and 6, and
+positive growth), retained holes on a later success and on `NoFit`,
+below-minimum and class gates before a `CursorBytes` overflow, overflow
+before capacity at `i32::MAX` and one above for every operation, a fit ending
+exactly at `i32::MAX`, exact versus General matching, declaration order, the
+first-group gate and `GroupInUse`, exclusion, multi-group join, aligned
+register and stack pools, big-endian and reverse justification, output
+lists, raw versus aligned width and float conversion. Every refusal restores
+the state, including a late domain error after an earlier candidate's waste.
+One representative call pins all usage counters and 36 work units, derived
+term by term; every cap passes at its exact value and fails one below, and
+every smaller work budget fails without side effects. Work grows by two units
+per added entry. Three kernel unit tests check one shared budget and journal
+across members with full rollback, the request cap across calls, that a
+declared `pointermax` is not gated, defensive declaration checks only for
+tried candidates, and the slot arithmetic boundaries.
+
+`tests/native_fallback_oracle.rs` transcribes the two source functions over
+its own declarations, with a signed status array, floor-division waste and
+checked `int4` operations, and computes values, held extents and safeguards
+in interval form. Over 5,000 generated layouts (4,269 valid) with
+non-power-of-two pool and type alignments, huge cursors and sizes, alias
+groups, joins with padding, both byte orders and both growth directions, it
+matched 10,494 assignments and 7,712 no-fits with every rejection record,
+plus 387 native-int refusals, 303 domain, 152 group-in-use and 125 overlap
+refusals. Group status and held extents are compared after every step.
+
+`tests/native_fallback_real.rs` is ignored by default; run
+`cargo test --release -p ghidra-abi --test native_fallback_real -- --ignored`.
+It compiles AArch64 v8A and MIPS64 big-endian and probes their
+`join_per_primitive` lists with bypassed rules: exact-class float members in
+`q0..q7` and `f0`/`f2`, General acceptance, minimum rejections, shared
+float/integer groups, right-justified big-endian registers and stack slots,
+stack alignment waste, and a 24-byte struct placed on the stack where the
+bypassed `convert_to_ptr` rule would pass a pointer. The two probes took
+about 3 s after a release build.
+
+In a scratch copy outside the repository (fresh source timestamps; this
+crate's file hashes checked unchanged afterwards), all 19 compiling mutations
+were caught: floor-division waste made ceiling or removed, the published
+exact-congruence step reintroduced, failed-candidate waste not written or
+misreported, slot arithmetic moved before the minimum, the exclusion maximum
+tested before its cursor, an `i32::MAX` check removed or made exclusive,
+missing rollback, General acceptance removed, partial exclusion consumption,
+the other-group safeguard removed, an uncharged candidate, an unnormalized
+nested piece limit and an unbounded held-extent preflight. The interpreter
+alone catches 14 of them. Two mutations of the shared slot arithmetic and of
+the dual-class spill's error mapping are caught by the unchanged dual-class
+tests. Moving the consumed test after the class test is not observable (both
+only skip an entry), so it has no mutation.
+
+### Remaining work
+
+The per-member action itself is not implemented: extraction gates, raw-width
+emission and padding, significance reversal, nested conversions, the
+stack-status guard and omitted-storage recursion. Omitted storage needs full
+rule dispatch over synthesized `NativeTypeId` objects and must not be
+replaced by this fallback. Rule dispatch, `pointermax`, hidden returns and
+signature allocation also remain.
+
 ## Native primitive alignment
 
 `NativeAlignmentMap` ports the retained C++ `TypeFactory` alignment decoder and
@@ -1761,8 +1998,9 @@ external test harnesses add no Java or C++ runtime dependency to the library.
 ## Native gaps and remaining work
 
 - Only the `<join_dual_class>` action consumes the graph and extractor so
-  far. There is no rule dispatcher, per-member join action, signature
-  allocation, SSA call effect, CLI or desktop flow.
+  far. The native fallback primitive exists, but there is no rule
+  dispatcher, per-member join action, signature allocation, SSA call
+  effect, CLI or desktop flow.
 - `TypeFactory` names, native IDs, core-type caches and interning; typedef
   formats; pointer typedef settings and relative pointers; string and unicode
   transports; spacebase and partial types; variable-length and native

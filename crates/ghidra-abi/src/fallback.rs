@@ -21,6 +21,7 @@ use crate::{
 mod dual;
 mod effects;
 mod join;
+mod native;
 pub use dual::{
     DualClass, DualJoinAllocation, DualJoinAssignment, DualJoinAttributes, DualJoinConfig,
     DualJoinError, DualJoinLimits, DualJoinNoFit, DualJoinOutcome, DualJoinStep, DualJoinStepKind,
@@ -33,6 +34,11 @@ pub use effects::{
 pub use join::{
     JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig, JoinError, JoinLimits, JoinNoFit,
     JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind, JoinStorage, JoinUsage,
+};
+pub use native::{
+    NativeCandidate, NativeFallbackAllocation, NativeFallbackAssignment, NativeFallbackError,
+    NativeFallbackLimits, NativeFallbackOutcome, NativeFallbackRequest, NativeFallbackUsage,
+    NativeSlotOverflow,
 };
 
 /// Explicit assignment to one list entry, as required by stack and compound
@@ -323,6 +329,24 @@ pub enum FallbackError {
         site: BindingSite,
         source: PlacementError,
     },
+}
+
+/// What the bare primitive leaves unexecuted for one model's list.
+fn unexecuted_declarations(
+    direction: ParameterDirection,
+    prototype: &ghidra_languages::PrototypeModel,
+    source: &ghidra_languages::ParamList,
+) -> UnexecutedDeclarations {
+    UnexecutedDeclarations {
+        rules: source.rules.len(),
+        pointer_max: source.pointer_max,
+        this_before_return_pointer: source.this_before_return_pointer,
+        register_output_strategy: direction == ParameterDirection::Output
+            && prototype.strategy == AssignStrategy::Register,
+        has_this: prototype.has_this,
+        injections: prototype.injections.len(),
+        share_stack: prototype.share_stack.is_some(),
+    }
 }
 
 struct Budget {
@@ -640,16 +664,7 @@ impl AllocationState {
             },
         };
         budget.work(1)?;
-        let unexecuted = UnexecutedDeclarations {
-            rules: source.rules.len(),
-            pointer_max: source.pointer_max,
-            this_before_return_pointer: source.this_before_return_pointer,
-            register_output_strategy: self.direction == ParameterDirection::Output
-                && prototype.strategy == AssignStrategy::Register,
-            has_this: prototype.has_this,
-            injections: prototype.injections.len(),
-            share_stack: prototype.share_stack.is_some(),
-        };
+        let unexecuted = unexecuted_declarations(self.direction, prototype, source);
         if policy.declared_rules == DeclaredRules::Reject && unexecuted.changes_assignment() {
             return Err(FallbackError::RulesNotExecuted {
                 model: self.model,

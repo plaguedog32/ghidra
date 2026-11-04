@@ -390,35 +390,26 @@ fn type_class(meta: MetaType) -> StorageClass {
 
 /// Native getAddrBySlot's arithmetic before its capacity check. Keep floor
 /// division for alignment waste and refuse int4 overflow even when wide
-/// placement arithmetic would subsequently report SlotsExhausted.
+/// placement arithmetic would subsequently report SlotsExhausted. Shared with
+/// the native fallback kernel; these are this action's established reasons.
 fn native_spill_cursor(
-    mut cursor: u64,
+    cursor: u64,
     alignment: u32,
     type_align: u32,
     size: u32,
 ) -> Result<u64, &'static str> {
-    let int = u64::from(i32::MAX as u32);
-    if cursor > int {
-        return Err("stack cursor exceeds the native int range");
-    }
-    if type_align > alignment {
-        let bytes = cursor
-            .checked_mul(u64::from(alignment))
-            .filter(|n| *n <= int)
-            .ok_or("stack cursor bytes exceed the native int range")?;
-        let remainder = bytes % u64::from(type_align);
-        if remainder != 0 {
-            cursor += (u64::from(type_align) - remainder) / u64::from(alignment);
-            if cursor > int {
-                return Err("aligned stack cursor exceeds the native int range");
+    super::native::native_slot_cursor(cursor, alignment, type_align, size)
+        .map(|(cursor, _)| cursor)
+        .map_err(|operation| match operation {
+            NativeSlotOverflow::Cursor => "stack cursor exceeds the native int range",
+            NativeSlotOverflow::CursorBytes => "stack cursor bytes exceed the native int range",
+            NativeSlotOverflow::AlignedCursor => {
+                "aligned stack cursor exceeds the native int range"
             }
-        }
-    }
-    let slots = u64::from(size).div_ceil(u64::from(alignment));
-    if cursor + slots > int {
-        return Err("stack cursor plus value slots exceeds the native int range");
-    }
-    Ok(cursor)
+            NativeSlotOverflow::CursorPlusSlots => {
+                "stack cursor plus value slots exceeds the native int range"
+            }
+        })
 }
 
 #[derive(Clone, Copy)]

@@ -1,11 +1,13 @@
 #![doc = include_str!("../README.md")]
 
 mod construct;
+mod def_use;
 mod error;
 mod model;
 mod verify;
 
 pub use construct::Ssa;
+pub use def_use::{DefUseError, DefUseIndex, DefUseLimits, DefUseResource, DefUseResult};
 pub use error::{Error, Limits, Resource, Result, Violation};
 pub use ghidra_graph::{ImmediateDominator, NodeId};
 pub use model::{

@@ -4,7 +4,8 @@ A native Rust engine that builds and verifies generic SSA form over a
 `ghidra_graph::Graph`. Rust 1.88, edition 2024, Apache-2.0, version 0.3.0. The
 only dependency is `ghidra-graph`. No Java or C++ process or runtime is used.
 
-This crate is **only** the SSA construction engine. It is not a P-code
+This crate is **only** the SSA construction engine plus an owned def-use
+index over its results ([Def-use index](#def-use-index)). It is not a P-code
 adapter, alias analysis, memory SSA, call or ABI model, liveness API, type
 inference, optimizer, or decompiler. It computes liveness internally only to
 prune phis when asked. It has no opcode knowledge: callers
@@ -295,6 +296,91 @@ there. Verification spends its own fresh `max_work` budget, its own
 `max_live_ins` count, and two graph analysis budgets. It can therefore fail
 with a limit error even when construction just fit.
 
+## Def-use index
+
+`DefUseIndex::new(&ssa, DefUseLimits)` builds an owned index from every SSA
+value to every operand that reads it. It is the use side of the def-use
+relation; the definition side is `Ssa::value(id).origin`. It is groundwork for
+sparse simplification and out-of-SSA translation, neither of which exists yet.
+
+```rust
+use std::sync::Arc;
+
+use ghidra_graph::{Graph, Limits as GraphLimits};
+use ghidra_ssa::{
+    DefUseIndex, DefUseLimits, EntryState, Limits, Predecessor, RawProgram, RawStatement, Ssa,
+    VariableId,
+};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let x = VariableId(0);
+// Entry self-loop 0 -> 0 that reads x twice and then rewrites it.
+let graph = Arc::new(Graph::new(1, [(0, 0)], GraphLimits::default())?);
+let program = RawProgram {
+    variables: vec![EntryState::Undefined],
+    blocks: vec![vec![RawStatement::new([x, x], [x])]],
+};
+let ssa = Ssa::construct_pruned(graph, 0, &program, Limits::default())?;
+let index = DefUseIndex::new(&ssa, DefUseLimits::default())?;
+
+let entry = ssa.entry_value(x)?;
+let block = ssa.block(0)?.renamed().expect("reachable");
+let (_, phi) = block.phi_for(x).expect("loop phi");
+// The undefined entry value is read only by the phi, along the virtual entry edge.
+let [site] = index.phi_uses(entry)? else { panic!() };
+assert_eq!(block.incoming()[site.operand], Predecessor::Entry);
+// Both read slots of the statement are separate uses of the phi.
+let slots: Vec<_> = index.statement_uses(phi.value())?.iter().map(|u| u.slot).collect();
+assert_eq!(slots, [0, 1]);
+assert_eq!(index.total_uses(), 4);
+# Ok(())
+# }
+```
+
+**Contents.** For each `ValueId`, `statement_uses(v)` lists every renamed
+statement operand slot (`UseSite`) and `phi_uses(v)` every phi operand slot
+(`PhiOperandSite`) that holds `v`; `use_count(v)` is their sum. Repeated
+operands are separate entries: a statement reading `v` in two slots gives two
+`UseSite`s, and a phi with `v` on two edges gives two `PhiOperandSite`s. Phi
+operands along the virtual `Predecessor::Entry` edge are included (map
+`operand` through `RenamedBlock::incoming()`). Unreachable blocks have no
+renamed statements or phis, so their raw statements contribute nothing. In
+unpruned SSA a dead phi's value has no uses but its own operands are still
+uses of their values; in pruned SSA every phi reaches some statement read
+through phis (tested on the generated corpus below).
+
+**Order.** Each `statement_uses(v)` row is strictly ascending in `UseSite`'s
+derived order (node, statement index, slot); each `phi_uses(v)` row strictly
+ascending in `PhiOperandSite`'s derived order (node, phi index, operand). Equal
+SSA results give equal indexes.
+
+**Ownership and snapshot.** The index owns all its data and borrows nothing,
+so it is `Send + Sync`, `Clone`, and outlives the `Ssa`. It describes exactly
+the `Ssa` it was built from (or an equal clone) and keeps no link to it: it
+cannot detect being paired with a different result, whose answers would be
+meaningless but memory-safe. `value_count()`, `node_count()`, and
+`placement()` record the source shape for cheap sanity checks. A lookup
+outside `0..value_count()` returns `DefUseError::InvalidValue`, never panics.
+
+**Storage.** Compressed sparse rows: two offset arrays of `V + 1` entries and
+two flat site arrays with one record per operand reference (`U` statement uses
+and `A` phi operands over reachable blocks). Building is two linear passes over
+reachable blocks: count per value, prefix sums, then fill in reverse so each
+row comes out ascending without a cursor array. There is no recursion, graph
+analysis, per-value rescan, hashing, sorting, or `variables * nodes` structure.
+
+**Limits and work.** `DefUseLimits` has its own `max_values` (checked before
+the offset arrays are allocated), `max_uses` (`U + A`, accounted per statement
+and phi during counting, so the site arrays are only allocated once the total
+fits), and a fresh `max_work` budget per call. Every count is
+overflow-checked. Any failure is `DefUseError::LimitExceeded { resource }`
+with no partial index; construction limits and `Ssa::work()` are not touched.
+`work()` is exactly `2 + 4V + 2N + 2P + 2S + 3U + 3A` (offset arrays, two
+passes over `N` nodes, `P` phis, `S` reachable statements and their operands,
+two prefix sums, and site allocation), and `total_uses()`,
+`total_statement_uses()`, and `total_phi_uses()` expose the stored record
+counts. Time and space are `O(V + N + P + S + U + A)`.
+
 ## Limits and failure
 
 `Limits` (with practical defaults) bounds `max_variables`, `max_statements`
@@ -427,6 +513,25 @@ write-before-read rule, or the verifier's kill check, dead-phi check, or
 liveness test, each fails tests. The verifier alone rejects the result of the
 under-live construction bug.
 
+**Def-use index.** Every index built in the tests is compared against a
+reference built only from public `Ssa` accessors (one sorted site set per
+value), including its exact documented work. Hand-checked tests cover a value
+on two edges of one phi and read twice in one statement, edge identities of
+every phi operand, an undefined entry value read directly and through a phi,
+an entry self-loop and entry backedge with `Entry` operands, an irreducible
+cycle with critical edges, unreachable statements and predecessors, dead
+unpruned phis versus pruned output, invalid and zero-value lookups, and
+ownership after dropping the `Ssa`. Each of `max_values`, `max_uses`, and
+`max_work` is tested exact and one below, every smaller work budget fails,
+and the value cap fails before any work. A 100,000-node pruned loop
+(200,004 values, 300,002 uses) has the exact formula work, at most twice the
+50,000-node work. 1,500 generated cases in both modes (about 53,500 sites,
+1,800 dead unpruned phis, 2,500 entry-node phis) are checked against the
+reference and against a worklist over SSA operand lists that must agree with a
+round-robin over the index on which phis are transitively used; in pruned mode
+all are. Reversing the fill order of statement slots, or misnumbering phi
+entry operands, fails tests.
+
 ## Limitations
 
 - No P-code integration: register aliasing, sub-register pieces, memory,
@@ -435,7 +540,10 @@ under-live construction bug.
   (unpruned); switching it to `construct_pruned` is left to that crate.
 - Pruning is all-or-nothing per call: there is no semi-pruned mode, no
   dead-phi removal pass over an existing result, and no public liveness
-  query. Extra live phis are accepted by verification. No def-use chains, copy
-  folding, or out-of-SSA translation.
+  query. Extra live phis are accepted by verification.
+- The def-use index is a read-only snapshot: no incremental update as
+  values are rewritten, no copy folding, expression simplification, or
+  out-of-SSA translation yet, and no check that it is paired with its own
+  `Ssa`. It is not used by `ghidra-analysis` yet.
 - One immutable graph per result; no incremental update or re-heritage.
 - Values are per whole variable; there is no partial-definition model.

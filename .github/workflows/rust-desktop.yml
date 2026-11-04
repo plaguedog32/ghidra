@@ -106,6 +106,8 @@ jobs:
         run: cargo test --locked -p ghidra-desktop upstream_thumb_it -- --ignored
       - name: Lift and analyze a recovered binary function
         run: cargo test --locked -p ghidra-desktop upstream_x86_function -- --ignored
+      - name: Verify reduced function inspection and export
+        run: cargo test --locked -p ghidra-desktop upstream_winhello_reduced -- --ignored
       - name: Build native release
         run: cargo build --locked --release -p ghidra-desktop
       - name: Upload Windows executable

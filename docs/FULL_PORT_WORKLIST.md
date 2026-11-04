@@ -26,8 +26,9 @@ The processor gate is per-language: compile this checkout's source, load `.ldefs
 Non-default word-addressed storage is now admitted by the SLEIGH adapter with
 byte offsets for declared varnodes, preserved word-size metadata and checked
 full byte extents. Selected RISC-V fixed CSR and NDS32 user-register/return
-instructions execute in source probes. This increment awaits independent
-review. Word-addressed code, word-space address-of provenance/conversion,
+instructions execute in source probes. Independent review approved the
+increment; its nonzero byte-space address-of test gap is fixed.
+Word-addressed code, word-space address-of provenance/conversion,
 generic CSR pointer-width lowering and the NDS32 LE source/catalog mismatch
 remain explicit gaps; CSR privilege and interrupt side effects are unmodeled.
 
@@ -37,6 +38,13 @@ approved the integration and stale-result/clipboard guards. Whole-workbench
 headless interaction and real-function byte-identity checks pass; native
 window and OS clipboard verification still require the unavailable computer-use
 helper. The projection does not rewrite operations or produce structured C.
+
+A separate pre-existing compiler defect loses the address-space identity of
+direct branches/calls through non-default-space sub-table exports. Byte- and
+word-space reproductions are confirmed; a compiler provenance fix remains.
+The next control-flow structurer must follow the source-audited
+[execution and closure contract](CONTROL_FLOW_STRUCTURING.md). That contract is
+design groundwork; no structuring implementation or C emitter is claimed yet.
 
 The decompiler gate requires a genuine P-code-to-structured-output pipeline: P-code CFG construction, SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. Native P-code CFGs, an alias-aware pruned SSA adapter, owned def-use indexing and typed expression reconstruction now exist, with abstract whole-space memory dependencies and explicit unknown effects. Recovered x86/x64 function lifting is connected to a desktop Dataflow view and JSON command. Typed expression inspection/export is available in desktop Dataflow, optional `--analyze-pcode --expressions` output, and every `--analyze-function` report. Sparse conditional constant-propagation facts have independent library approval and desktop/JSON integration, with its compact-window layout fix independently approved; undefined/reset/memory/opaque state stays unknown. Typed expression simplification has independent approval and opt-in --simplify CLI export, with a source-preserving value projection, guarded fault/memory semantics and no operation/CFG rewriting. Generic parallel-copy scheduling and edge-specific phi lowering have independent raw-path evidence and cross-lab approval; P-code/code-generation wiring remains.
 

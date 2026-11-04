@@ -50,6 +50,14 @@ real-source execution probes. NDS32's little-endian catalog variant also remains
 incompatible with its source's hardcoded big-endian declaration. None of this
 models CSR privilege, interrupt entry, or hardware side effects.
 
+Independent review also reproduced a pre-existing compiler gap: direct
+`goto`/`call` through a sub-table's non-default-space starred export loses that
+space before raw lowering. For an `aux` export at address 0x10, it emits a
+default-space target 0x10, whereas word-size-3 `aux` requires byte target 0x30 in
+`aux`. This needs a compiler provenance repair, including byte-only languages;
+it cannot be reconstructed safely from the already flattened target literal.
+The selected processor probes do not establish this cross-space behavior.
+
 Always-on tests compile self-contained source and includes, run adapted p-code
 in the Rust evaluator, and check context, delay slots, endian memory access,
 identity extensions, word-space byte extents and pointer scaling, explicit

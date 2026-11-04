@@ -35,7 +35,7 @@ operand: is op {{ export *[csr]:2 128:1; }}
 :export_read is op=5 & operand {{ r0 = operand; }}
 :export_write is op=6 & operand {{ operand = r0; }}
 :word_address is op=7 {{ p = &:1 cell; }}
-:byte_address is op=8 {{ p = &:1 r0; }}
+:byte_address is op=8 {{ p = &:1 p; }}
 :last_read is op=9 {{ p = last; }}
 :outside_read is op=10 {{ r0 = bad; }}
 :bits is op=11 {{ p = zext(low); }}
@@ -193,7 +193,7 @@ fn incorrect_address_of_word_storage_is_refused_per_instruction() {
             100,
         )
         .unwrap();
-    assert_eq!(get(&machine, &language, "p"), 0);
+    assert_eq!(get(&machine, &language, "p"), 4);
 }
 
 #[test]

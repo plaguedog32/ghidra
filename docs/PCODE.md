@@ -572,6 +572,11 @@ compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode.
 Its same-width extensions are explicitly converted to identity `COPY`
 operations while retaining strict P-code validation.
 
+A separate known compiler defect can lose the target space of direct
+`goto`/`call` through a non-default-space sub-table export, including a byte-
+addressed export. Correct exported-target provenance remains a compiler fix;
+the instruction probes above do not establish that behavior.
+
 ## Compiler specification data
 
 Inspect a compiler specification without opening a window:

@@ -242,7 +242,10 @@ refuses these expressions rather than guessing the missing conversion. The
 audit is iterative and capped at 131,072 statement/expression nodes; it uses
 one extra AST expansion for word-space languages and preserves the original
 lowerer for exact register bit ranges. Byte-only languages retain their old
-path. This increment still awaits independent implementation review.
+path. Independent review approved `b802794ab0`. It exercised all 80 source
+dimension combinations, macro/operand/delay-slot address-of refusals, context
+commit isolation and broad real CSR/user-register sweeps. Its nonzero byte-
+space address-of test gap is fixed by checking register byte offset 4.
 
 Synthetic checks cover units 1..8, both byte orders, fixed and indirect reads
 and writes, exported pointers, exact byte boundaries, dimensions, bit ranges
@@ -261,8 +264,15 @@ SLEIGH tests and eleven opt-in source tests also pass together in Rust 1.88
 release. Java-free command probes lift RV32, RV64 and NDS32 instructions,
 execute them to 0x12345678, then export verified SSA, expressions, constants and
 simplification while preserving the CSR word metadata and byte/word address
-forms. This is local Windows evidence; a new cross-platform result and the
-independent implementation review are still required.
+forms. This is local Windows evidence; a new cross-platform result is still
+required.
+
+That review separately reproduced a pre-existing dependency bug: direct
+`goto`/`call` through a non-default-space sub-table export loses its space
+before raw lowering. A word-size-3 export at address 0x10 becomes default-space
+byte 0x10 rather than `aux` byte 0x30. Root reproduced both byte- and word-space
+cases. No newly admitted catalog instruction in the review sweeps used this
+form; correct exported-target provenance remains a required compiler fix.
 
 ### Minimum Rust version validation
 

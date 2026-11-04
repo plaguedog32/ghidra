@@ -453,6 +453,10 @@ impl<'a> Builder<'a> {
                     let target = selected.expect("selector precedes pointer");
                     value(Some(u32::from(target.address_size)))?;
                 }
+                // SLEIGH also uses RETURN with a narrow constant sentinel for
+                // terminating traps (x86 INT1/INT3 emit return [0:1]). It is a
+                // literal exit target, not a truncated computed pointer read.
+                Role::CodePointer if op.opcode == Opcode::Return && constant => value(None)?,
                 Role::CodePointer => value(Some(u32::from(self.code.address_size)))?,
                 Role::BranchLabel if constant => {}
                 Role::BranchLabel => address_label()?,

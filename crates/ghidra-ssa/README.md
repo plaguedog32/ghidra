@@ -345,8 +345,8 @@ operands are separate entries: a statement reading `v` in two slots gives two
 operands along the virtual `Predecessor::Entry` edge are included (map
 `operand` through `RenamedBlock::incoming()`). Unreachable blocks have no
 renamed statements or phis, so their raw statements contribute nothing. In
-unpruned SSA a dead phi's value has no uses but its own operands are still
-uses of their values; in pruned SSA every phi reaches some statement read
+unpruned SSA a dead phi may have no uses or feed only other dead phis; its
+operands are still uses of their values. In constructed pruned SSA every phi reaches some statement read
 through phis (tested on the generated corpus below).
 
 **Order.** Each `statement_uses(v)` row is strictly ascending in `UseSite`'s
@@ -536,8 +536,8 @@ entry operands, fails tests.
 
 - No P-code integration: register aliasing, sub-register pieces, memory,
   indirect effects, calls, and ABI behavior are the caller's responsibility.
-  The native P-code adapter in `ghidra-analysis` still calls `construct`
-  (unpruned); switching it to `construct_pruned` is left to that crate.
+  The native P-code adapter in `ghidra-analysis` selects pruned placement through
+  `construct_with` by default; callers can explicitly select unpruned placement.
 - Pruning is all-or-nothing per call: there is no semi-pruned mode, no
   dead-phi removal pass over an existing result, and no public liveness
   query. Extra live phis are accepted by verification.

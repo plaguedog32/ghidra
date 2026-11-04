@@ -88,11 +88,12 @@ fn lift_arguments(address: &str, hex: &str, contexts: &[String]) -> Result<LiftA
 }
 
 pub(crate) fn hex_address(address: &str) -> Result<u64, String> {
-    let address = u64::from_str_radix(
-        address.trim_start_matches("0x").trim_start_matches("0X"),
-        16,
-    )
-    .map_err(|_| "Instruction address must be hexadecimal".to_string())?;
+    let digits = address
+        .strip_prefix("0x")
+        .or_else(|| address.strip_prefix("0X"))
+        .unwrap_or(address);
+    let address = u64::from_str_radix(digits, 16)
+        .map_err(|_| "Instruction address must be hexadecimal".to_string())?;
     Ok(address)
 }
 
@@ -308,6 +309,25 @@ fn execute_program(input: ExecutionInput) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hexadecimal_addresses_allow_a_single_optional_prefix() {
+        for text in ["1000", "0x1000", "0X1000"] {
+            assert_eq!(super::hex_address(text).unwrap(), 0x1000);
+        }
+        for text in [
+            "0x0x1000",
+            "0X0X1000",
+            "0x0X1000",
+            "0X0x1000",
+            "0x",
+            "",
+            "-1000",
+            "10000000000000000",
+        ] {
+            assert!(super::hex_address(text).is_err(), "{text}");
+        }
+    }
+
     #[test]
     fn checked_in_example_executes_without_native_code() {
         let input: ghidra_pcode::machine::ExecutionInput =

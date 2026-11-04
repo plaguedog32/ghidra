@@ -126,7 +126,7 @@ Local validation on Windows with Rust 1.99.1:
 - P-code CFG tests cover relative/native control flow, calls, explicit terminal exits, no-ops, delay extents and instruction-frame provenance. SSA tests include path-execution oracles, undefined entry values, entry loops, irreducible graphs, exact limits and 100,000-node inputs. The adapter adds register-alias joins, memory versions, opaque effects, frame resets, concrete-machine trace comparisons, and bounded large-loop behavior. Application analysis now uses liveness-pruned SSA; whole-space memory tokens are conservative dependencies, not pointer disambiguation or decompiled output.
 - The headless analysis command passes nine report/schema tests and two process-level tests, including a Java-free subprocess and empty stdout on argument/input failures. The optimized executable also analyzed `alias-branch.json` with `JAVA_HOME` empty and `PATH` restricted to Windows system files: 5 nodes, 10 SSA values and 1 phi, with verification enabled. Concrete `sum-loop.json` execution still returns 6 in 14 operations in the same environment.
 - Function analysis tests cover binary/source boundary agreement, catalog compatibility, context-commit rejection, incomplete recovery, bounded display text, compilation reuse, unknown calls, queue coalescing and stale responses. Populated function/storage views render through egui without changing project state. The real x86 source probe lifts a recovered PE loop function to verified SSA and executes its P-code to return 3.
-- The optimized `--analyze-function` command also lifts the retained PE32 WinHelloCPP entry at `401E46` with no Java available: 135 recovered instructions, 151 graph nodes, 10,967 SSA values and 2,206 phis. Its 32 calls use marked conservative effects, and incomplete recovery remains explicit. This is native dataflow inspection, not structured decompiled output.
+- The optimized `--analyze-function` command also lifts the retained PE32 WinHelloCPP entry at `401E46` with no Java available: 135 recovered instructions, 151 graph nodes, 10,953 SSA values and 2,192 phis. Its 32 calls use marked conservative effects, and incomplete recovery remains explicit. This is native dataflow inspection, not structured decompiled output.
 - Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Register/space resolution, argument allocation, rule execution and injection compilation remain pending; parser coverage is not executable ABI support.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
@@ -162,11 +162,19 @@ reader emits diagnostics directly into the compiler reader's budgets, stops when
 rejected, clips quoted text before formatting, and checks budgets before cloning
 paths. All 90 language tests and language Clippy pass, including real catalog
 specs, exact long-path budget boundaries and early cancellation regressions.
-Independent re-review of the complete compiler hardening remains pending, as
-does review of the function worker, Dataflow UI and application pruning wiring.
+Independent re-review of the complete compiler hardening approved the changes
+at `ea14839619`. Allocation probes confirmed constant path-copy counts under
+zero diagnostic budgets and clipped formatting of very large context values.
+Independent review of the function worker, Dataflow UI and application pruning
+wiring also approved `ea14839619`, including about 1.26 million reaching-use
+comparisons across several recovered Windows x86/x64 binaries. Its narrow
+constant RETURN compatibility finding is addressed separately; ELF/Mach-O
+function flow and native GUI click-through remain outside that review's coverage.
 
-The next decompiler stages are def-use indexing, expression/dataflow
-simplification, ABI/storage resolution, type propagation and structured output.
+Owned bounded def-use indexing is integrated at `afc919fb1d`; its independent
+review approved exact use mapping, CSR accounting and 16,384 small reference
+cases. The next decompiler stages are expression reconstruction/inspection,
+dataflow simplification, ABI/storage resolution, type propagation and structured output.
 The full replacement goal remains active and unfinished.
 
 This continuation passes 361 default workspace tests, six doctests, formatting

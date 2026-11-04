@@ -201,7 +201,9 @@ Validation rejects the input instead of guessing:
   `CALLOTHER` input0, `SUBPIECE` input1, `PTRADD` input2, `INSERT` inputs 2-3,
   and `ZPULL`/`SPULL` inputs 1-2. `LOAD`/`STORE` input0 is a constant naming a
   declared nonconstant space, and input1 has that space's address width.
-  `BRANCHIND`, `CALLIND`, and `RETURN` input0 has the code address width.
+  `BRANCHIND` and `CALLIND` input0 has the code address width. A computed
+  `RETURN` target has that width too; constant RETURN targets retain their
+  literal width (including x86 SLEIGH's `return [0:1]` for INT1/INT3).
 - Direct labels: a `BRANCH`/`CBRANCH` label is either relative or in the code
   space. A `CALL` label must be in the code space. A label is an address, so only
   its offset must lie in the space; its size is not treated as a memory read.

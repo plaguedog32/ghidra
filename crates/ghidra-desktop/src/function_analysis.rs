@@ -469,6 +469,7 @@ fn lift_function(
     if size > MAX_JSON {
         return Err("Function analysis JSON exceeds 64 MiB".into());
     }
+    json.reserve_exact(size - json.len());
     json.extend_from_slice(&metadata);
     json.extend_from_slice(b",\"analysis\":");
     json.extend_from_slice(&dataflow);

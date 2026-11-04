@@ -106,6 +106,11 @@ processor, data/instruction byte order, language bitness and compiled code-space
 width must match the x86/x64 image. Source bytes and instruction boundaries are
 checked against recovery. A mismatch fails the analysis.
 
+Constant P-code RETURN targets retain their literal width, including the narrow
+sentinels emitted for x86 INT1/INT3. Computed return targets still require the
+language's code-pointer width. Exit kinds describe the lifted P-code; they do
+not establish an ABI return value or distinguish every native trap.
+
 This initial function path decodes with independent processor defaults.
 Instructions emitting global context commits and delay-slot bundles are rejected
 because they need flow-aware decoding. Single-instruction lifting and checked

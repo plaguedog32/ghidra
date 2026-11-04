@@ -152,7 +152,7 @@ fn operand_roles_spaces_and_widths_are_checked() {
             },
         ),
         (
-            ret(c(0, 4)),
+            ret(vn(REG, 0, 4)),
             OperandSlot::Input(0),
             OperandError::PointerWidth {
                 expected: 8,
@@ -210,6 +210,29 @@ fn operand_roles_spaces_and_widths_are_checked() {
         ),
     ])
     .unwrap();
+}
+
+#[test]
+fn literal_return_targets_do_not_require_a_pointer_sized_read() {
+    for size in [1, 2, 4, 8, 16, 512] {
+        for target in [0, 0x40] {
+            let cfg = single(vec![ret(c(target, size))]).unwrap();
+            assert_eq!(cfg.exits().len(), 1);
+            assert!(matches!(cfg.exits()[0].kind, ghidra_cfg::ExitKind::Return));
+        }
+    }
+    for opcode in [Opcode::Branchind, Opcode::Callind] {
+        assert_eq!(
+            operand_error(single(vec![op(opcode, None, vec![c(0, 1)])])),
+            (
+                OperandSlot::Input(0),
+                OperandError::PointerWidth {
+                    expected: 8,
+                    actual: 1
+                }
+            )
+        );
+    }
 }
 
 #[test]

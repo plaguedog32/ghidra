@@ -30,3 +30,10 @@ ABI storage inspection has an independently reviewed resource-group planner, per
 Compiler-spec stack load-order and frame-namespace checks have independent approval and follow-up fixes; wide-register metadata enumeration includes SH-2A. Historical stack-geometry changes, virtual-frame ranges and remaining source/address-space gaps still need follow-up. Native declared datatype geometry covers scalars, pointers, aliases, arrays and ordinary automatic aggregates, with independent review approval. GCC/MS bitfield layout is implemented; a review's raised-cap comparison-overflow finding is fixed with widened arithmetic and targeted regressions. Bitfield wrapper extraction is connected to the primitive layer. Manual layouts, explicit mutable datatype setters, archives, mutable datatype managers, member pragmas, bitfield value access and type inference remain. Other processor function flows, pointer disambiguation, algebraic expression simplification, type propagation and structured output remain. A disassembly listing or an operation dump does not satisfy the decompiler gate.
 
 Each increment must preserve a working Java-free build, add behavioral regression evidence and update these boundaries. The overarching goal stays unfinished until all coverage gates are satisfied; a requested pause does not imply completion.
+
+Native desktop click-through remains an open verification gate. A 2026-11-04
+attempt could not discover applications because the computer-use helper's
+native pipe was unavailable, including after its recovery sequence. No app
+was launched or changed. Headless layout tests remain separate evidence;
+binary opening, native dialogs, navigation and inspection still need a real
+window check when that helper is available.

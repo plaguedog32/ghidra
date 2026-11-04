@@ -146,6 +146,26 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ## Development checkpoint
 
+### Current verification checkpoint
+
+The integrated source at `3299780b59` passes 627 default workspace tests and
+15 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
+and the optimized Windows build. Java-free release probes still cover raw
+P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
+storage, compiler datatype predicates and primitive/union extraction are
+integrated; independent review of the latest extraction and bitfield fixes
+is pending. These increments are committed locally and have not been pushed.
+
+Native visual and click-through verification was attempted again on
+2026-11-04. The computer-use helper returned `Computer Use native pipe is
+unavailable` on discovery, retry, and retry after session reset. No desktop
+application was launched or changed during that attempt. The headless egui
+checks do not establish native window, file-dialog or display-scaling
+behavior. Restore the desktop helper and verify binary opening, navigation,
+disassembly and Dataflow inspection in the real window before closing that
+milestone gate. Rust 1.88 and the latest increments on Linux/macOS also
+remain unverified.
+
 ### Active continuation: compiler storage
 
 The full replacement goal is active again after the saved pause below.

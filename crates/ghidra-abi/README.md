@@ -7,8 +7,8 @@ Ghidra C++ process.
 
 Whole-signature allocation, complete prototype-rule dispatch, injection
 compilation and type recovery remain separate stages. Resource-group planning, placement in
-an explicitly selected pool and the retained declaration-ordered *fallback*
-primitive are described below. Successful storage resolution, or a successful
+an explicitly selected pool, the retained declaration-ordered *fallback*
+primitive and the native `<join>` rule action are described below. Successful storage resolution, or a successful
 fallback batch, does not mean that a calling convention is executable.
 
 ## API and ownership
@@ -816,9 +816,257 @@ placement work. Invalid placement remains a distinct error. A directed test
 checks every cap and all 28 lower work budgets, including rollback.
 
 Complete rule matching/dispatch, pointer synthesis, hidden-return control flow,
-join/member/dual composition and shared-stack signatures remain required.
-These operations are not yet connected to datatype-driven signature allocation,
-SSA call effects, the CLI or desktop.
+member/dual composition and shared-stack signatures remain required. The
+single-class `<join>` action is described next. These operations are not yet
+connected to datatype-driven signature allocation, SSA call effects, the CLI or
+desktop.
+
+## Native join action
+
+`AllocationState::assign_join(resources, &JoinAttributes, JoinRequest, JoinLimits)`
+runs one native `<join>` rule action (`MultiSlotAssign`, modelrules.cc:856-1072)
+on an input or output state. `JoinAttributes::from_action` takes the declared
+attributes of a parsed `RuleAction::Join`; `None` keeps the constructor default.
+The request is the datatype's raw `getSize` and `getAlignment`, each in
+`1..=i32::MAX`. No datatype graph, rule filter, precondition or prototype is
+consulted, and nothing is inferred from P-code `RETURN`. The caller supplies
+the request after a rule has matched; this is not rule dispatch.
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::*;
+use ghidra_languages::CompilerSpec;
+use ghidra_pcode::{AddressSpace, Endianness, SpaceId, SpaceKind};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let space = |id, name: &str, kind| AddressSpace { id: SpaceId(id), name: name.into(),
+    kind, address_size: 4, word_size: 1, endianness: Endianness::Little };
+let registers = ["r0", "r1", "sp"].iter().enumerate().map(|(i, name)|
+    RegisterDefinition { name: (*name).into(), space: SpaceId(1),
+        offset: 4 * i as u64, size: 4 }).collect();
+let file = Arc::new(RegisterFile::new(vec![space(0, "ram", SpaceKind::Ram),
+    space(1, "register", SpaceKind::Register)], SpaceId(0), registers,
+    Default::default())?);
+let spec = CompilerSpec::parse_str(r#"<compiler_spec>
+<stackpointer register="sp" space="ram"/><default_proto>
+<prototype name="p" extrapop="0" stackshift="0"><input>
+<pentry minsize="1" maxsize="4"><register name="r0"/></pentry>
+<pentry minsize="1" maxsize="4"><register name="r1"/></pentry>
+<pentry minsize="1" maxsize="500" align="4"><addr space="stack" offset="4"/></pentry>
+<rule><datatype name="any"/><join/></rule>
+</input><output/></prototype></default_proto></compiler_spec>"#,
+    None, &Default::default())?;
+let join = JoinAttributes::from_action(&spec.prototypes[0].input.rules[0].action)
+    .expect("a <join> action");
+let storage = CompilerStorage::new(Arc::new(spec), file, Default::default())?;
+let resources = CompilerResources::new(Arc::new(storage), Default::default())?;
+let mut state = AllocationState::new(&resources, 0, ParameterDirection::Input,
+    Default::default())?;
+// Ten bytes: r0, r1, then two bytes spilled to the stack.
+let result = state.assign_join(&resources, &join, JoinRequest::new(10, 4),
+    Default::default())?;
+let JoinOutcome::Assigned(allocation) = &result.outcome else { unreachable!() };
+let JoinStorage::Pieces(pieces) = &allocation.storage else { unreachable!() };
+// Most significant first, with each piece's significance in the whole value.
+let layout: Vec<_> = pieces.iter().map(|p| (p.piece.storage.address.space,
+    p.piece.storage.address.offset, p.piece.lsb_byte)).collect();
+let register = AbiSpace::Language(SpaceId(1));
+assert_eq!(layout, [(AbiSpace::Stack, 4, 8), (register, 4, 4), (register, 0, 0)]);
+assert_eq!(state.groups(), [GroupState::Consumed, GroupState::Consumed,
+    GroupState::Available { used_slots: 1 }]);
+# Ok(())
+# }
+```
+
+### Configuration and initialization
+
+`JoinAssignment::config` reports the resolved fields. The storage class is
+`General` by default; alignment enforcement and backfill are off; stack spill is
+on for input lists and off for output lists. `big_endian` is
+`ParamListStandard::isBigEndian`, the byte order of the list's *first entry*,
+not of its first tile. Most-significant-first consumption and right
+justification default to it; `reversejustify` and `reversesignif` toggle a
+default only when declared `true`.
+
+Tiles are the exclusion entries of exactly the action's class with exactly one
+resource group, in declaration order (`extractTiles`). Join pools and grouped
+alternatives (one shared group) qualify. A list without tiles is `NoTiles`,
+including a stack-only list. With spill enabled, the last entry must be an
+aligned stack pool (`getStackEntry`), otherwise `MissingStack`. Both are
+initialization errors, raised before any allocation and in that order.
+
+### Allocation
+
+- **Start search.** A tile can start the value if its status is exactly
+  untouched. With alignment enforcement and a datatype alignment larger than
+  the tile, the full widths of the tiles already passed must also be a multiple
+  of that alignment. The source `checkFit` adjacency loop never advances its
+  iterator: it repeats the start tile's own test. Its observable selection is
+  therefore this single test (computed in constant work), not the stronger
+  "adjacent unused tiles" check its comment describes. Each rejected tile adds
+  its full width to the skipped count and, unless backfill is enabled, becomes
+  consumed, even if it held a positive slot cursor.
+- **Tiles.** From the start, each later untouched tile is taken at its *full*
+  declared width until the value is covered. Tiles with any nonzero status are
+  passed over unchanged, so a value can span gaps. The datatype alignment
+  applies until the first tile is taken, then becomes one.
+- **Stack.** Remaining bytes go to the stack pool at its cursor, justified by
+  the action's `justifyRight` (an explicit left/right placement, not the pool's
+  default). Disabled spill, or a stack placement that fails its minimum size or
+  slots, is `NoFit` with the uncovered byte count.
+- **Excess** can only come from the final tile. A `float` action that used
+  exactly one tile records `FloatConversion` over that tile's whole container,
+  with the raw size as logical width. Otherwise `justifyPieces` removes the
+  excess from the first consumed tile when justifying right, else from the last.
+  The kept slice starts `excess` bytes into the tile iff
+  `big_endian ^ consume_most_significant ^ justify_right`.
+- **Order.** Pieces are reported most significant first: consumption order,
+  reversed unless the first consumed tile is most significant.
+
+The result keeps the logical width, `JoinStorage::Pieces` (each `JoinPiece` has
+its entry site, consumption step and a `PlacedPiece` with the physical range,
+significance in the whole value, source piece/offset and role) or
+`FloatConversion`. `steps` lists consumed tiles and the stack spill in
+consumption order, with their groups, slot ranges and value bytes.
+`skipped_tiles` and `excess` are also reported.
+
+### Transactions and stricter policies
+
+Success commits every change: taken tiles, skipped tiles and the stack cursor.
+`NoFit` and every error restore the state exactly, including skipped tiles and
+stack alignment holes, as upstream's `tmpStatus` copy does. This differs from
+bare fallback, whose `NoFit` keeps holes.
+
+Native code reuses resources or builds invalid storage in a few layouts. This
+action refuses them and returns no partial allocation:
+
+- **Held storage.** A taken tile holds its whole declared pool (every
+  nonconstant join piece); the spill holds its used slots; skipped tiles hold
+  nothing. Returning storage that overlaps held storage is `Overlap`. A used
+  non-first group of the stack pool is `GroupInUse`, and a consumed first stack
+  group is `Unsupported` (upstream would compute slots from status -1). These
+  checks run only when the action would succeed, because a `NoFit` returns no
+  storage.
+- **Join-pool tiles.** Upstream nests the tile's join-space varnode in the new
+  join. Here the tile contributes its own physical pieces in place, with the
+  same significance; constant padding stays unheld padding. The following are
+  `Unsupported`: truncating a join tile, a float conversion of a join or
+  padding tile, a join tile narrower than its join storage, a floating-extension
+  pentry tile inside a compound or truncated join, and truncating constant
+  padding. An exact single floating-extension tile yields its conversion.
+- **Invalid justification.** With variable-width tiles and right
+  justification, the excess can equal or exceed the first piece. Upstream would
+  then build a zero or wrapped width; this is `Unsupported` instead, and no
+  multi-piece crop is guessed.
+- **Domains and native ints.** A spill that leaves the signed stack domain is
+  `Unsupported`, never wrapped. If alignment enforcement reads a skipped-byte
+  count beyond `i32::MAX` (native signed overflow), that is also
+  `Unsupported`; an unread count is never refused.
+- **Representation.** `JoinRecord::mergeSequence` merges contiguous pieces that
+  form a named register or stack range; pieces here stay unmerged, with the
+  same bytes and significance. Zero-width tiles, which would never finish the
+  source fit loop, are `InvalidDeclaration` (the parser rejects them first).
+
+Byte order is inherited policy. Native address spaces share the translator's
+byte order. The per-space model maps the first entry: a register entry uses its
+space (the SLEIGH source's global order in the adapter), a stack entry its
+backing space, and a join or `OTHER` entry the default space. Tile placement
+and join-piece traversal keep the per-space rules of `place_parameter`. Stack
+slot alignment uses its exact congruence, which matches native floor division
+for power-of-two alignments.
+
+### Bounds and cost
+
+`JoinLimits` bounds tiles (default 100,000), examined entries (4 million),
+group references (8 million), journaled group updates (1 million), nested
+placements (65,536), output pieces (65,536), occupied extents held after the
+call (65,536), source pieces per nested placement (1,024) and work (64
+million). Each nested placement gets only the remaining work and piece budget,
+and its work is included. Every exhaustion is `JoinError::Limit(name)`, with a
+nested output-piece limit reported as `"pieces"`. Invalid requests, state
+mismatches, initialization errors, unsupported layouts, safeguard refusals and
+invalid placement declarations are separate variants. Already-held extents are
+bounded on entry.
+
+Work charges, with `lookup(n) = bits(n) + 1`, are:
+
+- 1 for the header, plus a binding and a space lookup for the list byte order.
+- 1 per scanned entry and 1 per collected tile; a binding lookup checks the
+  stack when spilling.
+- 2 per tile visit in either loop (entry plus status read), and 1 per status
+  write.
+- For the spill: 1 status read, the nested placement and 1 write.
+- For each taken tile: the nested placement, a binding lookup, the join-piece
+  count for a bit-slice join pool, the held-span charges shared with fallback,
+  and an occupied-extent lookup per held span.
+- For the spill's safeguards: 1 per stack group, its spans and lookups.
+- 1 per output piece for ordering and significance.
+
+The action is iterative, has no recursion and allocates nothing per payload
+byte. Its vectors are bounded by tiles and pieces, checked before growth.
+Work is linear in tiles, plus logarithmic lookups.
+
+### Validation evidence
+
+`tests/join_action.rs` has 26 directed tests with hand-derived expectations.
+They cover defaults and true-only toggles, the first-entry byte order in a
+mixed-endian layout, and `RuleAction` attributes. They work all eight
+byte-order/significance/justification combinations by hand. Further cases:
+alignment skips, ARM-style float backfill, and positive cursors at and after
+the start tile. Gaps, spills with the action's justification and the original
+alignment, and the alignment reset after a register are covered. Each kind of
+`NoFit` is checked for transactional rollback. So are float conversion versus
+truncation, join and padding tiles, and every unmodeled join-tile refusal.
+Variable-width excess, initialization and tile eligibility, invalid requests,
+signed stack bounds and domain escapes are tested. So are overlap, group-in-use
+and consumed-stack refusals, and the native-int refusal. Absolute work charges
+(64, 87 and 20 units) are derived by hand. Every limit is checked at its exact
+value and one below, every lower work budget fails, and each failure restores
+the state. Two more tests check linear scaling over 1,000 versus 4,000 tiles,
+and determinism and thread safety.
+
+`tests/join_oracle.rs` transcribes the retained `checkFit` (including its
+non-advancing loop), `assignAddress`, `justifyPieces`, `extractTiles`,
+`getStackEntry`, `getAddrBySlot` (native floor division) and
+`assignAddressFromPieces` over `int4` statuses and a fixture-owned layout. It
+also models held extents independently. Over 6,000 generated layouts it
+matched 18,044 requests in both byte orders, input and output lists and both
+stack growth directions. The comparisons cover 6,514 assignments, 3,021 spills,
+2,230 truncations, 358 float conversions, 2,541 start skips (626 with
+backfill, 292 over positive cursors) and 272 gap spans. They also include
+4,286 disabled-spill and 2,676 stack no-fits, 340 invalid justifications, and
+2,888 no-tile and 1,340 missing-stack errors. Statuses and held byte extents
+are compared after every request. The oracle covers single-range tiles; join
+tiles are covered by the directed tests.
+
+In an isolated copy, all 41 compiling mutations of `join.rs` were caught by
+`join_action` and `join_oracle`. The mutations cover defaults and toggles, the
+list byte order, tile and stack eligibility, the start search, backfill and
+positive cursors, the alignment reset, stack justification and cursor, float
+conversion, cropping, ordering, rollback, safeguards, budget charges and limit
+classification.
+
+`tests/join_real.rs` is ignored by default; run
+`cargo test --release -p ghidra-abi --test join_real -- --ignored`. It compiles
+real SLEIGH register files and uses the parsed `<join>` rules after pinning
+their attributes to the `.cspec` text:
+
+- x86-64 Go `abi-internal`: input and output int128 joins.
+- ARMv7 LE and BE `__stdcall`: float backfill, HFA and AAPCS core-register
+  alignment, and output float and core joins.
+- MIPS32 BE: struct `reversejustify`, scalar right justification, alignment
+  and both stack justifications.
+- AArch64 LE and BE `__cdecl`: `__int128` alignment and stack spill.
+
+Expected registers come from retained entry order and compiled offsets. The
+x86-64 Windows and GCC specs declare no `<join>` action, so they are not
+probed. The five probes ran in about 3 s after a release build. These checks
+cover the action, not the rule filters or dispatch.
+
+Still required, for a full calling convention: rule matching and dispatch,
+`pointermax`, hidden returns, `sharestack`, dual-class and per-member joins,
+datatype-driven requests from the native graph, output-trial recovery
+(`fillinOutputMap`) and SSA call effects. A source oracle for join tiles,
+which upstream nests, is also missing.
 
 ## Native primitive alignment
 

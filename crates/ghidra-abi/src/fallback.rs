@@ -19,9 +19,14 @@ use crate::{
 };
 
 mod effects;
+mod join;
 pub use effects::{
     EffectBatch, EffectContext, EffectError, EffectLimits, EffectOutcome, EffectUsage,
     StackThresholdIndexing,
+};
+pub use join::{
+    JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig, JoinError, JoinLimits, JoinNoFit,
+    JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind, JoinStorage, JoinUsage,
 };
 
 /// Explicit assignment to one list entry, as required by stack and compound
@@ -913,9 +918,22 @@ impl AllocationState {
         let binding = storage
             .binding(entry.site)
             .ok_or(SpanError::Unsupported("missing resolved binding"))?;
+        self.binding_spans(&binding.storage, declared, size, next_slot, budget)
+    }
+
+    /// [`Self::spans`] for an already resolved binding, without its lookup.
+    fn binding_spans(
+        &self,
+        resolved: &ResolvedStorage,
+        declared: &ghidra_languages::ParamEntry,
+        size: u32,
+        next_slot: u64,
+        budget: &mut Budget,
+    ) -> Result<(Vec<Span>, Option<SlotRange>), SpanError> {
+        let storage = &self.storage;
         let alignment = declared.alignment();
         let mut spans = Vec::new();
-        match &binding.storage {
+        match resolved {
             ResolvedStorage::Single(range) => {
                 budget.work(1)?;
                 let constant = self.constant(range.address.space, budget)?;

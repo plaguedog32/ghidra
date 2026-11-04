@@ -3,10 +3,10 @@
 //! Storage resolution, per-pool placement and bare declaration-ordered fallback
 //! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
 //! evaluated separately, over either the Java datatype view or the converted
-//! native decompiler view (`NativeTypeGraph`). Selected-pool assignments and
-//! ordered resource effects support rule execution; the full rule dispatcher
-//! and signature allocator remain unimplemented. See the crate README for
-//! those boundaries.
+//! native decompiler view (`NativeTypeGraph`). Selected-pool assignments,
+//! ordered resource effects and the native `<join>` action support rule
+//! execution; the full rule dispatcher and signature allocator remain
+//! unimplemented. See the crate README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
@@ -32,6 +32,8 @@ pub use fallback::{
     AllocationState, ClassMatch, DeclaredRules, EffectBatch, EffectContext, EffectError,
     EffectLimits, EffectOutcome, EffectUsage, FallbackAssignment, FallbackBatch, FallbackError,
     FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest, FallbackUsage, GroupState,
+    JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig, JoinError, JoinLimits, JoinNoFit,
+    JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind, JoinStorage, JoinUsage,
     OccupiedExtent, PoolAssignment, PoolRequest, SlotRange, StackThresholdIndexing,
     UnexecutedDeclarations,
 };

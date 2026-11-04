@@ -6,6 +6,7 @@
 
 mod compiler;
 mod error;
+mod fallback;
 mod placement;
 mod registry;
 mod resources;
@@ -16,6 +17,11 @@ pub use compiler::{
     ResolvedMemoryRange, ResolvedSpaceBase,
 };
 pub use error::{AbiError, AbiLimits, AbiResult};
+pub use fallback::{
+    AllocationState, ClassMatch, DeclaredRules, FallbackAssignment, FallbackBatch, FallbackError,
+    FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest, FallbackUsage, GroupState,
+    OccupiedExtent, SlotRange, UnexecutedDeclarations,
+};
 pub use placement::{
     Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,
     PlacementError, PlacementLimits, PlacementOutcome, PlacementRequest, place_parameter,

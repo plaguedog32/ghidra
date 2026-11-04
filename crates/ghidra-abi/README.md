@@ -6,9 +6,10 @@ and join significance explicit. It is a native Rust layer and uses no Java or
 Ghidra C++ process.
 
 Whole-signature allocation, prototype-rule evaluation, injection compilation and
-type recovery remain separate stages. Resource-group planning and placement in
-an explicitly selected pool are described below. Successful
-storage resolution does not mean that a calling convention is executable.
+type recovery remain separate stages. Resource-group planning, placement in
+an explicitly selected pool and the retained declaration-ordered *fallback*
+primitive are described below. Successful storage resolution, or a successful
+fallback batch, does not mean that a calling convention is executable.
 
 ## API and ownership
 
@@ -335,4 +336,173 @@ justification, aligned float bytes and multi-slot upward growth.
 This primitive does not select a model or pool from a datatype, consume shared
 resources, allocate a complete signature, execute model rules, infer ABI return
 values from P-code RETURN, or integrate call effects. Those remain required
-work toward a complete native calling-convention implementation.
+work toward a complete native calling-convention implementation. The fallback
+layer below consumes resources for explicit requests; it is still not
+signature allocation.
+
+## Fallback allocation over declared pools
+
+`AllocationState::new(&CompilerResources, model, ParameterDirection, FallbackLimits)`
+creates the owned list-local resource state (`allocateStatus`): one
+`GroupState` per list group plus the physical extents held so far.
+`assign_fallback(&resources, &[FallbackRequest], FallbackPolicy, FallbackLimits)`
+assigns a batch with the retained primitive (C++ `ParamListStandard::
+assignAddressFallback`, Java `ParamListStandard.assignAddressFallback`) over
+`place_parameter`:
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::*;
+use ghidra_languages::{CompilerSpec, StorageClass};
+use ghidra_pcode::{AddressSpace, Endianness, SpaceId, SpaceKind};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let space = |id, name: &str, kind| AddressSpace { id: SpaceId(id), name: name.into(),
+    kind, address_size: 4, word_size: 1, endianness: Endianness::Little };
+let registers = ["r0", "r1", "sp"].iter().enumerate().map(|(i, name)|
+    RegisterDefinition { name: (*name).into(), space: SpaceId(1),
+        offset: 4 * i as u64, size: 4 }).collect();
+let file = Arc::new(RegisterFile::new(vec![space(0, "ram", SpaceKind::Ram),
+    space(1, "register", SpaceKind::Register)], SpaceId(0), registers,
+    Default::default())?);
+let spec = CompilerSpec::parse_str(r#"<compiler_spec>
+<stackpointer register="sp" space="ram"/><default_proto>
+<prototype name="p" extrapop="0" stackshift="0"><input>
+<pentry minsize="1" maxsize="4"><register name="r0"/></pentry>
+<pentry minsize="1" maxsize="4"><register name="r1"/></pentry>
+<pentry minsize="1" maxsize="500" align="4"><addr space="stack" offset="4"/></pentry>
+</input><output/></prototype></default_proto></compiler_spec>"#,
+    None, &Default::default())?;
+let storage = CompilerStorage::new(Arc::new(spec), file, Default::default())?;
+let resources = CompilerResources::new(Arc::new(storage), Default::default())?;
+let mut state = AllocationState::new(&resources, 0, ParameterDirection::Input,
+    Default::default())?;
+let int = FallbackRequest::new(4, 4, StorageClass::General);
+let batch = state.assign_fallback(&resources, &[int; 3], FallbackPolicy::default(),
+    Default::default())?;
+let FallbackOutcome::Assigned(third) = &batch.outcomes[2] else { unreachable!() };
+assert_eq!(third.site, BindingSite::Input { model: 0, entry: 2 });
+assert_eq!(third.slots, Some(SlotRange { first: 0, next: 1 }));
+assert_eq!(state.groups(), [GroupState::Consumed, GroupState::Consumed,
+    GroupState::Available { used_slots: 1 }]);
+# Ok(())
+# }
+```
+
+Each request visits the list's entries in declaration order. An entry is
+skipped when its *first* group is consumed or its class does not match:
+`ClassMatch::GeneralAcceptsAny` (retained `matchExact == false`) lets a
+`General` entry take any class; `ClassMatch::Exact` requires the requested
+class. Otherwise `place_parameter` runs at that group's cursor with default
+justification. A candidate that does not fit writes skipped alignment holes
+back to the cursor, as `getAddrBySlot` does, and the loop continues. An
+exclusion success consumes every group of the entry; an aligned success
+advances only the first group's cursor. The first request that fits nowhere is
+`NoFit` and later ones are `NotAttempted`, as in Java `assignMap`. Results
+keep the model, direction and entry site, slot ranges, and the unchanged
+`PlacedValue` (register provenance, constant padding, float conversion).
+
+A request is an explicit storage width (the datatype's aligned size), a
+relative alignment and a `StorageClass`. No datatype graph, metatype mapping
+or concrete value is involved.
+
+**This is not prototype allocation.** Model rules, `pointermax`, hidden-return
+conversion and pointer insertion, `this` and `thisbeforeretpointer` ordering,
+the register output strategy, injections, `sharestack`, merged-model selection
+and parameter conversion are never executed. With the default
+`DeclaredRules::Reject` policy, a list that declares rules or `pointermax` is
+refused with `RulesNotExecuted`. `DeclaredRules::BypassUnexecuted` runs the
+bare primitive anyway, as upstream rule actions do, and
+`FallbackBatch::unexecuted` records every skipped declaration. An output
+`NoFit` is neither a void result nor a hidden-return decision. Nothing is
+inferred from P-code `RETURN`.
+
+### State ownership and refusals
+
+The state is owned, `Clone`, `Send` and `Sync`, and tied to one overlay
+(`Arc` identity) and list; another overlay is a `StateMismatch`. Input and
+output lists, and different models, use separate states. Any error restores
+the state exactly and returns no partial batch. A `NoFit` is not an error: the
+state keeps earlier assignments and the cursor holes, matching the retained
+status array. A caller that needs all-or-nothing behavior can clone a state,
+run fallback on the clone and commit it, as `MultiMemberAssign` does with
+`tmpStatus`.
+
+The retained status test reads one group per entry. Valid lists can still
+make it reuse resources, so these typed errors replace such results:
+
+- `GroupInUse`: the selected entry's first group is free but another of its
+  groups is consumed or has used slots. Example: `r0` (minimum 4), a
+  `<group>` of float `f0` and `r1`, and a join `r1:r0` (groups `[0, 1]`). A
+  2-byte float skips `r0` and consumes the shared group in `f0`; an 8-byte
+  value would then take `r1:r0`.
+- `Overlap`: the selected storage shares a byte with storage held by an
+  earlier assignment. Exclusion entries hold their whole pool (every
+  nonconstant join piece, or the pool capacity); aligned entries hold their
+  used slots; constant padding holds nothing. Examples: two joins sharing a
+  piece that matches no earlier pool, a join piece that only partly matches an
+  earlier pool, and an aligned pool spanning several groups, whose cursor does
+  not mark a contained register.
+- `Unsupported`: an aligned join pool (no slot-to-piece occupancy model), or
+  a selected slice outside its address domain. Retained code would wrap the
+  address; trying the next entry instead would be a new policy.
+
+Retained selection is safe when each aligned pool has one distinct group,
+every join piece exactly matches an earlier single pool, and no request can
+take a later group of a multi-group entry while its first group stays free.
+The real probes below never hit a refusal. Among shipped specs only Dalvik
+has an aligned register pool (one group), and none has an aligned join. A
+survey of every compiling pair has not been done. Coordinates are
+mathematical bytes with signed stack offsets; unsigned wrapping is not
+emulated.
+
+### Bounds
+
+One `FallbackLimits` budget covers each batch: requests (default 4,096),
+examined entries (4 million), group references (8 million), group updates
+(1 million), assignments (4,096), output pieces (65,536), occupied extents
+held by the state (65,536) and work (64 million). `max_groups` (100,000)
+bounds the state created by `new`. Each nested placement receives only the
+remaining work and output-piece budget plus a fixed per-candidate source-piece
+cap (1,024); its work is added to the total. Counts are checked before growth
+with overflow-checked arithmetic. A batch examines at most requests times
+entries. Overlap checks use an ordered map with charged logarithmic cost.
+There is no recursion and no buffer proportional to an address span. An undo
+journal, bounded by updates and new extents, restores the state on error.
+
+### Validation evidence
+
+`tests/fallback.rs` has 19 default tests with hand-derived expectations:
+Windows-like shared float/integer groups continuing onto the stack, exact
+versus General class matching and declaration order, containing pools and
+joins, alignment holes kept after `NoFit` and from failed candidates, positive
+growth, signed stack containment across zero, big-endian justification,
+padding and float conversion compared with direct `place_parameter`,
+independent input/output states, each refusal (state restored, the same error
+in a combined batch, a one-byte boundary overlap versus adjacency), the rules
+policy, invalid requests/lists/states, determinism and thread safety. Every
+limit is checked at its exact value and one below, every smaller work budget
+fails, and a later failing batch restores the earlier state. A 4,096-request
+batch costs about four times a 1,024-request batch. An independent model
+transcribes Java `assignAddressFallback` and `getAddrBySlot` (power-of-two
+alignments, little endian) with a byte-set oracle that does not read group
+arrays. Over 2,500 generated layouts (2,129 valid) it matched 4,820
+assignments, 1,037 no-fits, 80 group-in-use and 59 overlap refusals. In an
+isolated copy, 20 of 21 source mutations were caught. The survivor removes the
+nested work cap; the total charge still rejects it with the same
+`Limit("work")` error.
+
+`tests/fallback_real.rs` is ignored by default; run
+`cargo test --release -p ghidra-abi --test fallback_real -- --ignored`. It
+compiles real SLEIGH register files and checks x86-64 Windows `__fastcall`,
+GCC `__stdcall` and Go `abi-internal`, ARMv7 `default`, MIPS32 BE, AArch64 Go
+(input and output joins) and SH-2A. Each probe with rules pins a request
+the bypassed rules would assign differently: Windows `pointermax`, GCC
+`join_dual_class`, the Go float `goto_stack`, ARM `s2:s3` backfill, and MIPS
+`consume_extra`. AArch64 Go input and SH-2A declare no rules, so the default
+policy runs. The five probes took about 2 s after a release build.
+
+Remaining required work: model-rule actions and `pointermax`, hidden-return
+handling, `this` and hidden-parameter ordering, output strategy and
+`sharestack` semantics, merged-model selection, datatype-driven requests, and
+call effects in SSA. The refused layouts above, a survey of every compiling
+pair and the 1.88 MSRV toolchain remain unvalidated.

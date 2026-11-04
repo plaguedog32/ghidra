@@ -1191,6 +1191,7 @@ dependencies = [
 name = "ghidra-sleigh"
 version = "0.3.0"
 dependencies = [
+ "ghidra-cfg",
  "ghidra-languages",
  "ghidra-pcode",
  "tempfile",

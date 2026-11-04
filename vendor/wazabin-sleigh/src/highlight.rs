@@ -691,7 +691,9 @@ mod tests {
 
     #[test]
     fn tokens_never_overlap_and_cover_only_real_bytes() {
-        let text = include_str!("../../web/presets/toy16.slaspec");
+        // Local fork: the published package omits `web/`; the same file from
+        // the package's source commit is kept as a test fixture.
+        let text = include_str!("tests/fixtures/upstream_web_presets/toy16.slaspec");
         let mut last = 0;
         for t in tokens(text) {
             assert!(t.start >= last, "overlap at {}", t.start);

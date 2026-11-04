@@ -24,7 +24,7 @@ use crate::{
     spec::Spec,
 };
 use pcode_types::{
-    PcodePlan, PcodeSink, SPACE_CONST, SpaceId,
+    PcodePlan, PcodeSink, QualifiedTarget, SPACE_CONST, SpaceId,
     streaming::{Emitter, LoadNode, Planner, RangeNode, SizeInference, StmtKind, TargetNode},
 };
 use traverse::{Traversal, Visitor};
@@ -57,6 +57,12 @@ impl Visitor for Materialize {
                 TargetNode::Label(name) => LabelOrNode::Label(name.into()),
                 TargetNode::Node(name) => LabelOrNode::Node(name.into()),
                 TargetNode::Expr(node) => LabelOrNode::Expr(expr(node)?),
+                TargetNode::Address(target) => LabelOrNode::Address(QualifiedTarget {
+                    space: target.space,
+                    ptr: expr(target.ptr)?,
+                    size: target.size,
+                    units: target.units,
+                }),
             })
         };
         let load = |load: LoadNode<View<'_>>| -> Result<Load, EmitError> {
@@ -136,9 +142,9 @@ pub(super) fn pcode_ast_for_instance(
 }
 
 /// Feeds each statement to the p-code planner.
-struct Planning(Planner);
+struct Planning<'a>(Planner<'a, InstructionPcodeContext<'a>>);
 
-impl Visitor for Planning {
+impl Visitor for Planning<'_> {
     fn statement(&mut self, statement: StmtKind<'_, View<'_>>) -> Result<(), EmitError> {
         self.0.statement(statement);
         Ok(())
@@ -223,7 +229,7 @@ pub(super) fn stream_instance<S: PcodeSink, E: From<EmitError>>(
 ) -> Result<S, E> {
     let context = InstructionPcodeContext::new(spec);
 
-    let mut planning = Planning(Planner::new());
+    let mut planning = Planning(Planner::new(&context));
     let mut traversal = Traversal::new(spec, instance);
     traversal
         .run(instance, &mut planning)
@@ -369,7 +375,12 @@ impl RuntimeValue {
         }
     }
 
-    /// Return the pointer directly, ignoring space/size (for branch targets).
+    /// Return the pointer directly, ignoring space/size.
+    ///
+    /// Only the `globalset` address uses this now; direct branch and call
+    /// targets keep the space, width and units (see `View`'s
+    /// `direct_target`). A `globalset` through a non-default or
+    /// word-addressed export therefore still loses that provenance.
     pub(crate) fn into_direct_target_expr(self) -> Expression {
         match self {
             Self::Expr(expr) => expr,

@@ -10,10 +10,12 @@
 
 use std::collections::HashMap;
 
+use pcode_types::DirectDestination;
+
 use crate::{
     CompiledSpec, Compiler, Decoder, Instruction, LabelId, Opcode, PcodeOp, PcodePlan, PcodeSink,
-    SourceDb, Varnode,
-    semantics::{PcodeAst, PcodeExprKind, PcodeStatementKind, PcodeTarget},
+    SPACE_CONST, SourceDb, Varnode,
+    semantics::{PcodeAst, PcodeStatementKind},
 };
 
 const BRANCHING: &str = include_str!("fixtures/semantics/branching.sla");
@@ -24,8 +26,9 @@ const USEROP_MACRO: &str = include_str!("fixtures/semantics/userop_macro.sla");
 const MACRO_LVALUE: &str = include_str!("fixtures/semantics/macro_lvalue.sla");
 const STREAMED: &str = include_str!("fixtures/semantics/streamed.sla");
 const DELAY_SLOT: &str = include_str!("fixtures/delay_slot/root.sla");
+pub(super) const QUALIFIED_TARGET: &str = include_str!("fixtures/semantics/qualified_target.sla");
 
-fn compile(name: &str, source: &str) -> CompiledSpec {
+pub(super) fn compile(name: &str, source: &str) -> CompiledSpec {
     let mut sources = SourceDb::new();
     let root = sources.add_file(name, source);
     Compiler::new(&mut sources)
@@ -36,18 +39,18 @@ fn compile(name: &str, source: &str) -> CompiledSpec {
 /// The sink that rebuilds what [`Instruction::pcode_ops`] returns: it keeps
 /// every operation and resolves local branches to the relative offsets flat
 /// p-code uses, and it keeps the plan so the test can check it too.
-struct Rebuild {
+pub(super) struct Rebuild {
     ops: Vec<PcodeOp>,
     label_ops: HashMap<LabelId, usize>,
     fixups: Vec<(usize, LabelId)>,
     labels: Vec<String>,
     terminal: Vec<bool>,
-    direct_branches: Vec<u64>,
-    direct_calls: Vec<u64>,
+    pub(super) direct_branches: Vec<DirectDestination>,
+    pub(super) direct_calls: Vec<DirectDestination>,
 }
 
 impl Rebuild {
-    fn from_plan(plan: &PcodePlan) -> Self {
+    pub(super) fn from_plan(plan: &PcodePlan) -> Self {
         Self {
             ops: Vec::new(),
             label_ops: HashMap::new(),
@@ -61,7 +64,7 @@ impl Rebuild {
         }
     }
 
-    fn finish(mut self) -> Vec<PcodeOp> {
+    pub(super) fn finish(mut self) -> Vec<PcodeOp> {
         for (op_index, label) in &self.fixups {
             let target = self.label_ops[label];
             let relative = target as i64 - *op_index as i64;
@@ -88,51 +91,50 @@ impl PcodeSink for Rebuild {
     }
 }
 
-/// What the owned AST says the plan should contain.
+/// What the owned AST and its owned lowering say the plan should contain.
 struct AstFacts {
     labels: Vec<String>,
     terminal: Vec<bool>,
-    direct_branches: Vec<u64>,
-    direct_calls: Vec<u64>,
+    direct_branches: Vec<DirectDestination>,
+    direct_calls: Vec<DirectDestination>,
 }
 
 impl AstFacts {
-    fn of(ast: &PcodeAst) -> Self {
+    /// Labels come from the AST. Destinations come from the owned lowering's
+    /// operations, in order: a direct branch or call whose target is not a
+    /// constant (a local label's relative offset) names a destination by its
+    /// space and offset.
+    fn of(ast: &PcodeAst, ops: &[PcodeOp]) -> Self {
         let mut facts = Self {
             labels: Vec::new(),
             terminal: Vec::new(),
             direct_branches: Vec::new(),
             direct_calls: Vec::new(),
         };
-        let address = |target: &PcodeTarget| match target {
-            PcodeTarget::Expr(expr) => match expr.ty {
-                PcodeExprKind::SizedInt { value, .. } => Some(value),
-                _ => None,
-            },
-            _ => None,
-        };
+        for op in ops {
+            let list = match op.opcode {
+                Opcode::Branch | Opcode::CBranch => &mut facts.direct_branches,
+                Opcode::Call => &mut facts.direct_calls,
+                _ => continue,
+            };
+            let target = op.inputs[0];
+            if target.space == SPACE_CONST {
+                continue;
+            }
+            let destination = DirectDestination {
+                space: target.space,
+                offset: target.offset,
+            };
+            if !list.contains(&destination) {
+                list.push(destination);
+            }
+        }
         for statement in &ast.statements {
-            match &statement.ty {
-                PcodeStatementKind::Label(name) if !facts.labels.iter().any(|l| l == &**name) => {
-                    facts.labels.push(name.to_string());
-                    facts.terminal.push(false);
-                }
-                PcodeStatementKind::Branch { target }
-                | PcodeStatementKind::ConditionalBranch { target, .. } => {
-                    if let Some(address) = address(target)
-                        && !facts.direct_branches.contains(&address)
-                    {
-                        facts.direct_branches.push(address);
-                    }
-                }
-                PcodeStatementKind::Call { target } => {
-                    if let Some(address) = address(target)
-                        && !facts.direct_calls.contains(&address)
-                    {
-                        facts.direct_calls.push(address);
-                    }
-                }
-                _ => {}
+            if let PcodeStatementKind::Label(name) = &statement.ty
+                && !facts.labels.iter().any(|l| l == &**name)
+            {
+                facts.labels.push(name.to_string());
+                facts.terminal.push(false);
             }
         }
         for statement in ast.statements.iter().rev() {
@@ -149,13 +151,16 @@ impl AstFacts {
 /// Checks that the streamed path agrees with the owned one on `instruction`,
 /// and returns the shared result.
 #[track_caller]
-fn assert_equivalent(instruction: &Instruction<'_, '_>) -> Result<Vec<PcodeOp>, String> {
+pub(super) fn assert_equivalent(instruction: &Instruction<'_, '_>) -> Result<Vec<PcodeOp>, String> {
     let what = format!("{instruction:?}");
     let owned = instruction.pcode_ops();
     let streamed = instruction.pcode_ops_streamed(Rebuild::from_plan);
     match (owned, streamed) {
         (Ok(owned), Ok(streamed)) => {
-            let facts = AstFacts::of(&instruction.pcode_ast().expect("the AST expands"));
+            let facts = AstFacts::of(
+                &instruction.pcode_ast().expect("the AST expands"),
+                &owned.ops,
+            );
             assert_eq!(streamed.labels, facts.labels, "{what}: plan labels");
             assert_eq!(streamed.terminal, facts.terminal, "{what}: terminal labels");
             assert_eq!(
@@ -405,6 +410,7 @@ fn every_fixture_encoding_agrees() {
         ("macro_lvalue.sla", MACRO_LVALUE),
         ("streamed.sla", STREAMED),
         ("delay_slot.sla", DELAY_SLOT),
+        ("qualified_target.sla", QUALIFIED_TARGET),
     ] {
         let spec = compile(name, source);
         let decoder = Decoder::new(&spec);
@@ -417,7 +423,7 @@ fn every_fixture_encoding_agrees() {
                     let _ = assert_equivalent(&instruction);
                     decoded += 1;
                 }
-                if name != "delay_slot.sla" {
+                if name != "delay_slot.sla" && name != "qualified_target.sla" {
                     break;
                 }
             }

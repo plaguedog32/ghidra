@@ -40,6 +40,7 @@ pub(super) fn body(
 fn statement(statement: &Ast) -> Result<(), EmitError> {
     let target = |target: &LabelOrNode| match target {
         LabelOrNode::Expr(expr) => self::expr(expr),
+        LabelOrNode::Address(target) => self::expr(&target.ptr),
         LabelOrNode::Label(_) | LabelOrNode::Node(_) => Ok(()),
     };
     match &statement.ty {

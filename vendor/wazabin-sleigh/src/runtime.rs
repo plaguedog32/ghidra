@@ -84,6 +84,10 @@ impl PcodeLoweringContext for InstructionPcodeContext<'_> {
     fn address_size(&self, space: SpaceId) -> Option<usize> {
         (usize::from(space) < self.spec.spaces.len()).then(|| self.spec.spaces[space].addr_size)
     }
+
+    fn word_size(&self, space: SpaceId) -> Option<usize> {
+        (usize::from(space) < self.spec.spaces.len()).then(|| self.spec.spaces[space].word_size)
+    }
 }
 
 /// The identity of a compiled specification's content.
@@ -109,6 +113,13 @@ impl PcodeLoweringContext for InstructionPcodeContext<'_> {
 ///
 /// The digest is 128-bit FNV-1a. It is not a cryptographic commitment; it
 /// distinguishes specifications that differ, which is all provenance needs.
+///
+/// This is a local fork of the published package. Its compiler also absorbs
+/// [`FORK_SEMANTICS_REVISION`](Self::FORK_SEMANTICS_REVISION), so a
+/// specification it compiles never carries the fingerprint upstream
+/// `wazabin-sleigh` of the same version would give it. A fingerprint is an
+/// identity, not a serialized-format version: it does not make blobs from
+/// different compilers interchangeable.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SpecFingerprint(u128);
 
@@ -116,9 +127,25 @@ impl SpecFingerprint {
     const FNV_OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const FNV_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
 
+    /// The semantics revision of this fork's compiler, digested after the
+    /// package version. Bump it whenever the fork changes what a
+    /// specification compiles or lowers to.
+    pub const FORK_SEMANTICS_REVISION: &'static str =
+        "ghidra-rs/wazabin-sleigh-fork/direct-target-provenance/1";
+
     /// Digests the preprocessed source text a compilation consumed, under the
-    /// compiler version doing it.
+    /// compiler version and fork revision doing it.
     pub(crate) fn of_compilation(preprocessed: &str) -> Self {
+        Self::digest(&[
+            env!("CARGO_PKG_VERSION").as_bytes(),
+            Self::FORK_SEMANTICS_REVISION.as_bytes(),
+            preprocessed.as_bytes(),
+        ])
+    }
+
+    /// FNV-1a over each part, each preceded by its little-endian `u64`
+    /// length so no two sequences of parts digest the same bytes.
+    pub(crate) fn digest(parts: &[&[u8]]) -> Self {
         let mut hash = Self::FNV_OFFSET;
         let mut absorb = |bytes: &[u8]| {
             for &byte in bytes {
@@ -126,11 +153,10 @@ impl SpecFingerprint {
                 hash = hash.wrapping_mul(Self::FNV_PRIME);
             }
         };
-        let version = env!("CARGO_PKG_VERSION");
-        absorb(&(version.len() as u64).to_le_bytes());
-        absorb(version.as_bytes());
-        absorb(&(preprocessed.len() as u64).to_le_bytes());
-        absorb(preprocessed.as_bytes());
+        for part in parts {
+            absorb(&(part.len() as u64).to_le_bytes());
+            absorb(part);
+        }
         Self(hash)
     }
 

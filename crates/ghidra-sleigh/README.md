@@ -1,8 +1,10 @@
 # SLEIGH source lifting foundation
 
 This crate compiles SLEIGH `.slaspec` and included `.sinc` source in process
-with pinned `wazabin-sleigh = 0.1.15`, then explicitly adapts its raw p-code
-to `ghidra-pcode`. It does not launch Java, JNI, the upstream C++ compiler,
+with `wazabin-sleigh = 0.1.15`, then explicitly adapts its raw p-code to
+`ghidra-pcode`. The root manifest patches that package and its
+`wazabin-pcode 0.1.4` dependency to local forks in `vendor/`, which preserve
+direct-target provenance; `vendor/README.md` records their origin and changes. It does not launch Java, JNI, the upstream C++ compiler,
 or the native decompiler, and does not consume precompiled Ghidra `.sla` files.
 
 `SleighLanguage::from_spec(path, &context)` accepts processor-context values.
@@ -50,19 +52,23 @@ real-source execution probes. NDS32's little-endian catalog variant also remains
 incompatible with its source's hardcoded big-endian declaration. None of this
 models CSR privilege, interrupt entry, or hardware side effects.
 
-Independent review also reproduced a pre-existing compiler gap: direct
-`goto`/`call` through a sub-table's non-default-space starred export loses that
-space before raw lowering. For an `aux` export at address 0x10, it emits a
-default-space target 0x10, whereas word-size-3 `aux` requires byte target 0x30 in
-`aux`. This needs a compiler provenance repair, including byte-only languages;
-it cannot be reconstructed safely from the already flattened target literal.
-The selected processor probes do not establish this cross-space behavior.
+Direct `goto`/`call` through a sub-table's starred export keeps the export's
+space and width; the forked compiler carries them from the decoded export to
+raw lowering instead of reconstructing them from a flattened literal. For
+`export *[aux]:2 0x10:1` the target is two bytes at `aux` byte 0x10, or 0x30
+when `aux` has three-byte words, as native SLEIGH computes it. Dynamic exported
+pointers and constant-space destinations are lowering errors rather than
+guessed branches, and a failed instruction commits no context. The machine and
+CFG builder still refuse transfers outside the code space, so such a target is
+lifted faithfully but not executed. The word-space address-of audit also visits
+these targets' pointers. `globalset` through a table export still uses only its
+pointer. The selected processor probes do not establish cross-space behavior.
 
 Always-on tests compile self-contained source and includes, run adapted p-code
 in the Rust evaluator, and check context, delay slots, endian memory access,
 identity extensions, word-space byte extents and pointer scaling, explicit
-unsupported code-address units, and the opcode-71
-boundary. Opt-in tests compile this checkout's x86-64, ARM7 LE/BE/mixed-endian,
+unsupported code-address units, space-qualified direct targets and their
+machine/CFG refusal, and the opcode-71 boundary. Opt-in tests compile this checkout's x86-64, ARM7 LE/BE/mixed-endian,
 MIPS32 LE/BE, AArch64 BE64 and SH-2A sources. An ARM v8 probe compiles all seven
 catalog variants (A32/Thumb, LE/BE, little-instruction/big-data and v8-M),
 executes LDA/LDAB and both VSELEQ outcomes, and checks that VPNOT executes only
@@ -81,6 +87,7 @@ On Windows, use a Visual Studio Developer PowerShell or dot-source the root
 (`stacker`/`psm`) require a native compiler and SDK; the SLEIGH compiler and
 runtime themselves are Rust and require no JDK/JRE or Ghidra C++ runtime.
 
-This crate is Apache-2.0. `wazabin-sleigh` and its p-code dependency are MIT;
+This crate is Apache-2.0. `wazabin-sleigh` and its p-code dependency, including
+the vendored forks, are MIT;
 retained Ghidra processor specifications retain their upstream notices and
 licenses. Further dependency licenses are recorded by their own packages.

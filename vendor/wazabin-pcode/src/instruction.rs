@@ -11,12 +11,13 @@
 
 use crate::{
     Ast, AstNode, BinaryOperator, BitRangeFieldId, Builtin, Expression, ExpressionTy, Ident,
-    LabelOrNode, LocalVarId, PCodeOpId, PcodeAst, RangeParam, RegisterId, SPACE_CONST, SpaceId,
-    TableId, UnaryOperator,
+    LabelOrNode, LocalVarId, PCodeOpId, PcodeAst, PointerUnits, QualifiedTarget, RangeParam,
+    RegisterId, SPACE_CONST, SpaceId, TableId, UnaryOperator,
     streaming::{ExprKind, ExprNode, LoadNode, LoadSpace, RangeNode, StmtKind, TargetNode},
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt,
 };
@@ -314,6 +315,15 @@ pub trait PcodeLoweringContext {
     fn bitrange_info(&self, id: BitRangeFieldId) -> Option<BitRangeInfo>;
     /// Returns the byte width of offsets in `space`.
     fn address_size(&self, space: SpaceId) -> Option<usize>;
+    /// Returns the bytes per addressable unit of `space`.
+    ///
+    /// A space-qualified direct target needs it to convert its pointer to a
+    /// byte offset. The default knows no word size, so such a target fails
+    /// with [`PcodeLowerError::UnknownSpaceDimensions`] rather than being
+    /// assumed byte-addressed. Local fork addition.
+    fn word_size(&self, _space: SpaceId) -> Option<usize> {
+        None
+    }
 }
 
 /// Failure while lowering source-shaped SLEIGH p-code to flat operations.
@@ -363,6 +373,18 @@ pub enum PcodeLowerError {
     UnknownLabel(Box<str>),
     /// A direct branch target was not a literal machine address or local label.
     InvalidDirectTarget,
+    /// A space-qualified direct target named a space whose address size or
+    /// word size the lowering context does not know. Local fork addition.
+    UnknownSpaceDimensions(SpaceId),
+    /// A space-qualified direct target named a space whose dimensions the
+    /// native byte-offset arithmetic is not modeled for: a zero address or
+    /// word size, or a byte domain of at least 2^63 bytes other than exactly
+    /// 2^64. Local fork addition.
+    UnsupportedSpaceDimensions {
+        space: SpaceId,
+        address_size: usize,
+        word_size: usize,
+    },
 }
 
 impl fmt::Display for PcodeLowerError {
@@ -418,6 +440,20 @@ impl fmt::Display for PcodeLowerError {
             Self::DuplicateLabel(label) => write!(f, "duplicate p-code label `{label}`"),
             Self::UnknownLabel(label) => write!(f, "unknown p-code label `{label}`"),
             Self::InvalidDirectTarget => write!(f, "invalid direct p-code branch target"),
+            Self::UnknownSpaceDimensions(space) => write!(
+                f,
+                "unknown address or word size for space {} in a direct p-code target",
+                usize::from(*space)
+            ),
+            Self::UnsupportedSpaceDimensions {
+                space,
+                address_size,
+                word_size,
+            } => write!(
+                f,
+                "space {} with address size {address_size} and word size {word_size} has no modeled byte domain for a direct p-code target",
+                usize::from(*space)
+            ),
         }
     }
 }
@@ -462,8 +498,32 @@ pub struct PcodePlan {
     /// Whether each label stands at the end of the instruction, where it is
     /// the machine instruction's fall-through rather than a local block.
     terminal: Vec<bool>,
-    direct_branches: Vec<u64>,
-    direct_calls: Vec<u64>,
+    direct_branches: Vec<DirectDestination>,
+    direct_calls: Vec<DirectDestination>,
+}
+
+/// An out-of-instruction destination of a direct branch or call: a byte
+/// offset in a space.
+///
+/// Destinations are identified by space *and* offset, so equal offsets in
+/// distinct spaces stay distinct. This is the location the emitted
+/// operation's target varnode names, without its width. Local fork
+/// replacement for the upstream space-less `u64` plan entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DirectDestination {
+    /// The destination's space.
+    pub space: SpaceId,
+    /// Byte offset in `space`.
+    pub offset: u64,
+}
+
+impl From<Varnode> for DirectDestination {
+    fn from(target: Varnode) -> Self {
+        Self {
+            space: target.space,
+            offset: target.offset,
+        }
+    }
 }
 
 impl PcodePlan {
@@ -480,13 +540,13 @@ impl PcodePlan {
         self.terminal[label.index()]
     }
 
-    /// Addresses this instruction can reach with a direct branch.
-    pub fn direct_branches(&self) -> &[u64] {
+    /// Destinations this instruction can reach with a direct branch.
+    pub fn direct_branches(&self) -> &[DirectDestination] {
         &self.direct_branches
     }
 
-    /// Addresses this instruction can reach with a direct call.
-    pub fn direct_calls(&self) -> &[u64] {
+    /// Destinations this instruction can reach with a direct call.
+    pub fn direct_calls(&self) -> &[DirectDestination] {
         &self.direct_calls
     }
 
@@ -506,17 +566,17 @@ impl PcodePlan {
         id
     }
 
-    /// Declares an address this instruction can reach with a direct branch.
-    pub fn declare_direct_branch(&mut self, address: u64) {
-        if !self.direct_branches.contains(&address) {
-            self.direct_branches.push(address);
+    /// Declares a destination this instruction can reach with a direct branch.
+    pub fn declare_direct_branch(&mut self, destination: DirectDestination) {
+        if !self.direct_branches.contains(&destination) {
+            self.direct_branches.push(destination);
         }
     }
 
-    /// Declares an address this instruction can reach with a direct call.
-    pub fn declare_direct_call(&mut self, address: u64) {
-        if !self.direct_calls.contains(&address) {
-            self.direct_calls.push(address);
+    /// Declares a destination this instruction can reach with a direct call.
+    pub fn declare_direct_call(&mut self, destination: DirectDestination) {
+        if !self.direct_calls.contains(&destination) {
+            self.direct_calls.push(destination);
         }
     }
 
@@ -746,8 +806,10 @@ fn live_locals<S>(statements: &[Ast<S>], out: &mut Vec<LocalVarId>) {
         }
     }
     fn walk_target<S>(target: &LabelOrNode<S>, out: &mut Vec<LocalVarId>) {
-        if let LabelOrNode::Expr(value) = target {
-            walk_expr(value, out);
+        match target {
+            LabelOrNode::Expr(value) => walk_expr(value, out),
+            LabelOrNode::Address(target) => walk_expr(&target.ptr, out),
+            LabelOrNode::Label(_) | LabelOrNode::Node(_) => {}
         }
     }
     for statement in statements {
@@ -809,12 +871,11 @@ pub fn infer_local_sizes<S, W: Width>(
 /// the per-instruction inference cannot resolve one.
 pub fn plan_instruction_with(
     ast: &PcodeAst,
-    // Widths are the only planning fact that needs the context, and they are
-    // supplied; kept so the signature mirrors `plan_instruction`.
-    _context: &impl PcodeLoweringContext,
+    // Resolves direct destinations exactly as emission does.
+    context: &impl PcodeLoweringContext,
     local_sizes: LocalSizes,
 ) -> Result<PcodePlan, PcodeLowerError> {
-    let mut planner = Planner::new();
+    let mut planner = Planner::new(context);
     for statement in &ast.statements {
         planner.statement(StmtKind::from(&statement.ty));
     }
@@ -1028,8 +1089,8 @@ impl<'a, 'p, 's, C: PcodeLoweringContext + ?Sized, S: PcodeSink + ?Sized>
         target: TargetNode<'_, E>,
         condition: Option<Varnode>,
     ) -> Result<(), PcodeLowerError> {
-        let target = match target {
-            TargetNode::Label(label) => {
+        let target = match resolve_direct_target(self.context, target)? {
+            DirectTarget::Local(label) => {
                 // A local branch keeps its symbolic target: a streaming sink
                 // cannot be handed a relative offset to a label it has not
                 // reached yet.
@@ -1037,10 +1098,7 @@ impl<'a, 'p, 's, C: PcodeLoweringContext + ?Sized, S: PcodeSink + ?Sized>
                 self.sink.branch_label(opcode, id, condition);
                 return Ok(());
             }
-            TargetNode::Node(_) => {
-                return Err(PcodeLowerError::InternalNode("unresolved branch target"));
-            }
-            TargetNode::Expr(expr) => self.direct_target(expr)?,
+            DirectTarget::Location(target) => target,
         };
         match condition {
             Some(condition) => self.emit(opcode, None, &[target, condition]),
@@ -1057,18 +1115,6 @@ impl<'a, 'p, 's, C: PcodeLoweringContext + ?Sized, S: PcodeSink + ?Sized>
         let target = self.lower_expr(target, None)?;
         self.emit(opcode, None, &[target]);
         Ok(())
-    }
-
-    fn direct_target<E: ExprNode>(&self, target: E) -> Result<Varnode, PcodeLowerError> {
-        let ExprKind::SizedInt { value, size } = target.kind() else {
-            return Err(PcodeLowerError::InvalidDirectTarget);
-        };
-        let size = size
-            .or(target.size())
-            .or_else(|| self.context.address_size(self.context.default_space()))
-            .ok_or(PcodeLowerError::UnknownSize)?;
-        Self::checked_size(size)?;
-        Ok(Varnode::new(self.context.default_space(), value, size))
     }
 
     fn lower_effect<E: ExprNode>(&mut self, expr: E) -> Result<(), PcodeLowerError> {
@@ -1905,15 +1951,17 @@ impl std::ops::Deref for Inputs {
 /// [`Emitter`] then lowers. Local widths are either supplied up front, when
 /// the producer resolved them from its source bodies, or inferred first with a
 /// [`SizeInference`] over the same statements.
-#[derive(Default)]
-pub struct Planner {
+pub struct Planner<'c, C: PcodeLoweringContext + ?Sized> {
+    context: &'c C,
     plan: PcodePlan,
 }
 
-impl Planner {
-    /// Starts an empty plan.
-    pub fn new() -> Self {
+impl<'c, C: PcodeLoweringContext + ?Sized> Planner<'c, C> {
+    /// Starts an empty plan whose destinations `context` resolves, as the
+    /// [`Emitter`] the plan is made for will.
+    pub fn new(context: &'c C) -> Self {
         Self {
+            context,
             plan: PcodePlan::default(),
         }
     }
@@ -1933,18 +1981,18 @@ impl Planner {
             }
             StmtKind::Branch { target } | StmtKind::ConditionalBranch { target, .. } => {
                 // A target this pass cannot resolve is left out; emission
-                // reports it with the error it would have reported before.
-                if let TargetNode::Expr(expr) = target
-                    && let Some(address) = Self::direct_address(expr)
+                // resolves it with the same function and reports the error.
+                if let Ok(DirectTarget::Location(target)) =
+                    resolve_direct_target(self.context, target)
                 {
-                    self.plan.declare_direct_branch(address);
+                    self.plan.declare_direct_branch(target.into());
                 }
             }
             StmtKind::Call { target } => {
-                if let TargetNode::Expr(expr) = target
-                    && let Some(address) = Self::direct_address(expr)
+                if let Ok(DirectTarget::Location(target)) =
+                    resolve_direct_target(self.context, target)
                 {
-                    self.plan.declare_direct_call(address);
+                    self.plan.declare_direct_call(target.into());
                 }
             }
             _ => {}
@@ -1976,12 +2024,161 @@ impl Planner {
         self.plan.local_sizes = local_sizes;
         self.plan
     }
+}
 
-    fn direct_address<E: ExprNode>(target: E) -> Option<u64> {
-        match target.kind() {
-            ExprKind::SizedInt { value, .. } => Some(value),
-            _ => None,
+/// A direct branch or call target as raw p-code sees it.
+enum DirectTarget<'a> {
+    /// An instruction-local label, kept symbolic for the sink.
+    Local(Cow<'a, str>),
+    /// The location the operation's target varnode names.
+    Location(Varnode),
+}
+
+/// Resolves a direct branch or call target.
+///
+/// The one resolution both the [`Planner`] and the [`Emitter`] use, so a plan
+/// names exactly the destinations emission produces.
+fn resolve_direct_target<'a, C: PcodeLoweringContext + ?Sized, E: ExprNode>(
+    context: &C,
+    target: TargetNode<'a, E>,
+) -> Result<DirectTarget<'a>, PcodeLowerError> {
+    match target {
+        TargetNode::Label(label) => Ok(DirectTarget::Local(label)),
+        TargetNode::Node(_) => Err(PcodeLowerError::InternalNode("unresolved branch target")),
+        TargetNode::Expr(target) => {
+            default_space_target(context, target).map(DirectTarget::Location)
         }
+        TargetNode::Address(target) => {
+            qualified_target(context, target).map(DirectTarget::Location)
+        }
+    }
+}
+
+/// A literal destination in the default space: the upstream behavior for an
+/// ordinary target, unchanged.
+fn default_space_target<C: PcodeLoweringContext + ?Sized, E: ExprNode>(
+    context: &C,
+    target: E,
+) -> Result<Varnode, PcodeLowerError> {
+    let ExprKind::SizedInt { value, size } = target.kind() else {
+        return Err(PcodeLowerError::InvalidDirectTarget);
+    };
+    let size = size
+        .or(target.size())
+        .or_else(|| context.address_size(context.default_space()))
+        .ok_or(PcodeLowerError::UnknownSize)?;
+    if size == 0 {
+        return Err(PcodeLowerError::ZeroSize);
+    }
+    Ok(Varnode::new(context.default_space(), value, size))
+}
+
+/// A space-qualified destination, fixed as Ghidra's native SLEIGH engine
+/// fixes a constant export handle (`HandleTpl::fix`, then
+/// `SleighBuilder::generateLocation`): the destination keeps its space and
+/// exported width; a pointer in address units is scaled to bytes with
+/// wrapping 64-bit multiplication; the byte offset is wrapped into the
+/// space's byte domain. The pointer is never truncated to its own width.
+///
+/// A pointer that is not a constant would need native's dynamic-handle
+/// `LOAD`, and a constant- or unique-space destination needs semantics this
+/// lowerer does not model; each is refused rather than approximated.
+fn qualified_target<C: PcodeLoweringContext + ?Sized, E: ExprNode>(
+    context: &C,
+    target: QualifiedTarget<E>,
+) -> Result<Varnode, PcodeLowerError> {
+    if target.space == SPACE_CONST {
+        return Err(PcodeLowerError::Unsupported(
+            "a constant-space direct branch or call target",
+        ));
+    }
+    if target.space == context.unique_space() {
+        return Err(PcodeLowerError::Unsupported(
+            "a unique-space direct branch or call target",
+        ));
+    }
+    let ExprKind::SizedInt { value, .. } = target.ptr.kind() else {
+        return Err(PcodeLowerError::Unsupported(
+            "a direct branch or call through a dynamic exported pointer",
+        ));
+    };
+    if target.size == 0 {
+        return Err(PcodeLowerError::ZeroSize);
+    }
+    let domain = ByteDomain::of(context, target.space)?;
+    let bytes = match target.units {
+        PointerUnits::Bytes => value,
+        // `AddrSpace::addressToByte`: `val * ws` in unsigned 64-bit arithmetic.
+        PointerUnits::AddressUnits => value.wrapping_mul(domain.word_size),
+    };
+    Ok(Varnode::new(target.space, domain.wrap(bytes), target.size))
+}
+
+/// The byte offsets of one space, as native `AddrSpace` computes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ByteDomain {
+    /// Bytes per addressable unit.
+    word_size: u64,
+    /// The highest byte offset (`AddrSpace::highest`).
+    highest: u64,
+}
+
+impl ByteDomain {
+    /// `AddrSpace::calcScaleMask`: `highest = calc_mask(addressSize) *
+    /// wordsize + (wordsize - 1)`, where `calc_mask` saturates at eight
+    /// bytes, so the domain holds `(calc_mask + 1) * wordsize` bytes.
+    ///
+    /// Only domains whose native wrap is well defined are modeled: fewer than
+    /// 2^63 bytes, where `wrapOffset`'s signed modulus is positive, or
+    /// exactly 2^64 bytes, which never wraps. Anything else, including a
+    /// zero address or word size, is an explicit error: native computes a
+    /// wrapped `highest` or a non-positive signed modulus for those.
+    fn of<C: PcodeLoweringContext + ?Sized>(
+        context: &C,
+        space: SpaceId,
+    ) -> Result<Self, PcodeLowerError> {
+        let (Some(address_size), Some(word_size)) =
+            (context.address_size(space), context.word_size(space))
+        else {
+            return Err(PcodeLowerError::UnknownSpaceDimensions(space));
+        };
+        let unsupported = PcodeLowerError::UnsupportedSpaceDimensions {
+            space,
+            address_size,
+            word_size,
+        };
+        if address_size == 0 || word_size == 0 {
+            return Err(unsupported);
+        }
+        let units: u128 = 1 << (8 * address_size.min(8));
+        let bytes = u128::try_from(word_size)
+            .ok()
+            .and_then(|word_size| units.checked_mul(word_size))
+            .filter(|&bytes| bytes < 1 << 63 || bytes == 1 << 64)
+            .ok_or(unsupported)?;
+        Ok(Self {
+            word_size: word_size as u64,
+            highest: (bytes - 1) as u64,
+        })
+    }
+
+    /// `AddrSpace::wrapOffset`: an offset above `highest` is reduced by a
+    /// signed (truncating) remainder modulo the domain size, which is then
+    /// made non-negative.
+    fn wrap(self, offset: u64) -> u64 {
+        if offset <= self.highest {
+            return offset;
+        }
+        // `of` guarantees 0 < modulus < 2^63 here, so this cast is native's
+        // `(intb)(highest + 1)` and neither the remainder nor the correction
+        // can overflow.
+        let modulus = (self.highest + 1) as i64;
+        let remainder = (offset as i64) % modulus;
+        (if remainder < 0 {
+            remainder + modulus
+        } else {
+            remainder
+        }) as u64
     }
 }
 
@@ -2727,8 +2924,13 @@ mod tests {
     fn plan_reports_labels_and_out_of_instruction_targets() {
         let plan = plan_instruction(&ast(branch_statements()), &Context).unwrap();
         assert_eq!(plan.labels(), &[Box::<str>::from("skip")]);
-        assert_eq!(plan.direct_branches(), &[0x1000]);
-        assert_eq!(plan.direct_calls(), &[0x2000]);
+        // An ordinary literal target is in the default space (1 here).
+        let default = |offset| super::DirectDestination {
+            space: SpaceId::new(1),
+            offset,
+        };
+        assert_eq!(plan.direct_branches(), &[default(0x1000)]);
+        assert_eq!(plan.direct_calls(), &[default(0x2000)]);
     }
 
     #[test]
@@ -3398,6 +3600,12 @@ mod tests {
             PcodeLowerError::DuplicateLabel("loop".into()),
             PcodeLowerError::UnknownLabel("loop".into()),
             PcodeLowerError::InvalidDirectTarget,
+            PcodeLowerError::UnknownSpaceDimensions(SpaceId::new(5)),
+            PcodeLowerError::UnsupportedSpaceDimensions {
+                space: SpaceId::new(5),
+                address_size: 8,
+                word_size: 2,
+            },
         ];
         for error in errors {
             assert!(!error.to_string().is_empty());
@@ -3645,5 +3853,549 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, PcodeLowerError::UnresolvedSpace);
+    }
+}
+
+/// Space-qualified direct targets (local fork addition).
+///
+/// Every expected offset below is worked by hand from Ghidra's native
+/// definitions, not from this crate's implementation:
+///
+/// * `AddrSpace::calcScaleMask` (`space.cc`): `highest = calc_mask(size) *
+///   wordsize + (wordsize - 1)`, so a one-byte space with word size 3 has
+///   `highest = 0xff * 3 + 2 = 767` and 768 byte offsets.
+/// * `AddrSpace::addressToByte` (`space.hh`): `val * ws` in unsigned 64-bit
+///   arithmetic.
+/// * `AddrSpace::wrapOffset` (`space.hh`): above `highest`, `(intb)off %
+///   (intb)(highest + 1)` with C++'s truncating remainder, plus the modulus
+///   when the remainder is negative.
+#[cfg(test)]
+mod qualified_target_tests {
+    use super::{
+        BitRangeInfo, DirectDestination, Opcode, PcodeLowerError, PcodeLoweringContext, PcodeOp,
+        Varnode, lower_instruction, plan_instruction,
+    };
+    use crate::{
+        Ast, AstNode, Expression, ExpressionTy, Ident, LabelOrNode, PcodeAst, PcodeResolver,
+        PointerUnits, QualifiedTarget, RegisterId, SPACE_CONST, SpaceId,
+    };
+
+    const RAM: SpaceId = SpaceId::new(1);
+    const UNIQUE: SpaceId = SpaceId::new(2);
+    const REGISTER: SpaceId = SpaceId::new(3);
+    /// Spaces 10 + w have word size w; 20 + w are the same with two-byte
+    /// addresses.
+    fn aux(word: usize) -> SpaceId {
+        SpaceId::new(10 + word)
+    }
+    fn aux16(word: usize) -> SpaceId {
+        SpaceId::new(20 + word)
+    }
+    /// A space whose dimensions are set by the test.
+    const CUSTOM: SpaceId = SpaceId::new(40);
+    /// A space the context knows nothing about.
+    const UNKNOWN: SpaceId = SpaceId::new(41);
+
+    /// Spaces with the dimensions the native formulas are checked against.
+    struct Dims {
+        custom: (Option<usize>, Option<usize>),
+    }
+
+    const DIMS: Dims = Dims {
+        custom: (Some(8), Some(1)),
+    };
+
+    impl PcodeLoweringContext for Dims {
+        fn default_space(&self) -> SpaceId {
+            RAM
+        }
+        fn unique_space(&self) -> SpaceId {
+            UNIQUE
+        }
+        fn register_varnode(&self, id: RegisterId) -> Option<Varnode> {
+            Some(Varnode::new(REGISTER, usize::from(id) as u64 * 4, 4))
+        }
+        fn bitrange_info(&self, _: crate::BitRangeFieldId) -> Option<BitRangeInfo> {
+            None
+        }
+        fn address_size(&self, space: SpaceId) -> Option<usize> {
+            match usize::from(space) {
+                0 => Some(8),
+                1..=3 => Some(2),
+                11..=18 => Some(1),
+                21..=28 => Some(2),
+                40 => self.custom.0,
+                _ => None,
+            }
+        }
+        fn word_size(&self, space: SpaceId) -> Option<usize> {
+            match usize::from(space) {
+                0..=3 => Some(1),
+                id @ 11..=18 => Some(id - 10),
+                id @ 21..=28 => Some(id - 20),
+                40 => self.custom.1,
+                _ => None,
+            }
+        }
+    }
+
+    /// A context that does not override the provided `word_size`.
+    struct NoWordSizes;
+
+    impl PcodeLoweringContext for NoWordSizes {
+        fn default_space(&self) -> SpaceId {
+            RAM
+        }
+        fn unique_space(&self) -> SpaceId {
+            UNIQUE
+        }
+        fn register_varnode(&self, _: RegisterId) -> Option<Varnode> {
+            None
+        }
+        fn bitrange_info(&self, _: crate::BitRangeFieldId) -> Option<BitRangeInfo> {
+            None
+        }
+        fn address_size(&self, _: SpaceId) -> Option<usize> {
+            Some(1)
+        }
+    }
+
+    fn int(value: u64, size: usize) -> Expression {
+        Expression {
+            ty: ExpressionTy::SizedInt {
+                value,
+                size: Some(size),
+            },
+            size: Some(size),
+            span: (),
+        }
+    }
+
+    fn starred(space: SpaceId, ptr: Expression, size: usize) -> LabelOrNode {
+        LabelOrNode::Address(QualifiedTarget {
+            space,
+            ptr,
+            size,
+            units: PointerUnits::AddressUnits,
+        })
+    }
+
+    fn goto(target: LabelOrNode) -> PcodeAst {
+        PcodeAst {
+            statements: vec![Ast::from(AstNode::Branch { target })],
+        }
+    }
+
+    /// The single varnode a lowered `goto` branches to.
+    fn branch_target(context: &impl PcodeLoweringContext, target: LabelOrNode) -> Varnode {
+        let pcode = lower_instruction(&goto(target), context).unwrap();
+        assert_eq!(pcode.ops.len(), 1);
+        assert_eq!(pcode.ops[0].opcode, Opcode::Branch);
+        pcode.ops[0].inputs[0]
+    }
+
+    fn branch_error(context: &impl PcodeLoweringContext, target: LabelOrNode) -> PcodeLowerError {
+        lower_instruction(&goto(target), context).unwrap_err()
+    }
+
+    #[test]
+    fn starred_constant_keeps_its_space_and_export_width_and_scales_to_bytes() {
+        // `export *[aux]:2 0x10:1` for word sizes 1 through 8: 0x10 units
+        // are 0x10 * w bytes, which every one-byte space holds.
+        let expected = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
+        for (word, offset) in (1..=8).zip(expected) {
+            let target = branch_target(&DIMS, starred(aux(word), int(0x10, 1), 2));
+            assert_eq!(target, Varnode::new(aux(word), offset, 2), "word {word}");
+        }
+    }
+
+    #[test]
+    fn branch_conditional_branch_and_call_share_the_destination() {
+        let target = || starred(aux(3), int(0x10, 1), 2);
+        let ast = PcodeAst {
+            statements: vec![
+                Ast::from(AstNode::Branch { target: target() }),
+                Ast::from(AstNode::ConditionalBranch {
+                    condition: int(1, 1),
+                    target: target(),
+                }),
+                Ast::from(AstNode::Call { target: target() }),
+            ],
+        };
+        let destination = Varnode::new(aux(3), 0x30, 2);
+        assert_eq!(
+            lower_instruction(&ast, &DIMS).unwrap().ops,
+            vec![
+                PcodeOp::new(Opcode::Branch, None, vec![destination]),
+                PcodeOp::new(
+                    Opcode::CBranch,
+                    None,
+                    vec![destination, Varnode::constant(1, 1)]
+                ),
+                PcodeOp::new(Opcode::Call, None, vec![destination]),
+            ]
+        );
+    }
+
+    #[test]
+    fn export_width_is_independent_of_the_pointer_width() {
+        assert_eq!(
+            branch_target(&DIMS, starred(aux(1), int(0x10, 1), 2)).size,
+            2
+        );
+        assert_eq!(
+            branch_target(&DIMS, starred(aux(1), int(0x10, 8), 1)).size,
+            1
+        );
+        assert_eq!(
+            branch_target(&DIMS, starred(aux16(4), int(0x10, 1), 8)).size,
+            8
+        );
+    }
+
+    #[test]
+    fn the_pointer_is_not_truncated_to_its_suffix_width() {
+        // `0x110:1` in a two-byte space of three-byte words: native scales
+        // the whole constant, 0x110 * 3 = 0x330, inside the 0x30000-byte
+        // domain. Truncating to the one-byte suffix would give 0x30.
+        assert_eq!(
+            branch_target(&DIMS, starred(aux16(3), int(0x110, 1), 2)).offset,
+            0x330
+        );
+    }
+
+    #[test]
+    fn byte_offsets_wrap_like_native_wrap_offset() {
+        let at = |word: usize, value: u64| {
+            branch_target(&DIMS, starred(aux(word), int(value, 1), 1)).offset
+        };
+        // The final complete word is in the domain: unit 0xff of a one-byte
+        // space of three-byte words starts at byte 765, and 767 is highest.
+        assert_eq!(at(3, 0xff), 765);
+        // Unit 0x100 is byte 768: one past highest, so it wraps to zero.
+        assert_eq!(at(3, 0x100), 0);
+        // 0x101 * 3 = 771 = 768 + 3.
+        assert_eq!(at(3, 0x101), 3);
+        // A byte-addressed space wraps modulo 256.
+        assert_eq!(at(1, 0x1_0010), 0x10);
+    }
+
+    #[test]
+    fn high_bit_pointers_use_the_signed_remainder() {
+        let at = |word: usize, value: u64| {
+            branch_target(&DIMS, starred(aux(word), int(value, 8), 1)).offset
+        };
+        // 0x8000000000000000 * 3 wraps (3 * 2^63 = 2^64 + 2^63) to 2^63,
+        // which is i64::MIN as `intb`. Truncating division by 768 leaves
+        // -9223372036854775808 + 12009599006321322 * 768 = -512, and
+        // -512 + 768 = 256. An unsigned 2^63 % 768 would give 512; the
+        // unwrapped (3 * 2^63) % 768 would give 0.
+        assert_eq!(at(3, 0x8000_0000_0000_0000), 256);
+        // -16 * 3 = -48 as `intb`; -48 % 768 = -48; -48 + 768 = 720. An
+        // unsigned (2^64 - 48) % 768 would give 208.
+        assert_eq!(at(3, (-16_i64) as u64), 720);
+        // -16 in a byte-addressed one-byte space: -16 + 256 = 240.
+        assert_eq!(at(1, (-16_i64) as u64), 240);
+    }
+
+    #[test]
+    fn scaling_overflow_wraps_in_sixty_four_bits_before_the_domain_wrap() {
+        // 0x5555555555555556 * 3 = 2^64 + 2, which 64-bit multiplication
+        // wraps to 2, already inside the domain. Reducing the exact product
+        // modulo 768 would instead give 258.
+        assert_eq!(
+            branch_target(&DIMS, starred(aux(3), int(0x5555_5555_5555_5556, 8), 1)).offset,
+            2
+        );
+    }
+
+    #[test]
+    fn a_full_sixty_four_bit_domain_never_wraps() {
+        let context = Dims {
+            custom: (Some(8), Some(1)),
+        };
+        assert_eq!(
+            branch_target(&context, starred(CUSTOM, int(u64::MAX, 8), 8)).offset,
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn byte_unit_pointers_are_wrapped_but_not_scaled() {
+        let bytes = |value| {
+            LabelOrNode::Address(QualifiedTarget {
+                space: aux(3),
+                ptr: int(value, 2),
+                size: 2,
+                units: PointerUnits::Bytes,
+            })
+        };
+        assert_eq!(branch_target(&DIMS, bytes(0x10)).offset, 0x10);
+        // 800 is above highest (767): 800 - 768 = 32.
+        assert_eq!(branch_target(&DIMS, bytes(800)).offset, 32);
+    }
+
+    #[test]
+    fn unknown_or_unmodeled_dimensions_are_explicit_errors() {
+        assert_eq!(
+            branch_error(&DIMS, starred(UNKNOWN, int(0x10, 1), 2)),
+            PcodeLowerError::UnknownSpaceDimensions(UNKNOWN)
+        );
+        // The provided `word_size` knows nothing: no byte-addressing guess.
+        assert_eq!(
+            branch_error(&NoWordSizes, starred(aux(1), int(0x10, 1), 2)),
+            PcodeLowerError::UnknownSpaceDimensions(aux(1))
+        );
+        for (address_size, word_size) in [
+            (Some(0), Some(1)),
+            (Some(1), Some(0)),
+            // 2^64 units of two bytes: native's `highest` wraps.
+            (Some(8), Some(2)),
+            // Exactly 2^63 bytes: native's signed modulus is negative.
+            (Some(7), Some(128)),
+            // Above 2^63 bytes.
+            (Some(7), Some(255)),
+        ] {
+            let context = Dims {
+                custom: (address_size, word_size),
+            };
+            assert_eq!(
+                branch_error(&context, starred(CUSTOM, int(0x10, 1), 2)),
+                PcodeLowerError::UnsupportedSpaceDimensions {
+                    space: CUSTOM,
+                    address_size: address_size.unwrap(),
+                    word_size: word_size.unwrap(),
+                },
+                "{address_size:?} {word_size:?}"
+            );
+        }
+        for (address_size, word_size) in [(Some(7), None), (None, Some(1))] {
+            let context = Dims {
+                custom: (address_size, word_size),
+            };
+            assert_eq!(
+                branch_error(&context, starred(CUSTOM, int(0x10, 1), 2)),
+                PcodeLowerError::UnknownSpaceDimensions(CUSTOM)
+            );
+        }
+        // Just below 2^63 bytes is modeled, and wraps signed: 2^56 units of
+        // 127 bytes. 2^63 * 127 wraps to 2^63 = i64::MIN; the domain is
+        // 127 * 2^56, and -2^63 = -(128 * 2^56) leaves -2^56, plus the
+        // domain gives 126 * 2^56.
+        let context = Dims {
+            custom: (Some(7), Some(127)),
+        };
+        assert_eq!(
+            branch_target(&context, starred(CUSTOM, int(1 << 63, 8), 1)).offset,
+            126 << 56
+        );
+    }
+
+    #[test]
+    fn zero_width_destinations_are_rejected() {
+        assert_eq!(
+            branch_error(&DIMS, starred(aux(3), int(0x10, 1), 0)),
+            PcodeLowerError::ZeroSize
+        );
+    }
+
+    #[test]
+    fn constant_unique_and_dynamic_destinations_are_refused() {
+        assert_eq!(
+            branch_error(&DIMS, starred(SPACE_CONST, int(0x10, 4), 4)),
+            PcodeLowerError::Unsupported("a constant-space direct branch or call target")
+        );
+        assert_eq!(
+            branch_error(&DIMS, starred(UNIQUE, int(0x10, 4), 4)),
+            PcodeLowerError::Unsupported("a unique-space direct branch or call target")
+        );
+        let register = Expression {
+            ty: ExpressionTy::Ident(Ident::Register(RegisterId::new(0))),
+            size: Some(4),
+            span: (),
+        };
+        let dynamic = PcodeLowerError::Unsupported(
+            "a direct branch or call through a dynamic exported pointer",
+        );
+        assert_eq!(
+            branch_error(&DIMS, starred(aux(3), register.clone(), 2)),
+            dynamic
+        );
+        // A compound constant pointer is not folded either.
+        let sum = Expression {
+            ty: ExpressionTy::Binop(crate::Binop {
+                op: crate::BinaryOperator::Add,
+                lhs: Box::new(int(0x10, 1)),
+                rhs: Box::new(int(1, 1)),
+            }),
+            size: Some(1),
+            span: (),
+        };
+        assert_eq!(branch_error(&DIMS, starred(aux(3), sum, 2)), dynamic);
+        // A refusal is a lowering error, so the plan simply omits it.
+        let plan = plan_instruction(&goto(starred(aux(3), register, 2)), &DIMS).unwrap();
+        assert!(plan.direct_branches().is_empty());
+    }
+
+    #[test]
+    fn ordinary_literal_targets_keep_the_default_space() {
+        assert_eq!(
+            branch_target(&DIMS, LabelOrNode::Expr(int(0x10, 1))),
+            Varnode::new(RAM, 0x10, 1)
+        );
+        // Not wrapped into the default space's domain: unchanged behavior.
+        assert_eq!(
+            branch_target(&DIMS, LabelOrNode::Expr(int(0x1_0010, 4))),
+            Varnode::new(RAM, 0x1_0010, 4)
+        );
+    }
+
+    #[test]
+    fn plans_keep_equal_offsets_in_distinct_spaces_apart() {
+        let ast = PcodeAst {
+            statements: vec![
+                Ast::from(AstNode::ConditionalBranch {
+                    condition: int(1, 1),
+                    target: starred(aux(1), int(0x10, 1), 2),
+                }),
+                Ast::from(AstNode::ConditionalBranch {
+                    condition: int(1, 1),
+                    target: LabelOrNode::Expr(int(0x10, 2)),
+                }),
+                // 0x08 units of two bytes is byte 0x10 again, in a third space.
+                Ast::from(AstNode::ConditionalBranch {
+                    condition: int(1, 1),
+                    target: starred(aux(2), int(0x08, 1), 2),
+                }),
+                // The same destination twice is one entry.
+                Ast::from(AstNode::Branch {
+                    target: starred(aux(1), int(0x10, 1), 1),
+                }),
+                Ast::from(AstNode::Call {
+                    target: starred(aux(1), int(0x10, 1), 2),
+                }),
+                Ast::from(AstNode::Call {
+                    target: LabelOrNode::Expr(int(0x10, 2)),
+                }),
+            ],
+        };
+        let at = |space, offset| DirectDestination { space, offset };
+        let plan = plan_instruction(&ast, &DIMS).unwrap();
+        assert_eq!(
+            plan.direct_branches(),
+            &[at(aux(1), 0x10), at(RAM, 0x10), at(aux(2), 0x10)]
+        );
+        assert_eq!(plan.direct_calls(), &[at(aux(1), 0x10), at(RAM, 0x10)]);
+
+        // The plan names exactly what emission branches to.
+        let emitted: Vec<DirectDestination> = lower_instruction(&ast, &DIMS)
+            .unwrap()
+            .ops
+            .iter()
+            .map(|op| op.inputs[0].into())
+            .collect();
+        assert_eq!(
+            emitted,
+            vec![
+                at(aux(1), 0x10),
+                at(RAM, 0x10),
+                at(aux(2), 0x10),
+                at(aux(1), 0x10),
+                at(aux(1), 0x10),
+                at(RAM, 0x10),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_labels_are_unchanged_beside_qualified_targets() {
+        let ast = PcodeAst {
+            statements: vec![
+                Ast::from(AstNode::Label("top".into())),
+                Ast::from(AstNode::ConditionalBranch {
+                    condition: int(1, 1),
+                    target: LabelOrNode::Label("end".into()),
+                }),
+                Ast::from(AstNode::Call {
+                    target: starred(aux(3), int(0x10, 1), 2),
+                }),
+                Ast::from(AstNode::Branch {
+                    target: LabelOrNode::Label("top".into()),
+                }),
+                Ast::from(AstNode::Label("end".into())),
+            ],
+        };
+        let pcode = lower_instruction(&ast, &DIMS).unwrap();
+        // Forward: op 0 to the terminal label after op 2 is +3; backward: op
+        // 2 to op 0 is -2. Signed relative constants, eight bytes wide.
+        assert_eq!(pcode.ops[0].inputs[0], Varnode::constant(3, 8));
+        assert_eq!(pcode.ops[1].inputs[0], Varnode::new(aux(3), 0x30, 2));
+        assert_eq!(
+            pcode.ops[2].inputs[0],
+            Varnode::constant((-2_i64) as u64, 8)
+        );
+        let plan = plan_instruction(&ast, &DIMS).unwrap();
+        assert_eq!(plan.labels().len(), 2);
+        assert!(plan.is_terminal(super::LabelId::from_index(1)));
+        assert!(!plan.is_terminal(super::LabelId::from_index(0)));
+    }
+
+    #[test]
+    fn qualified_targets_round_trip_strip_spans_and_print() {
+        let target = LabelOrNode::Address(QualifiedTarget {
+            space: aux(3),
+            ptr: Expression {
+                ty: ExpressionTy::SizedInt {
+                    value: 0x10,
+                    size: Some(1),
+                },
+                size: Some(1),
+                span: (4_usize, 9_usize),
+            },
+            size: 2,
+            units: PointerUnits::AddressUnits,
+        });
+        let stripped = target.clone().strip_span();
+        assert_eq!(stripped, starred(aux(3), int(0x10, 1), 2));
+
+        let ast = goto(stripped.clone());
+        let bytes = bincode::serde::encode_to_vec(&ast, bincode::config::standard()).unwrap();
+        let (decoded, _): (PcodeAst, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(decoded, ast);
+        // Existing variants keep their indices: an ordinary target encodes
+        // with variant index 2, the qualified one with the appended 3.
+        let expr = bincode::serde::encode_to_vec(
+            LabelOrNode::Expr(int(1, 1)),
+            bincode::config::standard(),
+        )
+        .unwrap();
+        assert_eq!(expr[0], 2);
+        let address =
+            bincode::serde::encode_to_vec(&stripped, bincode::config::standard()).unwrap();
+        assert_eq!(address[0], 3);
+
+        struct Names;
+        impl PcodeResolver for Names {
+            fn ident_name(&self, _: &Ident) -> String {
+                "id".into()
+            }
+            fn field_name(&self, _: crate::FieldId) -> String {
+                "field".into()
+            }
+            fn space_name(&self, id: SpaceId) -> String {
+                format!("space{}", usize::from(id))
+            }
+            fn pcode_op_name(&self, _: crate::PCodeOpId) -> String {
+                "op".into()
+            }
+            fn macro_name(&self, _: crate::PMacroId) -> String {
+                "macro".into()
+            }
+        }
+        let printed = ast.pretty_print(&Names);
+        assert!(
+            printed.starts_with("goto address(space=space13, size=2, units=address-units, ptr=")
+        );
     }
 }

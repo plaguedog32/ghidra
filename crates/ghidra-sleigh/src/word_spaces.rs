@@ -52,10 +52,12 @@ impl<'a> Audit<'a> {
         Ok(())
     }
     fn target(&mut self, target: &'a PcodeTarget) -> Result<(), Error> {
-        if let PcodeTarget::Expr(expression) = target {
-            self.push(expression)?;
+        match target {
+            PcodeTarget::Expr(expression) => self.push(expression),
+            // A sub-table export used as a direct target carries its pointer.
+            PcodeTarget::Address(target) => self.push(&target.ptr),
+            PcodeTarget::Label(_) | PcodeTarget::Node(_) => Ok(()),
         }
-        Ok(())
     }
 }
 

@@ -1,6 +1,8 @@
 use std::fmt::{self, Debug};
 
-use crate::{Expression, FieldId, Ident, Load, PcodeResolver, Range, TableId, pretty_print_ident};
+use crate::{
+    Expression, FieldId, Ident, Load, PcodeResolver, Range, SpaceId, TableId, pretty_print_ident,
+};
 use serde::{Deserialize, Serialize};
 
 /// A branch/call target that may be a label, an unresolved name, or an expression.
@@ -20,7 +22,16 @@ pub enum LabelOrNode<S = ()> {
     Node(Box<str>),
 
     /// A computed destination: an address, or a value to branch through.
+    ///
+    /// A literal here is an address in the producer's default space.
     Expr(Expression<S>),
+
+    /// A destination that names its own space and width: what a sub-table
+    /// operand exports when it is used as a direct target.
+    ///
+    /// Local fork addition (appended so existing variant indices are
+    /// unchanged; this is not a cross-version blob guarantee).
+    Address(QualifiedTarget<Expression<S>>),
 }
 
 impl<S> LabelOrNode<S> {
@@ -30,6 +41,62 @@ impl<S> LabelOrNode<S> {
             LabelOrNode::Label(name) => LabelOrNode::Label(name),
             LabelOrNode::Node(name) => LabelOrNode::Node(name),
             LabelOrNode::Expr(expr) => LabelOrNode::Expr(expr.strip_span()),
+            LabelOrNode::Address(target) => {
+                LabelOrNode::Address(target.map_ptr(Expression::strip_span))
+            }
+        }
+    }
+}
+
+/// How a [`QualifiedTarget`]'s pointer counts its space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PointerUnits {
+    /// The pointer is already a byte offset in the space, as an unstarred
+    /// SLEIGH export handle is.
+    Bytes,
+    /// The pointer counts the space's addressable units (its word size), as
+    /// the pointer of a starred SLEIGH export `*[space]:size ptr` does.
+    AddressUnits,
+}
+
+/// A direct branch or call destination with its space, pointer and width.
+///
+/// SLEIGH's `export *[space]:size ptr` makes a sub-table operand stand for
+/// the `size`-byte location at `ptr` in `space`. Branching to that operand
+/// branches to that location: the destination keeps `space`, takes `size`
+/// as its width (not the pointer's width), and converts `ptr` to a byte
+/// offset according to `units`. `P` is the pointer's representation: an
+/// owned [`Expression`] in an AST, or a producer's node while streaming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QualifiedTarget<P> {
+    /// The destination space.
+    pub space: SpaceId,
+    /// The destination offset, in `units`.
+    pub ptr: P,
+    /// The destination width in bytes.
+    pub size: usize,
+    /// What `ptr` counts.
+    pub units: PointerUnits,
+}
+
+impl<P> QualifiedTarget<P> {
+    /// The same destination with its pointer converted by `f`.
+    pub fn map_ptr<Q>(self, f: impl FnOnce(P) -> Q) -> QualifiedTarget<Q> {
+        QualifiedTarget {
+            space: self.space,
+            ptr: f(self.ptr),
+            size: self.size,
+            units: self.units,
+        }
+    }
+
+    /// The same destination with its pointer borrowed.
+    pub fn as_ref(&self) -> QualifiedTarget<&P> {
+        QualifiedTarget {
+            space: self.space,
+            ptr: &self.ptr,
+            size: self.size,
+            units: self.units,
         }
     }
 }
@@ -304,6 +371,16 @@ fn pretty_print_target(spec: &impl PcodeResolver, target: &LabelOrNode) -> Strin
         LabelOrNode::Label(name) => format!("<{name}>"),
         LabelOrNode::Node(name) => (*name).to_string(),
         LabelOrNode::Expr(expr) => expr.pretty_print(spec),
+        LabelOrNode::Address(target) => format!(
+            "address(space={}, size={}, units={}, ptr={})",
+            spec.space_name(target.space),
+            target.size,
+            match target.units {
+                PointerUnits::Bytes => "bytes",
+                PointerUnits::AddressUnits => "address-units",
+            },
+            target.ptr.pretty_print(spec)
+        ),
     }
 }
 

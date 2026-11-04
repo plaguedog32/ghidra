@@ -1,0 +1,76 @@
+# Direct branch and call targets through sub-table exports (local fork).
+# A starred export keeps its space, its exported width and its pointer's
+# address units; refused shapes are refused explicitly.
+define endian=little;
+define space ram type=ram_space size=2 default;
+define space register type=register_space size=2;
+define space aux type=ram_space size=1 wordsize=3;
+define space aux16 type=ram_space size=2 wordsize=3;
+define space byte type=ram_space size=1;
+define register offset=0 size=2 [r0 r1];
+
+define token instr(8) op=(0,7);
+define token operand(8) imm=(0,7);
+
+macro skip(x) {
+    if (x == 0) goto <out>;
+    x = 1;
+  <out>
+}
+
+# Starred exports.
+tgt:    is epsilon { export *[aux]:2 0x10:1; }
+wide:   is epsilon { export *[aux]:4 0x10:1; }
+narrow: is epsilon { export *[aux]:1 0x10:2; }
+long:   is epsilon { export *[aux16]:2 0x110:1; }
+high:   is epsilon { export *[aux]:1 0x8000000000000000:8; }
+dflt:   is epsilon { export *:2 0x10:1; }
+btgt:   is epsilon { export *[byte]:2 0x10:1; }
+fld:    imm is imm { export *[aux]:2 imm; }
+pass:   tgt is tgt { export tgt; }
+pass2:  pass is pass { export pass; }
+
+# Shapes this increment refuses.
+dyn:    is epsilon { export *[aux]:2 r0; }
+cst:    is epsilon { export *[const]:2 0x10:2; }
+un:     is epsilon { export 0x10:2; }
+reg:    is epsilon { export r0; }
+
+:jb      is op=1 & tgt    { goto tgt; }
+:cb      is op=2 & tgt    { if (r0 == 0) goto tgt; }
+:cl      is op=3 & tgt    { call tgt; }
+:jw      is op=4 & wide   { goto wide; }
+:jn      is op=5 & narrow { goto narrow; }
+:jl      is op=6 & long   { goto long; }
+:jh      is op=7 & high   { goto high; }
+:jd      is op=8 & dflt   { goto dflt; }
+:jf fld  is op=9; fld     { goto fld; }
+:jp      is op=10 & pass2 { goto pass2; }
+:spaces  is op=11 & tgt & dflt & btgt {
+    if (r0 == 0) goto tgt;
+    if (r0 == 1) goto dflt;
+    if (r0 == 2) goto btgt;
+    call dflt;
+    call tgt;
+}
+:mix     is op=12 & tgt {
+    skip(r1);
+    if (r0 == 1) goto <end>;
+  <top>
+    call tgt;
+    r1 = r1 - 1;
+    if (r1 != 0) goto <top>;
+  <end>
+}
+:dj      is op=13 & tgt { delayslot(1); goto tgt; }
+:lab     is op=14 {
+    if (r0 == 0) goto <done>;
+    r0 = 2;
+  <done>
+}
+:jy      is op=15 & dyn { goto dyn; }
+:cy      is op=16 & dyn { call dyn; }
+:jc      is op=17 & cst { goto cst; }
+:ju      is op=18 & un  { goto un; }
+:jr      is op=19 & reg { goto reg; }
+:lit     is op=20       { goto 0x30; }

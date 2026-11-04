@@ -933,6 +933,12 @@ impl Resolver {
                 }
                 Ok(LabelOrNode::Expr(expr))
             }
+            // Source never spells one, but a qualified target already names
+            // its space and width; only its pointer needs resolving.
+            LabelOrNode::Address(target) => {
+                let ptr = self.resolve_pcode_expr(&target.ptr, span)?;
+                Ok(LabelOrNode::Address(target.map_ptr(|_| ptr)))
+            }
         }
     }
 }

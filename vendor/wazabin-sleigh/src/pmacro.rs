@@ -308,6 +308,7 @@ fn collect_in_target(
             }
         }
         LabelOrNode::Expr(expr) => collect_in_expr(expr, refs, seen),
+        LabelOrNode::Address(target) => collect_in_expr(&target.ptr, refs, seen),
     }
 }
 
@@ -807,6 +808,7 @@ fn astnode_references_field(node: &AstNode<(usize, usize)>, field: FieldId, name
     let expr = |e: &Expression<(usize, usize)>| expr_references_field(e, field);
     let target = |t: &LabelOrNode<(usize, usize)>| match t {
         LabelOrNode::Expr(e) => expr_references_field(e, field),
+        LabelOrNode::Address(target) => expr_references_field(&target.ptr, field),
         LabelOrNode::Node(node) => &**node == name,
         LabelOrNode::Label(_) => false,
     };

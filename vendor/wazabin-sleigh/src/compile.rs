@@ -197,4 +197,55 @@ mod tests {
         // so the fingerprint is the base specification's.
         assert_eq!(narrow.fingerprint(), compile(TINY, &[]).fingerprint());
     }
+
+    /// Upstream `wazabin-sleigh` 0.1.15's digest, written out from its
+    /// source: FNV-1a over the length-prefixed version, then the
+    /// length-prefixed preprocessed text.
+    fn upstream_fingerprint(preprocessed: &str) -> u128 {
+        let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+        let mut absorb = |bytes: &[u8]| {
+            for &byte in bytes {
+                hash ^= u128::from(byte);
+                hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b);
+            }
+        };
+        absorb(&6u64.to_le_bytes());
+        absorb(b"0.1.15");
+        absorb(&(preprocessed.len() as u64).to_le_bytes());
+        absorb(preprocessed.as_bytes());
+        hash
+    }
+
+    #[test]
+    fn the_fork_fingerprint_never_impersonates_upstream() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.15");
+        let mut sources = SourceDb::new();
+        let root = sources.add_file("tiny.slaspec", TINY);
+        let spec = Compiler::new(&mut sources).compile(root).unwrap();
+        let prepared = sources
+            .preprocess(root, &PreprocessOptions::default())
+            .unwrap();
+        let text = sources.prepared_text(prepared).unwrap();
+        // The same compiler version and text: upstream's identity would be
+        // this, and the fork's must not be.
+        assert_ne!(spec.fingerprint().as_u128(), upstream_fingerprint(text));
+        // The fork's revision is what separates them.
+        assert_eq!(
+            spec.fingerprint(),
+            SpecFingerprint::digest(&[
+                b"0.1.15",
+                SpecFingerprint::FORK_SEMANTICS_REVISION.as_bytes(),
+                text.as_bytes(),
+            ])
+        );
+        assert_ne!(
+            spec.fingerprint(),
+            SpecFingerprint::digest(&[b"0.1.15", b"another revision", text.as_bytes()])
+        );
+        // Upstream's layout through the shared digest is upstream's value.
+        assert_eq!(
+            SpecFingerprint::digest(&[b"0.1.15", text.as_bytes()]).as_u128(),
+            upstream_fingerprint(text)
+        );
+    }
 }

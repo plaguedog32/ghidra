@@ -63,6 +63,7 @@ fn ast_has_no_internal_nodes(ast: &PcodeAst) -> bool {
             PcodeTarget::Label(_) => true,
             PcodeTarget::Node(_) => false,
             PcodeTarget::Expr(expr) => expr_ok(expr),
+            PcodeTarget::Address(target) => expr_ok(&target.ptr),
         }
     }
 
@@ -694,13 +695,15 @@ fn streamed_pcode_reports_plan_labels_before_operations() {
             Trace {
                 labels: branches
                     .iter()
-                    .map(|target| format!("{target:#x}"))
+                    .map(|target| format!("{}:{:#x}", usize::from(target.space), target.offset))
                     .collect(),
                 ..Trace::default()
             }
         })
         .unwrap();
-    assert_eq!(planned.labels, vec!["0x1001".to_string()]);
+    // The destination is qualified by the default space.
+    let ram = usize::from(spec.default_space());
+    assert_eq!(planned.labels, vec![format!("{ram}:0x1001")]);
     assert_eq!(planned.events, vec!["Branch".to_string()]);
 }
 
@@ -803,13 +806,38 @@ fn branch_exported_target_uses_address_pointer() {
     let ast = pcode_ast(SEMANTIC_BRANCH_FIXTURE, &[0x19]);
     println!("{:#?}", ast.statements);
 
+    // Local fork: `export *[ram]:4 reloc` used as a direct target keeps its
+    // space, export width and address units, rather than only its pointer.
     assert_eq!(ast.statements.len(), 1);
     assert!(matches!(
         &ast.statements[0].ty,
         PcodeStatementKind::Branch {
-            target: PcodeTarget::Expr(target)
-        } if is_const_expr(target, 0x1002, Some(4))
+            target: PcodeTarget::Address(pcode_types::QualifiedTarget {
+                space,
+                ptr,
+                size: 4,
+                units: pcode_types::PointerUnits::AddressUnits,
+            })
+        } if usize::from(*space) == 1 && is_const_expr(ptr, 0x1002, Some(4))
     ));
+
+    // The byte-addressed default space and same-width export lower exactly
+    // as the upstream pointer-only form did.
+    let sources = Box::leak(Box::new(SourceDb::new()));
+    let root = sources.add_file("semantics.sla", SEMANTIC_BRANCH_FIXTURE);
+    let spec = Box::leak(Box::new(Compiler::new(sources).compile(root).unwrap()));
+    let ops = Decoder::new(spec)
+        .decode_one(0x1000, &[0x19], &spec.new_context())
+        .unwrap()
+        .pcode_ops()
+        .unwrap()
+        .ops;
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0].opcode, Opcode::Branch);
+    assert_eq!(
+        ops[0].inputs,
+        vec![Varnode::new(spec.default_space(), 0x1002, 4)]
+    );
 }
 
 #[test]

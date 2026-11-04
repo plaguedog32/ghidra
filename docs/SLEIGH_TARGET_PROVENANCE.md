@@ -1,7 +1,8 @@
 # Preserving direct-target provenance in the Rust compiler
 
 This is a source-audited implementation contract for a confirmed compiler
-defect, not a completed fix or a claim of processor parity.
+defect, not a claim of processor parity. Implementation evidence follows the
+contract below; independent review is still required.
 
 ## Reproduction and loss
 
@@ -119,3 +120,134 @@ compatibility merely because enum variants were appended.
 
 An independent review must inspect the compiler diff and its boundary probes
 before this defect is considered resolved.
+
+## Implementation evidence (awaiting independent review)
+
+The repair is implemented in the vendored forks (`vendor/README.md` lists every
+local change). It is not yet independently reviewed, so this defect is not yet
+considered resolved.
+
+### What changed
+
+- Owned `LabelOrNode::Address` and streaming `TargetNode::Address` carry a
+  `QualifiedTarget { space, ptr, size, units }`, with `PointerUnits::Bytes`
+  or `AddressUnits`. Both are appended variants.
+- A sub-table export used as a direct target becomes a qualified target in
+  `View`. A starred export keeps its space and exported width, with its pointer
+  in address units. An unstarred constant export becomes the constant-space
+  byte handle native SLEIGH gives it. Pass-through exports keep the inner
+  value. Other unstarred exports remain ordinary targets, which reject non-literals as before.
+  Owned materialization, serde, span removal, pretty printing, live-local
+  walking, macro reference collection, template validation and resolution
+  cover the variant.
+- `Planner` and `Emitter` call one resolver. Plan destinations are
+  `DirectDestination { space, offset }`, so equal offsets in distinct spaces
+  stay distinct. `Planner::new` takes the lowering context.
+- `PcodeLoweringContext::word_size` defaults to `None`, so an unknown
+  dimension fails closed. The SLEIGH runtime reports each space's word size.
+- `SpecFingerprint` digests `FORK_SEMANTICS_REVISION` after the package
+  version, so a fork compilation cannot have upstream 0.1.15's fingerprint.
+- The adapter's word-space address-of audit also visits qualified target
+  pointers.
+
+### Native arithmetic and refusals
+
+For a constant pointer `p` in a space with address size `a` and word size `w`,
+the byte domain has `D = 256^min(a, 8) * w` bytes. The offset is
+`p * w` in wrapping `u64`, or `p` for byte units. If that is at least `D`, it
+is reduced with a signed truncating remainder modulo `D`; a negative result
+then has `D` added (`wrapOffset`). The destination width is the export's size. Domains of at least 2^63 bytes, other
+than exactly 2^64, give native a wrapped `highest` or a non-positive signed
+modulus. These are refused with `UnsupportedSpaceDimensions`. So are zero
+address or word sizes. Unknown spaces return `UnknownSpaceDimensions`, zero
+export widths return `ZeroSize`, dynamic or compound pointers return
+`Unsupported`, as do constant- and unique-space destinations. The emitter
+never falls back to an indirect branch or a default-space literal. Ordinary
+literal targets keep their unchanged default-space behavior.
+
+### Tests
+
+Expected values were derived by hand from the native formulas above.
+
+- `wazabin-pcode` (`qualified_target_tests`, 16 tests): word sizes 1–8; export width
+  above and below the pointer width; an untruncated `0x110:1`; the final
+  complete word (byte 765 of a 768-byte domain); the next unit wrapping to 0;
+  `0x8000000000000000 * 3` giving 256 (unsigned: 512; unwrapped: 0); `-16 * 3`
+  giving 720; `0x5555555555555556 * 3` giving 2 (unwrapped: 258); a full
+  2^64-byte domain; byte units; every refused dimension; zero width;
+  constant, unique, dynamic and compound pointers; distinct-space plan
+  destinations matching emission; labels; serde variant indices; printing.
+- `wazabin-sleigh` (`tests::qualified_target`, 5 tests, plus a new fixture swept by
+  the all-encodings owned/streamed equivalence test): branch, conditional
+  branch and call for both byte orders and word sizes 1–8. These cover owned
+  AST shape and JSON round trips; identical owned, slice-callback and streamed
+  operations and plans; and wider or narrower exports. They also cover a
+  decoded field pointer, a high-bit literal, a default-space starred export
+  and a two-level pass-through. Other cases are three spaces sharing byte
+  offset 0x10, and labels from macros and delay slots around a qualified call.
+  The forward, backward and terminal relative constants are unchanged. Dynamic,
+  constant-space and unstarred register targets give explicit errors, and the
+  next instruction lowers. A fingerprint test checks that the fork's digest
+  differs from upstream's formula.
+- `ghidra-sleigh` (`tests/direct_targets.rs`, 5 tests): the reviewed
+  reproduction for word sizes 1–8 and both byte orders, including `BRANCH
+  aux:0x10:2` for word size 1 and `aux:0x30:2` for word size 3. The machine
+  returns `CrossSpaceTransfer`, and the CFG returns `CrossSpaceLabel` for the
+  preserved `aux` target. A refused dynamic target does not commit its
+  `globalset`, and the same commit from a valid instruction does. The
+  address-of audit visits qualified pointers.
+- Fifteen source mutations were each killed by failing tests, not by compile
+  errors. They covered a lost space, lost width, double or missing scaling,
+  suffix truncation, a `u128` modulo, an unsigned remainder, a missing final
+  word, an assumed byte word size, space-less plan entries, an off-by-one label
+  distance, a dynamic fallback, pointer-only views and materialization, and a
+  fingerprint without the revision.
+
+### Retained-source impact
+
+A template survey of every retained `.slaspec` used the forked compiler's
+introspection. `hexagon` and `V850e3` do not compile with it. No sub-table used
+as a direct target exports an unstarred literal or field; pass-through chains
+end in starred default-space fields. A differential lift compared 31 real
+instructions on the pristine and patched executables. In this sample, x86-64
+and x86-32 near branches and 32-bit far jumps, AArch64, ARM and Thumb `b`,
+MIPS and eBPF `ja` are byte-identical. The changes follow from the source:
+
+- eBPF `call SysCall` (`export *[syscall]:1 imm`): `CALL ram:5:8` becomes
+  `CALL syscall:5:1`.
+- RISC-V AndeStar `ex9.it`/`exec.it` (`export *[ExecTable]:2 val`):
+  `ram:32:4` becomes `ExecTable:32:2`.
+- Narrower exports keep their exported width: PowerPC `addressLI`/`addressBD`
+  (`*[ram]:4`) on PPC64 change 8 to 4, 6502/8048 change 2 to 1, and x86-64's
+  legacy 16-bit `JMPF/CALLF ptr1616` changes 8 to 4. The survey lists other
+  specifications with the same kind of change, such as 8051-family, HC0x/HCS,
+  Z80, Dalvik, MSP430X and AVR.
+- ARM Thumb `adr.w pc, ...` branches through `*[const]:4`, which native
+  SLEIGH lowers as a constant-space, p-code-relative branch. It is now refused
+  instead of becoming a default-space branch.
+
+### Validation
+
+Validation used Windows, Rust 1.99.1 and Rust 1.88, with private target directories:
+`cargo fmt --check`; workspace clippy `--all-targets -D warnings`; 842 workspace
+tests and 23 doctests on both toolchains (837 before); rustdoc with warnings
+denied; and a release build. The opt-in sources were also run:
+`upstream_specs` (11), Thumb IT, x86 function, WinHello reduced/copy and
+dual-join ABI. Java-free integrated probes were byte-identical to the prior
+references: sum-loop 43,235 B, alias 46,158 B, and WinHello `401E46` at
+9,305,623 B, with an unchanged 6,237,526-byte default output. WinHello still has
+135 instructions, 151 nodes, 10,953 SSA values and 2,192 phis. Both forks pass
+their own suites and clippy with warnings denied. The only exception is
+`wazabin-sleigh`'s `allocations` probe, which needs an external x86-64 source.
+When that probe is pointed at this checkout's x86 source, every allocation
+count matches pristine. Streamed bytes grow by 32 B when a plan has a direct
+destination. Owned ASTs grow by 64–480 B per instruction because the target
+enum is larger.
+
+### Remaining limits
+
+`globalset` through a table export still folds only its pointer
+(`ContextScope::At(u64)` has no space). Dynamic starred exports, which native
+lowers with a `LOAD`, and the other unstarred handle shapes need their own
+source semantics. Cross-space execution and CFG construction remain refused.
+The CI workflow's path filter does not yet include `vendor/**`.

@@ -518,7 +518,7 @@ Processor defaults can vary by address. The adapter reads only context sets for 
 
 `ghidra-languages` reads the real `.ldefs`, `.pspec`, and `.cspec` files in Rust. This checkout contains 202 language variants in 53 catalog files; all their processor specs parse without diagnostics. XML and file discovery are bounded, DTDs are rejected, and asset references stay within the chosen root without following symlinks or junctions. Missing and ambiguous assets are reported. Compiler declarations are now typed data; their calling-convention allocation and execution are not implemented.
 
-`ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using pinned `wazabin-sleigh` 0.1.15 and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Catalog loading uses Ghidra's compatibility rule for the source's global storage order and the declared data/instruction orders. Instruction tokens may override the global order, as AArch64 BE does. `source_endianness()` reports the global declaration, not the order of every instruction token. RAM data order is set independently, preserving source register alias layout for mixed-endian variants. Catalog presence does not prove that a language compiles or has correct instruction semantics.
+`ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using local forks of `wazabin-sleigh` 0.1.15 and `wazabin-pcode` 0.1.4 (`vendor/`; origin, checksums and changes in `vendor/README.md`) and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Catalog loading uses Ghidra's compatibility rule for the source's global storage order and the declared data/instruction orders. Instruction tokens may override the global order, as AArch64 BE does. `source_endianness()` reports the global declaration, not the order of every instruction token. RAM data order is set independently, preserving source register alias layout for mixed-endian variants. Catalog presence does not prove that a language compiles or has correct instruction semantics.
 
 ```sh
 cargo run -p ghidra-desktop -- --languages Ghidra/Processors
@@ -546,9 +546,10 @@ SH-2A's 40,960-byte `resbank_base`). These metadata records are not executable
 operands; validating them as execution `Varnode`s may reject their widths. The
 `program` object retains the execution-width checks.
 
-Twenty-eight default compiler/lifter tests pass, including per-token byte order,
+Thirty-three default compiler/lifter tests pass, including per-token byte order,
 context precedence, tracked/context separation, delay slots, word-space pointer
-scaling/byte extents, and concrete Rust execution. Eleven opt-in source tests
+scaling/byte extents, space-qualified direct targets, and concrete Rust
+execution. Eleven opt-in source tests
 cover selected x86-64, ARM7 LE/BE/mixed-endian, all seven ARM v8 catalog
 variants, MIPS32 LE/BE, AArch64 BE64, SH-2A, RISC-V32/64 and NDS32 BE semantics.
 A separate desktop probe exercises Thumb IT continuation, verifying that the
@@ -572,10 +573,17 @@ compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode.
 Its same-width extensions are explicitly converted to identity `COPY`
 operations while retaining strict P-code validation.
 
-A separate known compiler defect can lose the target space of direct
-`goto`/`call` through a non-default-space sub-table export, including a byte-
-addressed export. Correct exported-target provenance remains a compiler fix;
-the instruction probes above do not establish that behavior.
+Direct `goto`/`call` through a sub-table's starred export now keeps the
+export's space and width (`docs/SLEIGH_TARGET_PROVENANCE.md`). A constant
+pointer is converted from address units to bytes and wrapped as native
+`HandleTpl::fix` does: `export *[aux]:2 0x10:1` branches to two bytes at byte
+0x10 of `aux`, or 0x30 when `aux` has three-byte words, where the compiler
+previously emitted a one-byte default-space target. Dynamic exported pointers,
+constant-space destinations (including unstarred constant exports, which native
+treats as p-code-relative) and unknown or unmodeled space dimensions are
+lowering errors. The execution machine and CFG builder still refuse a target
+outside the code space, so such an instruction lifts but does not execute or
+build a CFG. `globalset` through a table export still uses only its pointer.
 
 ## Compiler specification data
 

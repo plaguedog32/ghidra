@@ -17,7 +17,7 @@
 use std::{borrow::Cow, slice};
 
 use pcode_types::{
-    SPACE_CONST, SpaceId,
+    PointerUnits, QualifiedTarget, SPACE_CONST, SpaceId,
     streaming::{ExprKind, ExprNode, LoadNode, LoadSpace, RangeNode, StmtKind, TargetNode},
 };
 
@@ -388,10 +388,31 @@ impl RuntimeValue {
         }
     }
 
-    /// The pointer directly, ignoring space and size: a branch target.
-    fn direct_target_view(&self) -> View<'_> {
+    /// This value as the destination of a direct branch or call.
+    ///
+    /// Native SLEIGH branches to the operand's fixed handle: its space,
+    /// offset and size. A starred export `*[space]:size ptr` keeps `space`
+    /// and `size` and counts `ptr` in the space's address units. An
+    /// unstarred constant export's handle is in the constant space, offset
+    /// in bytes. Both carry that provenance to the lowerer, which owns the
+    /// arithmetic and the refusals; anything else stays an ordinary target.
+    fn direct_target(&self) -> TargetNode<'_, View<'_>> {
         match self {
-            Self::Expr(expr) | Self::Address { ptr: expr, .. } => View::resolved(expr),
+            Self::Address { ptr, space, size } => TargetNode::Address(QualifiedTarget {
+                space: *space,
+                ptr: View::resolved(ptr),
+                size: *size,
+                units: PointerUnits::AddressUnits,
+            }),
+            Self::Expr(expr) if matches!(expr.ty, ExpressionTy::SizedInt { .. }) => {
+                TargetNode::Address(QualifiedTarget {
+                    space: SPACE_CONST,
+                    ptr: View::resolved(expr),
+                    size: expr.size.unwrap_or(0),
+                    units: PointerUnits::Bytes,
+                })
+            }
+            Self::Expr(expr) => TargetNode::Expr(View::resolved(expr)),
         }
     }
 
@@ -518,12 +539,17 @@ impl<'a> Scope<'a> {
             LabelOrNode::Node(name) => match self.spec.symbols.get(&**name).copied() {
                 Some(SymbolId::Field(id)) => TargetNode::Expr(View::Leaf(self.field(id))),
                 Some(SymbolId::Table(id)) => match export(self.exports, id) {
-                    Some(export) => TargetNode::Expr(export.direct_target_view()),
+                    Some(export) => export.direct_target(),
                     None => TargetNode::Node(name),
                 },
                 _ => TargetNode::Node(name),
             },
             LabelOrNode::Expr(expr) => TargetNode::Expr(self.node(expr)),
+            // Compilation never writes one, but a template that carries one
+            // resolves its pointer in this body like any other expression.
+            LabelOrNode::Address(target) => {
+                TargetNode::Address(target.as_ref().map_ptr(|ptr| self.node(ptr)))
+            }
         }
     }
 }

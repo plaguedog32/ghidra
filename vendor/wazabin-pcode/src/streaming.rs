@@ -27,7 +27,7 @@ use std::{borrow::Cow, slice};
 pub use crate::instruction::{Emitter, Planner, SizeInference};
 use crate::{
     AstNode, BinaryOperator, Builtin, Expression, ExpressionTy, Ident, LabelOrNode, Load,
-    PCodeOpId, PcodeSpaceRef, RangeParam, SpaceId, UnaryOperator,
+    PCodeOpId, PcodeSpaceRef, QualifiedTarget, RangeParam, SpaceId, UnaryOperator,
 };
 
 /// One p-code expression, generic over how it is stored.
@@ -197,8 +197,11 @@ pub enum TargetNode<'a, E> {
     /// A name the producer never resolved. Cannot occur in a consumer-form
     /// AST; the passes reject it.
     Node(&'a str),
-    /// An address.
+    /// An address in the default space.
     Expr(E),
+    /// A destination carrying its own space, width and pointer units: see
+    /// [`LabelOrNode::Address`]. Appended by this fork.
+    Address(QualifiedTarget<E>),
 }
 
 impl<'a, S> From<&'a LabelOrNode<S>> for TargetNode<'a, &'a Expression<S>> {
@@ -207,6 +210,7 @@ impl<'a, S> From<&'a LabelOrNode<S>> for TargetNode<'a, &'a Expression<S>> {
             LabelOrNode::Label(name) => TargetNode::Label(Cow::Borrowed(name)),
             LabelOrNode::Node(name) => TargetNode::Node(name),
             LabelOrNode::Expr(expr) => TargetNode::Expr(expr),
+            LabelOrNode::Address(target) => TargetNode::Address(target.as_ref()),
         }
     }
 }

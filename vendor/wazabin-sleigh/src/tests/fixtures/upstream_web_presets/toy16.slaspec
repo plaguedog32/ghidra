@@ -1,0 +1,53 @@
+# Toy 16-bit RISC: fixed-width big-endian words, eight registers, a link
+# register, and PC-relative branches. Shows operand sub-tables and a
+# constructor that exports a computed address.
+
+define endian=big;
+define alignment=2;
+
+define space ram type=ram_space size=2 default;
+define space register type=register_space size=1;
+
+define register offset=0 size=2 [ r0 r1 r2 r3 r4 r5 r6 r7 pc lr ];
+
+define token instr (16)
+  op     = (12,15)
+  rd     = (9,11)
+  ra     = (6,8)
+  rb     = (3,5)
+  fn     = (0,2)
+  imm6   = (0,5) signed
+  simm9  = (0,8) signed
+  off12  = (0,11) signed
+;
+
+attach variables [ rd ra rb ] [ r0 r1 r2 r3 r4 r5 r6 r7 ];
+
+define pcodeop syscall;
+
+# Operand tables: a memory operand and two branch targets.
+mem: [ra + imm6] is ra & imm6      { local ea:2 = ra + imm6; export *:2 ea; }
+
+rel: target is simm9 [ target = inst_next + simm9 * 2; ] { export *:2 target; }
+far: target is off12 [ target = inst_next + off12 * 2; ] { export *:2 target; }
+
+:ADD  rd, ra, rb is op=0x0 & rd & ra & rb & fn=0 { rd = ra + rb; }
+:SUB  rd, ra, rb is op=0x0 & rd & ra & rb & fn=1 { rd = ra - rb; }
+:AND  rd, ra, rb is op=0x0 & rd & ra & rb & fn=2 { rd = ra & rb; }
+:OR   rd, ra, rb is op=0x0 & rd & ra & rb & fn=3 { rd = ra | rb; }
+:XOR  rd, ra, rb is op=0x0 & rd & ra & rb & fn=4 { rd = ra ^ rb; }
+:SHL  rd, ra, rb is op=0x0 & rd & ra & rb & fn=5 { rd = ra << rb; }
+:SHR  rd, ra, rb is op=0x0 & rd & ra & rb & fn=6 { rd = ra >> rb; }
+:NOT  rd, ra     is op=0x0 & rd & ra & rb=0 & fn=7 { rd = ~ra; }
+
+:ADDI rd, ra, imm6 is op=0x1 & rd & ra & imm6 { rd = ra + imm6; }
+:LI   rd, simm9    is op=0x2 & rd & simm9     { rd = simm9; }
+
+:LW   rd, mem is op=0x3 & rd & mem { rd = mem; }
+:SW   rd, mem is op=0x4 & rd & mem { mem = rd; }
+
+:BEQ  rd, rel is op=0x5 & rd & rel { if (rd == r0) goto rel; }
+:BNE  rd, rel is op=0x6 & rd & rel { if (rd != r0) goto rel; }
+:JAL  far     is op=0x7 & far      { lr = inst_next; call far; }
+:RET          is op=0x8 & off12=0  { return [lr]; }
+:SYS          is op=0xF & off12=0  { syscall(); }

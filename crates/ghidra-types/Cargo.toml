@@ -1,0 +1,12 @@
+[package]
+name = "ghidra-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded native datatype graphs and compiler-driven storage layouts"
+publish = false
+
+[dependencies]
+ghidra-languages = { path = "../ghidra-languages" }
+thiserror = "2"

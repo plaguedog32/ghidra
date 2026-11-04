@@ -16,7 +16,8 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
-| `crates/ghidra-abi` | Register-backed compiler storage resolution, signed stack locations, joins and bounded source-position overlays |
+| `crates/ghidra-abi` | Register-backed compiler storage, resource groups, per-pool placement and explicit-request fallback allocation |
+| `crates/ghidra-types` | Bounded declared datatype graphs and compiler-driven scalar, pointer, array and ordinary aggregate layouts |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
@@ -128,7 +129,7 @@ Local validation on Windows with Rust 1.99.1:
 - The headless analysis command passes nine report/schema tests and two process-level tests, including a Java-free subprocess and empty stdout on argument/input failures. The optimized executable also analyzed `alias-branch.json` with `JAVA_HOME` empty and `PATH` restricted to Windows system files: 5 nodes, 10 SSA values and 1 phi, with verification enabled. Concrete `sum-loop.json` execution still returns 6 in 14 operations in the same environment.
 - Function analysis tests cover binary/source boundary agreement, catalog compatibility, context-commit rejection, incomplete recovery, bounded display text, compilation reuse, unknown calls, queue coalescing and stale responses. Populated function/storage views render through egui without changing project state. The real x86 source probe lifts a recovered PE loop function to verified SSA and executes its P-code to return 3.
 - The optimized `--analyze-function` command also lifts the retained PE32 WinHelloCPP entry at `401E46` with no Java available: 135 recovered instructions, 151 graph nodes, 10,953 SSA values and 2,192 phis. Its 32 calls use marked conservative effects, and incomplete recovery remains explicit. This is native dataflow inspection, not structured decompiled output.
-- Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Initial register/space resolution is available separately; argument allocation, rule execution and injection compilation remain pending. Parser coverage is not executable ABI support.
+- Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Register/space resolution, resource planning and explicit-request fallback allocation are available separately; datatype-driven signature allocation, rule execution and injection compilation remain pending. Parser coverage is not executable ABI support.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
@@ -276,11 +277,50 @@ Language-aware resolution also rejects compiler space-base names that collide
 with processor spaces. Names stay case-sensitive. Frames shadowing `stack`,
 `join` or `OTHER` fail explicitly as unsupported, because their relative ranges
 must not be misinterpreted as the overlay's synthetic spaces; that can be
-stricter than Java. Three namespace tests pin these behaviors. All 107 referenced
-compiler specs still parse with zero diagnostics. The combined tree passes 518
+stricter than Java. Namespace tests pin these behaviors. All 107 referenced
+compiler specs still parse with zero diagnostics. That checkpoint passed 518
 default workspace tests and ten doctests, workspace Clippy and rustdoc with
-warnings denied. Independent review of these loading/namespace checks remains
-pending; standalone storage resolution still supports post-load fallback geometry.
+warnings denied. Independent review approved `594ed535df` with no blocking
+findings. Its small explicit-space-on-register-range gap is fixed, and new
+tests catch all three previously surviving name/lookup/constant-extent mutations.
+Empty frame names now report unsupported storage rather than a resource limit.
+Standalone storage resolution still supports post-load fallback geometry.
+
+### Explicit ABI fallback and native datatype layout
+
+`AllocationState` now consumes list-local resources for batches of explicit
+width/alignment/storage-class requests. It follows declaration order, shared
+exclusion groups, aligned-pool cursors and alignment holes. Lists with rules or
+`pointermax` require an explicit bypass that records unexecuted declarations.
+Physical overlap and unsafe multi-group/alias layouts fail with bounded errors
+and roll back the state. This is the retained fallback primitive, not complete
+signature allocation or rule evaluation. Independent review approved the pass
+after fixing a later-batch occupied-extent limit gap. Twenty default tests and
+five real-source probes pass; the separate generated oracle checks 2,129 valid
+layouts. See [the ABI crate](../crates/ghidra-abi/README.md) for exact policies.
+
+`ghidra-types` adds immutable declared datatype graphs and compiler-driven
+storage geometry for scalars, enum storage, pointers, aliases, arrays and
+ordinary automatically packed structs/unions. Raw size, aligned length and
+logical zero size remain distinct. An iterative dependency walk rejects
+by-value cycles while permitting recursive pointer types. Counts, byte
+extents, depth and work are bounded, without per-array-element allocation.
+Sixteen core tests and seven independent oracle tests pass, including 24,000
+generated layouts and a 100,000-type alias chain. Full independent review of
+this first datatype increment is pending.
+
+This crate does not yet implement bitfields, manual composite offsets,
+datatype-manager/archive workflows, type recovery or datatype-driven ABI rules.
+It takes a final resolved data organization; XML setter-order coupling between
+primitive sizes remains a documented loader limitation. The full port stays
+unfinished. See [the datatype crate](../crates/ghidra-types/README.md).
+
+The combined fallback/datatype tree passes 565 default workspace tests and
+12 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
+and the release build on Windows/Rust 1.99.1. Java-free release probes retain
+the raw-example and WinHelloCPP constant-analysis results above; namespace and
+stack-loading CLI probes also pass with empty stdout on failures. Rust 1.88,
+other operating systems and native GUI click-through were not verified here.
 
 ### Saved pause: expression inspection milestone
 

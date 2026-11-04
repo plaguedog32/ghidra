@@ -1108,6 +1108,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghidra-graph"
+version = "0.3.0"
+
+[[package]]
 name = "ghidra-languages"
 version = "0.3.0"
 dependencies = [

@@ -1,0 +1,10 @@
+[package]
+name = "ghidra-graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded deterministic directed graphs and native control-flow analyses"
+publish = false
+
+[dependencies]

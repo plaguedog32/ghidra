@@ -191,8 +191,8 @@ pub struct FieldLayout {
 ///
 /// The allocation unit (`base_bytes`) and the minimal storage
 /// (`storage_bytes`) are distinct. `bit_offset` is the right shift of the
-/// field's least-significant bit within `storage_bytes` read as a big-endian
-/// value, so it is always `0..=7`.
+/// field's least-significant bit after reading `storage_bytes` in the selected
+/// byte order, so it is always `0..=7`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitfieldLayout {
     /// The width as declared, `0..=255`.

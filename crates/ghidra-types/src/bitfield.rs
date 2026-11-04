@@ -587,8 +587,13 @@ impl Packer<'_> {
         if offset % step != 0 || tentative > base.bytes {
             // Java tests end >= align(offset) - alignment + baseSize, whose
             // left base can be negative; add the alignment to both sides.
-            let unit_end = self.add(self.align(alignment, offset)?, base.bytes)?;
-            if self.add(end, step)? >= unit_end {
+            // These allocation windows are comparisons, not stored offsets.
+            // A rounded window/end can exceed u64 while the actual minimal
+            // field and final rounded composite still fit that domain.
+            let wide_step = u128::from(step);
+            let aligned = u128::from(offset).div_ceil(wide_step) * wide_step;
+            let unit_end = aligned + u128::from(base.bytes);
+            if u128::from(end) + wide_step >= unit_end {
                 offset = self.align(alignment, self.add(offset, 1)?)?;
                 // The tentative size is retained here, as in the source.
                 end = self.add(offset, tentative - 1)?;
@@ -596,7 +601,7 @@ impl Packer<'_> {
             }
         }
         let crossed = match (self.group, previous_unit) {
-            (Some(group), Some(unit)) => end >= self.add(group, unit)?,
+            (Some(group), Some(unit)) => u128::from(end) >= u128::from(group) + u128::from(unit),
             _ => false,
         };
         if crossed {

@@ -83,7 +83,7 @@ For a bitfield, `FieldLayout::bitfield` reports `BitfieldLayout` separately:
 - `base_bytes`, the base's raw length and the MS allocation unit;
 - `storage_bytes`, the minimal bytes containing the field from its byte offset;
 - `bit_offset` (`0..=7`), the right shift of the field's least-significant bit
-  within `storage_bytes` read as a big-endian value.
+  after reading `storage_bytes` in the selected byte order.
 
 `FieldLayout::bytes` is that minimal storage, or zero for a zero-width bitfield,
 whose storage is still one byte and whose bit offset is 0 for little-endian and
@@ -262,3 +262,11 @@ five GCC/MS zero-width settings, with storage, ordering, nonoverlap and
 containment properties. The bitfield README example and the ordinary-path
 equivalence test complete it. This evidence does not establish complete
 datatype-framework or compiler-ABI parity.
+
+Independent review found a raised-cap edge case where comparison-only allocation
+windows overflowed `u64` even though final field extents fit. Those comparisons
+now use `u128`, including their alignment rounding; stored placements and extents
+remain checked `u64`. Regressions cover allocation-end, end-plus-alignment and
+previous-group comparisons near `u64::MAX` in both byte orders. The default byte
+cap did not expose this issue. Bit-offset docs also now state the selected byte
+order explicitly; a little-endian multi-byte field cannot be read directly as BE.

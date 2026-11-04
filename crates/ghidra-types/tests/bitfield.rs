@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use ghidra_languages::DataOrganization;
+use ghidra_languages::{DataOrganization, SizeAlignment};
 use ghidra_types::*;
 
 const CHAR: TypeId = TypeId(0);
@@ -1004,4 +1004,113 @@ fn bitfield_layouts_are_clone_send_sync_values() {
     send_sync::<TypeLayouts>();
     send_sync::<BitfieldLayout>();
     send_sync::<Field>();
+}
+
+#[test]
+fn comparison_windows_may_exceed_u64_when_final_storage_still_fits() {
+    let limits = Limits {
+        max_type_bytes: u64::MAX,
+        ..Default::default()
+    };
+    for endian in [Endianness::Little, Endianness::Big] {
+        // Isolate the previous-group comparison. The current byte/minimal
+        // storage fit; group+B's allocation unit does not fit u64.
+        let b = u64::MAX - 2;
+        let definitions = vec![
+            def(TypeKind::Integer {
+                bytes: 1,
+                signed: false,
+            }),
+            def(TypeKind::Integer {
+                bytes: 4,
+                signed: false,
+            }),
+            def(TypeKind::Array {
+                element: TypeId(0),
+                count: b,
+            }),
+            def(TypeKind::Structure(Composite {
+                fields: vec![
+                    ordinary(TypeId(2)),
+                    bits(TypeId(0), 0),
+                    bits(TypeId(1), 1),
+                    bits(TypeId(1), 1),
+                ],
+                packing: Packing::Explicit(1),
+                ..Default::default()
+            })),
+        ];
+        let result =
+            TypeLayouts::new_with_endianness(definitions.into(), org(false), endian, limits)
+                .unwrap();
+        let layout = result.layout(TypeId(3)).unwrap();
+        assert_eq!(layout.geometry.size, Some(u64::MAX - 1));
+        assert_eq!(layout.geometry.alignment, 1);
+        assert_eq!(
+            layout
+                .fields
+                .iter()
+                .map(|f| (f.offset, f.bytes))
+                .collect::<Vec<_>>(),
+            vec![(0, b), (b, 0), (b, 1), (b, 1)]
+        );
+        // Isolate the boundary comparison: unit_end overflows for step5;
+        // step6 additionally puts the comparison's align_up past u64::MAX.
+        // GCC's conveyed running maximum7 still yields a representable end.
+        for (step, b) in [(5, u64::MAX - 8), (6, u64::MAX - 2)] {
+            let mut organization = org(false);
+            organization.size_alignment_map = vec![
+                SizeAlignment {
+                    size: 1,
+                    alignment: 1,
+                },
+                SizeAlignment {
+                    size: 8,
+                    alignment: step,
+                },
+                SizeAlignment {
+                    size: 16,
+                    alignment: 7,
+                },
+            ];
+            let definitions = vec![
+                def(TypeKind::Integer {
+                    bytes: 1,
+                    signed: false,
+                }),
+                def(TypeKind::Integer {
+                    bytes: 16,
+                    signed: false,
+                }),
+                def(TypeKind::Integer {
+                    bytes: 8,
+                    signed: false,
+                }),
+                def(TypeKind::Array {
+                    element: TypeId(0),
+                    count: b,
+                }),
+                def(TypeKind::Structure(composite(
+                    vec![ordinary(TypeId(3)), bits(TypeId(1), 1), bits(TypeId(2), 1)],
+                    None,
+                ))),
+            ];
+            let result =
+                TypeLayouts::new_with_endianness(definitions.into(), organization, endian, limits)
+                    .unwrap();
+            let layout = result.layout(TypeId(4)).unwrap();
+            assert_eq!(
+                (layout.geometry.size, layout.geometry.alignment),
+                (Some(u64::MAX - 1), 7)
+            );
+            assert_eq!(
+                layout
+                    .fields
+                    .iter()
+                    .map(|f| (f.offset, f.bytes))
+                    .collect::<Vec<_>>(),
+                vec![(0, b), (b, 1), (b, 1)]
+            );
+        }
+    }
 }

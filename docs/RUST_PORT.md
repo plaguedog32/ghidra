@@ -16,8 +16,8 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
-| `crates/ghidra-abi` | Compiler storage, resource groups, explicit fallback allocation, and datatype/qualifier predicates |
-| `crates/ghidra-types` | Bounded declared datatype graphs and compiler-driven scalar, pointer, array and ordinary aggregate layouts |
+| `crates/ghidra-abi` | Compiler storage, resource groups, explicit fallback, datatype predicates and primitive/union extraction |
+| `crates/ghidra-types` | Bounded datatype graphs, compiler-driven ordinary layouts and GCC/MS bitfield storage |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
@@ -342,13 +342,56 @@ type/pointer profiles pass. The real declaration corpus adds 42,780 filter and
 6,900 qualifier comparisons. Seven compiling mutations are caught. This is a
 library predicate API; actions, resource preconditions, side effects, hidden
 returns, signature allocation, SSA call effects and desktop/report integration
-remain unfinished. Independent review of this new predicate increment is pending.
+remain unfinished. Independent review approved `2ee4122b7c`, adding over one
+million filter and 143,272 rule comparisons without a correctness/resource
+finding. Absolute work formulas and signed-int boundary tests now close the
+five mutation gaps it identified. This is the Java compiler-spec type view;
+the C++ decompiler's array aliases, float-alias identity and void/code types
+behave differently. A decompiler-specific type view remains a required gate
+before native signature recovery uses these predicates.
 
 The predicate tree passes 583 default workspace tests and 13 doctests,
 formatting, workspace Clippy/rustdoc with warnings denied, and the release
 build on Windows/Rust 1.99.1. Java-free release runs retain the raw-example and
 WinHelloCPP analysis results. The declared minimum Rust version and native GUI
 behavior were not revalidated by these library checks.
+
+### Bitfield layouts and general primitive extraction
+
+Native datatype layout now includes compiler-specific bitfield structures and
+unions, with explicit data byte order, declared/effective widths, normalized
+bit offsets, minimal wrapper storage and separate allocation units. The
+implementation preserves GCC/MS grouping and zero-width behavior. All 156
+retained Java expectations and independent generated references pass. Its
+independent review found a comparison-window overflow when callers explicitly
+raise the byte cap near `u64::MAX`; the comparison math now uses `u128` while
+stored offsets stay checked `u64`. Six boundary cases in both byte orders and
+four compiling reversions pin the fix. Manual layouts, edit-history behavior,
+member pragmas, bitfield value access and real-compiler comparison remain open.
+
+`PrimitiveExtraction` now builds general scalar pieces with canonical or
+bitfield-wrapper provenance, raw/aligned widths and byte offsets. It expands
+arrays lazily and refines unions in source order, retaining the Java layer's
+float preference, context-local flags and array-depth resets. Semantic output
+limits are separate from bounded intermediate scratch, since a union's
+temporary list can grow and later shrink. Production traversal/refinement is
+iterative, including nested union contexts. Bitfields retain field identity and
+one-byte storage for zero-width wrappers instead of becoming whole base integers.
+
+Sixteen directed tests and 26,208 independent recursive-reference cases cover
+these rules, errors, bounds, 100,000 nested structures, 20,000 union contexts
+and huge arrays without payload allocation. Mutation probes exposed a missing
+raw-versus-aligned union case, now pinned. All 16 compiling mutations across
+predicate accounting, extraction and the bitfield fix are caught. General
+extraction and its consumer integration still need independent review. Rule
+actions, complete signature allocation, native decompiler type views and SSA
+call effects remain required; there is no C output or inferred signature yet.
+
+The combined bitfield/extraction tree passes 627 default workspace tests and
+15 doctests, formatting, workspace Clippy/rustdoc with warnings denied, and the
+release build on Windows/Rust 1.99.1. Java-free raw-example and WinHelloCPP
+analysis probes retain their prior results. Rust 1.88, cross-platform execution
+and native GUI click-through remain unverified by this increment.
 
 ### Saved pause: expression inspection milestone
 

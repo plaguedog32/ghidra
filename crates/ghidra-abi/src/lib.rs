@@ -11,6 +11,7 @@ mod error;
 mod fallback;
 mod placement;
 mod predicates;
+mod primitives;
 mod registry;
 mod resources;
 mod storage;
@@ -32,6 +33,10 @@ pub use placement::{
 pub use predicates::{
     DatatypeFact, DatatypePredicates, HomogeneousFloat, PredicateError, PredicateLimits,
     PredicateMatch, PredicateRejection, PredicateStats, PredicateUsage, PrototypeTypes,
+};
+pub use primitives::{
+    ExtractionError, ExtractionLimits, ExtractionOptions, ExtractionStats, Primitive,
+    PrimitiveExtraction, PrimitiveSource,
 };
 pub use registry::{RegisterDefinition, RegisterFile, RegisterId};
 pub use resources::{

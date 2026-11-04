@@ -699,3 +699,119 @@ fn large_alias_graphs_and_billion_element_arrays_use_linear_metadata_only() {
     drop(predicates);
     assert_eq!(clone.facts().len(), 2);
 }
+
+#[test]
+fn absolute_work_model_pins_field_parameter_and_size_list_scans() {
+    for fields in [0, 1, 3, 10_000] {
+        let e = engine(vec![
+            float_for_work(),
+            def(TypeKind::Structure(Composite {
+                fields: (0..fields).map(|_| Field::new("", TypeId(0))).collect(),
+                ..Default::default()
+            })),
+        ]);
+        // Two roots/pushes/computations/final slots, F+2 dependency visits,
+        // and F summary combinations: 2+2+2+2+(F+2)+F.
+        assert_eq!(e.stats().work, 2 * fields as u64 + 10);
+    }
+    let e = engine(vec![scalar(4)]);
+    for parameter_count in [0, 3, 11] {
+        let parameters = vec![TypeId(0); parameter_count];
+        let context = PrototypeTypes {
+            result: TypeId(0),
+            parameters: &parameters,
+            first_vararg: None,
+        };
+        for main_sizes in [0, 2, 5] {
+            for return_sizes in [0, 1, 4] {
+                let main = DatatypeFilter {
+                    sizes: vec![4; main_sizes],
+                    ..filter(DatatypeClass::Any)
+                };
+                let target = DatatypeFilter {
+                    sizes: vec![4; return_sizes],
+                    ..filter(DatatypeClass::Any)
+                };
+                let r = rule(
+                    main,
+                    vec![
+                        RuleQualifier::Position { index: 0 },
+                        RuleQualifier::DatatypeAt {
+                            index: -1,
+                            datatype: target,
+                        },
+                    ],
+                );
+                let actual = e
+                    .matches_rule(&r, TypeId(0), context, 0, Default::default())
+                    .unwrap();
+                assert!(actual.matched);
+                // Prototype 1+P; filters each 1+(2*S+1); two qualifiers.
+                assert_eq!(
+                    actual.usage.work,
+                    parameter_count as u64 + 2 * (main_sizes + return_sizes) as u64 + 7
+                );
+            }
+        }
+    }
+}
+
+fn float_for_work() -> TypeDefinition {
+    def(TypeKind::Float { bytes: 4 })
+}
+
+#[test]
+fn class_specific_integer_bounds_accept_maximum_and_reject_one_above() {
+    let e = engine(vec![
+        def(TypeKind::Float { bytes: 4 }),
+        def(TypeKind::Array {
+            element: TypeId(0),
+            count: 1,
+        }),
+    ]);
+    let maximum = i32::MAX as u32;
+    let too_large = maximum + 1;
+    for f in [
+        DatatypeFilter {
+            min_elements: Some(too_large),
+            ..filter(DatatypeClass::Meta(MetaType::Array))
+        },
+        DatatypeFilter {
+            max_elements: Some(too_large),
+            ..filter(DatatypeClass::Meta(MetaType::Array))
+        },
+        DatatypeFilter {
+            max_primitives: Some(too_large),
+            ..filter(DatatypeClass::HomogeneousFloatAggregate)
+        },
+    ] {
+        assert!(matches!(
+            e.matches_filter(&f, TypeId(1), Default::default()),
+            Err(PredicateError::InvalidFilter(_))
+        ));
+    }
+    assert!(matches(
+        &e,
+        &DatatypeFilter {
+            max_elements: Some(maximum),
+            ..filter(DatatypeClass::Meta(MetaType::Array))
+        },
+        1
+    ));
+    assert!(!matches(
+        &e,
+        &DatatypeFilter {
+            min_elements: Some(maximum),
+            ..filter(DatatypeClass::Meta(MetaType::Array))
+        },
+        1
+    ));
+    assert!(matches(
+        &e,
+        &DatatypeFilter {
+            max_primitives: Some(maximum),
+            ..filter(DatatypeClass::HomogeneousFloatAggregate)
+        },
+        1
+    ));
+}

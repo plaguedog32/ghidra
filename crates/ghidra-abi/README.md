@@ -615,3 +615,123 @@ not argument allocation for those processor ABIs. Seven compiling mutations of
 source-sensitive branches and budget charges are caught by the default tests.
 These predicates are not yet connected to rule actions, signature allocation,
 SSA call effects, the desktop or a command-line report.
+
+Independent review approved the predicate layer at `2ee4122b7c`, with no
+correctness/resource findings, and added over one million filter and 143,272
+rule comparisons. Its test-gap notes are addressed by absolute work formulas
+for field combinations, parameter preflight and size scans, plus explicit
+signed-int boundary tests. These catch the five previously surviving mutations.
+
+This API follows the Java compiler-spec datatype view. The retained C++
+decompiler uses a different type factory: an alias of an array still has array
+metatype, float aliases retain distinct HFA identities, void has its own
+metatype, and code has size one. A named Go array can therefore match the
+`x86-64-golang.cspec` array-to-stack rule in C++ but fail Java's direct-array
+check. A decompiler-specific type view/policy is still required before wiring
+these predicates into signature recovery. HFA's ignored size bounds are shared
+by both source layers: the first HFA join rule in `AARCH64_win.cspec` can match
+varargs HFAs larger than its declared maximum 16. Later action code must preserve
+that source behavior. Repeated `matches_rule` calls validate the input list each
+time; a prevalidated prototype handle remains a later scaling improvement.
+
+## General primitive extraction
+
+`PrimitiveExtraction::new(Arc<DatatypePredicates>, root, options, limits)`
+extracts an owned list of scalar pieces from the declared datatype snapshot.
+This is the Java-layer `PrimitiveExtractor` needed by ABI join/member rules,
+separate from the cached HFA predicate summary. Each `Primitive` retains its
+canonical datatype or wrapper identity, byte offset, meta-type, raw length, aligned length
+and alignment. No bytes of the described value are allocated or evaluated.
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::{DatatypePredicates, PrimitiveExtraction, PrimitiveSource};
+use ghidra_languages::DataOrganization;
+use ghidra_types::{Composite, Field, TypeDefinition, TypeId, TypeKind, TypeLayouts};
+
+let layouts = Arc::new(TypeLayouts::new(vec![
+    TypeDefinition::new("int", TypeKind::Integer { bytes: 4, signed: true }),
+    TypeDefinition::new("double", TypeKind::Float { bytes: 8 }),
+    TypeDefinition::new("record", TypeKind::Structure(Composite {
+        fields: vec![Field::new("a", TypeId(0)), Field::new("b", TypeId(1))],
+        ..Default::default()
+    })),
+].into(), DataOrganization::default().resolve(8), Default::default())?);
+let predicates = Arc::new(DatatypePredicates::new(layouts, Default::default())?);
+let pieces = PrimitiveExtraction::new(predicates, TypeId(2),
+    Default::default(), Default::default())?;
+assert_eq!(pieces.primitives().len(), 2);
+assert_eq!(pieces.primitives()[0].source, PrimitiveSource::Type(TypeId(0)));
+assert_eq!(pieces.primitives()[1].offset, 8);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Arrays normally expand with their element's aligned length as stride.
+`nested_arrays_are_primitives` collapses arrays below the current extraction
+root into one array primitive, including a nested zero array's one-byte display
+length. A root array still expands. Each union member starts a fresh context at
+depth zero, so a direct union-member array expands even inside a nested union.
+Canonical aliases do not introduce additional array depth. Lazy array frames
+bound memory independently of the declared count; cached empty summaries skip
+empty subgraphs when nested arrays are expanded.
+
+Unions can be rejected by policy or refined in member order. Source refinement
+uses **aligned** lengths, retaining disjoint/touching pieces. The larger piece
+is selected as the window; a length tie selects the first. A nonfloat window
+keeps that piece, while a float window yields to the overlapping smaller pieces.
+No type equality, full-coverage or leading-start containment check is invented.
+Only a smaller piece ending past the window's end rejects the overlap. Thus
+shifted overlap can be order-sensitive. Intermediate refinement can exceed the
+semantic primitive maximum and later shrink; it is bounded separately by the
+live-scratch limit. Every union member gets the full semantic maximum, and the
+final append checks the parent result's total. This preserves the retained Java
+behavior rather than treating unions as interval-set normalization.
+
+Flags follow that layer too. Java copies union-member lists without propagating
+child unknown/alignment/hole flags. `contains_unknown()` exposes that context-
+local flag, while `output_contains_unknown()` separately reports unknown meta-
+types actually present in the final list. Both supported structure packing
+modes enable automatic packing; Java skips manual-field alignment/hole checks
+there, so `is_aligned()` is true and `contains_holes()` is false for the current
+model. Trailing padding does not create a hole. Manual-layout extraction still
+requires implementation when those layouts are added.
+
+Void extracts as an unknown zero-length primitive and function definitions as
+code with raw/aligned length -1, matching the retained Java classification.
+Empty structures and expanded zero arrays succeed with no pieces; empty unions
+fail, while a union of empty structures succeeds empty. Incomplete types error.
+Unsigned byte offsets use checked arithmetic and aligned storage windows must
+fit the 64-bit byte domain, allowing the extended exclusive end at 2^64. There
+is no Java signed-int wrapping. This describes geometry, not readable memory or
+an emulated ABI value.
+
+Each call shares its exact immutable fact snapshot, and the result is
+`Clone + Send + Sync`. Limits bound the source semantic primitive count,
+simultaneous live records across contexts/refinement scratch, active nesting
+and total work. Counts are checked before protected growth. Vector allocation
+uses normal Rust amortized capacity and allocation-failure behavior. Production
+traversal, nested union contexts and refinement use no recursion; no allocation
+is proportional to the object's byte span. Worst-case repeated union refinement
+can be quadratic and is bounded by work. Temporary lists and all deferred
+traversal frames are bounded by live/depth limits. Errors discard the partial
+prefix, unlike Java's invalid extractor objects; no incomplete result escapes.
+
+Sixteen directed tests cover source ordering/ties, float preference, shifted
+overlap, intermediate scratch exceeding the semantic maximum, flags and array
+depth, zero/unsized types, exact limits/every lower work budget, offset bounds,
+100,000 nested structures, 20,000 nested union contexts and billion-element
+array handling. An independent recursive/queue reference checks 26,208 cases,
+including 12,396 valid outputs/flags and 13,812 semantic rejections.
+Bitfields use `PrimitiveSource::BitField { owner, field, base }` wrapper identity
+and unknown metatype. Raw/aligned wrapper lengths use minimal `storage_bytes`,
+including one for a zero-width component; base allocation width and component
+bytes are not substituted. Wrapper alignment is the declared base's natural
+alignment, including enum alignment that differs from its integer counterpart.
+Normalized bit metadata remains available through the owner's field in the
+shared layout. Adjacent wrappers can share bytes, as in the source extractor.
+Sixteen compiling mutations across predicate budget/range checks, refinement,
+wrapper storage and widened bitfield comparisons are caught. The probes exposed
+a missing raw-versus-aligned refinement regression; the new directed test now
+pins that difference explicitly.
+No join/member action,
+signature allocation, CLI or desktop flow uses this extractor yet.

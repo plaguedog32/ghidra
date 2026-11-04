@@ -11,6 +11,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-core/src/linkage.rs` | Imports, exports, and relocation records with format-specific coverage warnings |
 | `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
 | `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
+| `crates/ghidra-graph` | Bounded traversal, SCCs, dominators/frontiers, natural loops, and finite-exit-path post-dominators |
 | `crates/ghidra-languages` | Bounded `.ldefs` catalog discovery, asset resolution, and `.pspec` context/tracked settings |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
@@ -35,7 +36,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | Not implemented; P-code foundation available | SSA/dataflow, type recovery, simplification and structured output |
+| Decompilation | P-code and independent graph-analysis foundations available; no decompiled output yet | Connect P-code CFGs to SSA/dataflow, type recovery, simplification and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -118,6 +119,7 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 Local validation on Windows with Rust 1.99.1:
 
 - All 161 default workspace tests pass, plus six explicitly run upstream SLEIGH probes through the catalog path. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, catalog/XML/path handling, context precedence, mixed-endian source lifting, compiled-source reuse and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window.
+- The added graph crate passes 12 integration tests and one doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. With those integration tests, the workspace total is 173 default tests. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. The crate is not yet connected to the P-code or desktop function graphs.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.

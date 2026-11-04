@@ -93,23 +93,11 @@ pub(crate) fn execute(
         havoc_unknown: arguments.havoc_unknown,
     };
     let result = Compiler::default().analyze(&request)?;
-    // `--simplify` is command-only: the shared worker result is unchanged,
-    // and the field is appended to its exact document.
+    // `--simplify` is opt-in: the shared worker result is unchanged, and the
+    // field is appended to its exact document.
     let simplified = if arguments.simplify {
         let simplification = crate::simplification_report::build(result.constants.clone())?;
-        if !Arc::ptr_eq(simplification.constants(), &result.constants)
-            || !Arc::ptr_eq(simplification.expressions(), &result.expressions)
-        {
-            return Err("Simplification belongs to a different function snapshot".into());
-        }
-        Some(append_field(
-            result.json.as_bytes(),
-            SIMPLIFICATION_KEY,
-            MAX_DOCUMENT,
-            |remaining| {
-                crate::simplification_report::json(&simplification, remaining, FUNCTION_TOO_LARGE)
-            },
-        )?)
+        Some(simplified_json(&result, &simplification, MAX_DOCUMENT)?)
     } else {
         None
     };
@@ -298,6 +286,7 @@ fn validate_request(request: &FunctionRequest) -> Result<&Function, String> {
     Ok(function)
 }
 
+pub(crate) mod reduced;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -533,6 +522,31 @@ const ANALYSIS_KEY: &[u8] = br#","analysis":"#;
 const EXPRESSIONS_KEY: &[u8] = br#","expressions":"#;
 const CONSTANTS_KEY: &[u8] = br#","constants":"#;
 const SIMPLIFICATION_KEY: &[u8] = br#","simplification":"#;
+
+/// The `--analyze-function --simplify` document without its final newline:
+/// the function's exact document with a final `simplification` field, within
+/// `maximum` bytes. The command and the desktop's reduced copy both use it,
+/// and it rejects a simplification of any other snapshot.
+fn simplified_json(
+    result: &FunctionView,
+    simplification: &ghidra_analysis::PcodeSimplification,
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
+    if !Arc::ptr_eq(simplification.constants(), &result.constants)
+        || !Arc::ptr_eq(simplification.expressions(), &result.expressions)
+        || !Arc::ptr_eq(simplification.analysis(), &result.analysis)
+    {
+        return Err("Simplification belongs to a different function snapshot".into());
+    }
+    append_field(
+        result.json.as_bytes(),
+        SIMPLIFICATION_KEY,
+        maximum,
+        |remaining| {
+            crate::simplification_report::json(simplification, remaining, FUNCTION_TOO_LARGE)
+        },
+    )
+}
 
 /// Appends `key` and a report before the closing brace of a complete JSON
 /// object, within `maximum` bytes. The report is serialized into exactly the

@@ -105,7 +105,7 @@ pub(super) fn constant(value: &Value) -> String {
     }
 }
 
-fn capped(items: impl ExactSizeIterator<Item = String>, maximum: usize) -> String {
+pub(super) fn capped(items: impl ExactSizeIterator<Item = String>, maximum: usize) -> String {
     let total = items.len();
     let mut text: Vec<String> = items.take(maximum).collect();
     if total > maximum {
@@ -114,7 +114,7 @@ fn capped(items: impl ExactSizeIterator<Item = String>, maximum: usize) -> Strin
     text.join(", ")
 }
 
-fn endian(endianness: Endianness) -> &'static str {
+pub(super) fn endian(endianness: Endianness) -> &'static str {
     match endianness {
         Endianness::Little => "LE",
         Endianness::Big => "BE",

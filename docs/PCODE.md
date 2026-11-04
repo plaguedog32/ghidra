@@ -119,10 +119,12 @@ Choose a matching x86 catalog language in **P-code**, select an instruction in a
 recovered function, then open **Dataflow** and choose **Analyze selected function**.
 The background worker reuses source compilation and keeps only the newest queued
 request. Image, processor and effect-policy changes invalidate stale results.
-The view has four modes: **CFG & SSA** (nodes, terminal exits, phi values and
+The view has five modes: **CFG & SSA** (nodes, terminal exits, phi values and
 SSA operations), **Storage variables**, **Expressions** (see
-[Typed expression inspection](#typed-expression-inspection)) and **Constants**
-(see [Constant propagation inspection](#constant-propagation-inspection)).
+[Typed expression inspection](#typed-expression-inspection)), **Constants**
+(see [Constant propagation inspection](#constant-propagation-inspection)) and
+**Reduced expressions** (see
+[Desktop reduced expressions](#desktop-reduced-expressions)).
 **Copy analysis JSON** exports the result. Analysis does not modify project metadata or
 annotations.
 
@@ -168,8 +170,10 @@ unchanged. The command and **Copy analysis JSON** always include both.
 The command's opt-in `--simplify` appends a final `simplification` field, the
 `ghidra-rs.simplification` version 1 report built from those same constant
 facts. Without the flag the command output is byte-for-byte unchanged; with
-it, the document up to that field is identical. The desktop worker, view and
-**Copy analysis JSON** do not build simplifications.
+it, the document up to that field is identical. The desktop function worker and
+**Copy analysis JSON** do not build simplifications; **Reduced expressions**
+builds one on demand, and its **Copy reduced analysis JSON** copies the
+`--simplify` document.
 
 Each function is limited to 5,000 native instructions, 100,000 lifted operations,
 4,096 bytes of display text per instruction and 4 MiB total display text, plus
@@ -377,9 +381,9 @@ inconsistent snapshot fails the analysis with no partial output.
 
 `ghidra_analysis::PcodeSimplification` builds a bounded canonical value-term
 projection over one `PcodeConstants` snapshot (see the crate README for the
-complete rule set). `--analyze-pcode --simplify` and
-`--analyze-function --simplify` use that one engine and one report module. It
-is not yet shown in the desktop view.
+complete rule set). `--analyze-pcode --simplify`,
+`--analyze-function --simplify` and the desktop's **Dataflow → Reduced
+expressions** use that one engine and one report module.
 
 Each original node of a statement that constant propagation executed maps to a
 canonical term. Constant facts become literals, literal applications fold with
@@ -446,6 +450,65 @@ statements, 16,000,000 term inputs, 8,000,000 pending traversal entries and
 On the retained WinHelloCPP `401E46` function (`--havoc-unknown`), simplified
 outputs include x86 flag tests such as `INT_NOTEQUAL(v, 0)` for `TEST`/`JNZ`
 and reassociated stack-pointer offsets, while `x*0` and `x^x` remain explicit.
+
+### Desktop reduced expressions
+
+**Dataflow → Reduced expressions** shows the simplification of the completed
+function analysis. Selecting the mode queues it on a dedicated background
+worker, which reads the view's existing constant facts: no SLEIGH compilation,
+lifting or SSA construction is repeated, and nothing is computed in a frame.
+The worker runs one request and keeps at most one replaceable queued request.
+A finished result or failure is kept for that analysis until it changes, so
+switching modes does not recompute it. A failure, including a simplification
+limit or a stopped or panicking worker, is shown with an explicit **Retry
+reduction**; the other four modes are unaffected. A new function result, an
+image, processor or effect-policy change, or a reload discards the result and
+ignores late responses; a result must also share the view's exact
+constant-fact allocation. A project load or save in progress defers the
+request. The mode changes no project metadata, annotations or revision.
+
+The header gives term, executed and unreached operation and reduction counts
+(literal, propagated and kept values, literal and forwarded outputs, shared
+terms, newly literal conditions, faults and refused folds) and the rules that
+fired. Five virtualized row kinds follow:
+
+- **SSA values**: every value's width, projection (`literal`, `propagated`,
+  `leaf` or `unreached`), canonical term and original definition.
+- **Reductions**: only values whose uses receive a literal or a propagated
+  term, collected once on the worker.
+- **Canonical terms**: every `cN` term with its type, one-level preview,
+  identity, fault scope, memory and boolean flags, rule and origin.
+- **Operations**: each original operation with its projected output, marked
+  as a literal output, forwarded, a kept memory read, kept because it may
+  fault, or produced by a named rule. Unreached operations are not simplified;
+  conservative operations keep OPAQUE definitions.
+- **Faults & refused folds**: constant-propagation evaluation faults, then
+  separately the literal folds the evaluator refused, which are not run-time
+  faults.
+
+`cN` names a canonical term, separate from expression nodes `tN` and SSA
+values `vN`. Details show the selected item's original definition or operands
+beside the projected terms, one level only; clicking a term reference
+inspects it, so loops stay value references. A leaf names its own value's
+kind, including when a propagated value's term is the leaf of another value:
+entry input, UNDEFINED at entry, UNDEFINED reset, OPAQUE effect, phi, memory
+state, or a definition kept because it reads memory or may fault. Unknown,
+unreached, undefined and opaque values are never shown as zero. Memory terms
+show their space, byte order, memory version and byte offset or word-scaled
+pointer. A RETURN operand is labelled a control target, not an ABI return
+value. **Go to** navigates to the source instruction of a value, operation,
+fault or a term's origin (the first executed operation containing its origin
+node). Rows and previews show at most 8 operands and 16 hexadecimal literal
+digits; details show at most 16 rows and 128 digits. Only visible rows are
+formatted. Selections are clamped and reset for each result.
+
+**Copy reduced analysis JSON** serializes on the worker and copies exactly the
+`--analyze-function --simplify` document without its final newline: the
+function analysis document with its `simplification` field, produced by the
+same code from the same snapshot under the same 64 MiB cap including that
+newline. Each request copies once; a copy whose analysis changed meanwhile is
+discarded. A size failure is reported without discarding the inspectable
+result. **Copy analysis JSON** is unchanged.
 
 ## Source-based instruction lifting
 

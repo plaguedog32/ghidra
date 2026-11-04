@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 mod constants;
 mod expressions;
+mod reduced;
 
 /// Keep nested virtual lists finite inside the enclosing page scroll. A small
 /// window may scroll the page to reach this area, but cannot squeeze it to zero.
@@ -36,13 +37,16 @@ pub(super) enum Inspect {
     Storage,
     Expressions,
     Constants,
+    Reduced,
 }
 
 #[derive(Default)]
 pub(super) struct State {
     next_request: u64,
     waiting: Option<RequestKey>,
-    view: Option<(RequestKey, FunctionView)>,
+    /// Shared with the reduced-expression worker, which reads its existing
+    /// constant facts and JSON without copying them.
+    view: Option<(RequestKey, Arc<FunctionView>)>,
     error: Option<(RequestKey, String)>,
     worker: Option<FunctionWorker>,
     selected_node: usize,
@@ -50,6 +54,7 @@ pub(super) struct State {
     inspect: Inspect,
     expression: expressions::Selection,
     constant: constants::Selection,
+    reduced: reduced::State,
 }
 
 impl State {
@@ -58,6 +63,7 @@ impl State {
         self.waiting = None;
         self.view = None;
         self.error = None;
+        self.reduced.reset();
     }
     pub(super) fn clear(&mut self) {
         // Reuse the same worker across images. Its one-slot queue bounds stale
@@ -82,12 +88,14 @@ impl State {
                 self.expression.value = 0;
                 self.expression.operation = 0;
                 self.constant.reset();
-                self.view = Some((response.key, view));
+                self.reduced.reset();
+                self.view = Some((response.key, Arc::new(view)));
                 self.error = None;
             }
             Err(error) => {
                 self.error = Some((response.key, error));
                 self.view = None;
+                self.reduced.reset();
             }
         }
     }
@@ -118,6 +126,7 @@ impl State {
             };
             self.accept(response, fingerprint);
         }
+        self.reduced.poll(ctx, self.view.as_ref());
         if self.waiting.is_some() {
             ctx.request_repaint_after(Duration::from_millis(40));
         }
@@ -219,6 +228,7 @@ impl Workbench {
                 (Inspect::Storage, "Storage variables"),
                 (Inspect::Expressions, "Expressions"),
                 (Inspect::Constants, "Constants"),
+                (Inspect::Reduced, "Reduced expressions"),
             ] {
                 ui.selectable_value(&mut self.dataflow.inspect, mode, label);
             }
@@ -235,7 +245,7 @@ impl Workbench {
             ui.colored_label(GOLD, error);
         }
         let Some((_, view)) = &self.dataflow.view else {
-            ui.label("Analyze a function to inspect native control flow, SSA, typed P-code expressions and conservative constant facts. Structured decompiled code is still in development.");
+            ui.label("Analyze a function to inspect native control flow, SSA, typed P-code expressions, conservative constant facts and reduced expressions. Structured decompiled code is still in development.");
             return;
         };
         let analysis = Arc::clone(&view.analysis);
@@ -283,6 +293,22 @@ impl Workbench {
             };
             if let Some(address) =
                 constants::panel(ui, &mut self.dataflow.constant, view, pane_height)
+            {
+                self.navigate_address(address);
+            }
+            return;
+        }
+        if self.dataflow.inspect == Inspect::Reduced {
+            let Some((key, view)) = &self.dataflow.view else {
+                return;
+            };
+            let (key, view) = (*key, Arc::clone(view));
+            // Only a cheap request is queued here; the worker simplifies.
+            if self.pending.is_none() {
+                self.dataflow.reduced.ensure(key, &view);
+            }
+            if let Some(address) =
+                reduced::panel(ui, &mut self.dataflow.reduced, key, &view, pane_height)
             {
                 self.navigate_address(address);
             }

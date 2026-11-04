@@ -183,7 +183,7 @@ pub(super) fn edge_row(c: &PcodeConstants, id: usize) -> (Color32, String) {
     )
 }
 
-fn bounded_error(error: &ghidra_pcode::Error) -> String {
+pub(super) fn bounded_error(error: &ghidra_pcode::Error) -> String {
     let text = error.to_string().replace(['\r', '\n'], " ");
     if text.chars().count() <= MAX_ERROR_CHARS {
         text

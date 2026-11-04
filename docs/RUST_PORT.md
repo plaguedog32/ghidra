@@ -39,7 +39,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | Native P-code CFGs and alias-aware liveness-pruned SSA; x86/x64 function lifting, Dataflow view and headless reports | Other processor function flows, dataflow simplification, ABI/type recovery and structured output |
+| Decompilation | Native P-code CFGs, alias-aware liveness-pruned SSA, typed expression reconstruction/inspection/export; x86/x64 function lifting, Dataflow view and headless reports | Other processor function flows, dataflow simplification, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -137,12 +137,53 @@ Local validation on Windows with Rust 1.99.1:
 - The same environment lifts and executes AArch64 BE64 `mov x0, #1`, and inspects the Windows x64 compiler specification with zero diagnostics.
 - Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
 - Independent review of the graph/project increment returned "Verdict: approve." It added 21,200 graph-oracle comparisons, including irreducible/nested cycles and larger random graphs.
-- Independent CFG and SSA reviews at `89cd38c6a6` both approved their changes. Separate probes checked 13,650 CFG cases and 3,000 concrete traces, and 17,288 SSA oracle cases plus deliberately corrupted operands/phis. The later storage/adapter increment requires its own review.
+- Independent CFG and SSA reviews at `89cd38c6a6` both approved their changes. Separate probes checked 13,650 CFG cases and 3,000 concrete traces, and 17,288 SSA oracle cases plus deliberately corrupted operands/phis. The later storage/adapter increment received separate approval at `b9b26eed4e`.
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.
 
 ## Development checkpoint
+
+### Current pause: expression inspection milestone
+
+Work is paused at the user's request. The integrated native desktop can open
+binaries, inspect disassembly and recovered functions, lift P-code, and inspect
+CFG/SSA and typed expressions. Dataflow has value/operation expression views;
+`--analyze-pcode --expressions` optionally exports expressions, and every
+`--analyze-function` report includes them. These are inspection tools, not
+structured decompiled source. The full replacement goal remains unfinished.
+
+Expression reconstruction received independent approval at `fae5fda5a0`.
+Independent review of the UI integration at `1b44a8ffd3` requested a fix for
+virtual rows whose declared height differed from wrapped/padded buttons.
+Both expression lists now use compact single-line rows with a shared measured
+height. The regression checks actual row height, pitch, scroll extent and
+single-line text with production spacing, long labels and two font sizes.
+A fresh review approved these fixes, including strict hexadecimal addresses,
+constant trap RETURN execution and source-lookup work accounting.
+
+The closing Windows/Rust 1.99.1 validation passes 399 default workspace tests
+and eight doctests, formatting and workspace/all-target Clippy with warnings
+denied, workspace rustdoc with warnings denied, and the optimized release build.
+Nine processor/source probes remain opt-in. Release checks with `JAVA_HOME`
+empty and `PATH` restricted to System32 export the alias example (14 expression
+nodes, 10 SSA values), export WinHelloCPP `401E46` (1,231 expression nodes,
+10,953 SSA values, 5,867,539 JSON bytes), and execute a one-byte constant trap
+RETURN with an explicit return stop. The release executable is
+`target/release/ghidra-rs.exe`; native window click-through and Rust 1.88 remain
+unverified. The newer local increments have not been pushed or validated by
+cross-platform CI.
+
+The unfinished ABI storage resolver is preserved separately in Git stash
+`2d33deafb43242253153a271d31174838c40a7b9`, titled
+`WIP-native-ABI-storage-resolver--expression-milestone-pause`. It is not a
+workspace member or a verified feature. Background constant-propagation work
+was stopped and is not integrated. To resume the implementation path, finish
+bounded value propagation/simplification, ABI storage and parameter allocation,
+type/signature recovery, control-flow structuring and source generation, then
+the remaining coverage gates in [the full worklist](FULL_PORT_WORKLIST.md).
+
+### Changes since the earlier pause
 
 Work resumed after the saved pause below. Generic liveness-pruned SSA is now
 integrated at `f95bede4b6`, preserving the original unpruned constructor. Its
@@ -173,9 +214,9 @@ function flow and native GUI click-through remain outside that review's coverage
 
 Owned bounded def-use indexing is integrated at `afc919fb1d`; its independent
 review approved exact use mapping, CSR accounting and 16,384 small reference
-cases. The next decompiler stages are expression reconstruction/inspection,
+cases. The next decompiler stages are
 dataflow simplification, ABI/storage resolution, type propagation and structured output.
-The full replacement goal remains active and unfinished.
+The full replacement goal remains unfinished.
 
 `PcodeExpressions` now reconstructs typed terms from an owned SSA snapshot:
 scalar joins/slices, literal and SSA operands, versioned memory reads/writes,
@@ -186,12 +227,12 @@ alias/memory programs, mixed byte orders, all four memory word sizes, 512-byte
 aliases, exact limits and 25k/50k scaling. Processor-defined `SEGMENTOP` now
 requires an explicit opaque-effect policy rather than assuming injection semantics.
 
-The current source passes 386 default workspace tests, eight doctests, formatting,
+The `fae5fda5a0` source passed 386 default workspace tests, eight doctests, formatting,
 workspace Clippy, analysis rustdoc with warnings denied, and the release build.
 Java-free release checks preserve the earlier sample counts and now accept the
-two retained INT3-containing functions `40170E` and `40475A`. The expression
-library still needs independent review and desktop/JSON integration; it does
-not yet propagate values, infer types or generate structured source.
+two retained INT3-containing functions `40170E` and `40475A`. Subsequent independent
+review approved the expression library, and `1b44a8ffd3` integrated desktop/JSON
+inspection. It does not yet propagate values, infer types or generate structured source.
 
 The earlier `ea14839619` checkpoint passed 361 default tests, six doctests, formatting
 and workspace Clippy with warnings denied. The release executable builds and
@@ -250,7 +291,7 @@ worktrees are preserved. No PR was created, and no full-parity claim is made.
 ## Path to full replacement
 
 1. **Harden the desktop foundation.** Extend the current project, annotation, navigation and function workflows with project collections, richer loaders, searching, and dependable error recovery.
-2. **Extend the analysis model.** Add types, data references, memory regions and analysis dependencies. Integrate the current source lifter with function recovery and desktop views.
+2. **Extend the analysis model.** Add types, data references, memory regions and analysis dependencies. Extend the current x86/x64 function-lifting path to other processors and flow-aware context analysis.
 3. **Expand processors and executable formats.** Extend the loaded language catalogs and processor defaults with binary matching, calling conventions and broader source/semantic audits. Validate instruction/ABI/loader behavior before claiming compatibility.
 4. **Add native decompilation.** Build SSA/dataflow, optimization, type recovery and structured-code generation on the P-code foundation. The retained C++ implementation is reference material; the native Rust application does not invoke it.
 5. **Replace larger workflows.** Add debugger backends, tracing, scripting, extensions, project compatibility and collaboration in independently testable stages.

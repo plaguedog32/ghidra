@@ -544,7 +544,13 @@ impl Machine {
                 })
             }
             Branchind | Callind | Return => {
-                if operation.inputs[0].size != u32::from(self.space(code_space)?.address_size) {
+                // SLEIGH uses narrow constant RETURN sentinels for traps such
+                // as x86 INT1/INT3. Computed targets still require pointer width.
+                let literal_return = operation.opcode == Return
+                    && self.space(operation.inputs[0].space)?.kind == SpaceKind::Constant;
+                if !literal_return
+                    && operation.inputs[0].size != u32::from(self.space(code_space)?.address_size)
+                {
                     return Err(MachineError::InvalidProgram(
                         "indirect control pointer width must match code space".into(),
                     ));

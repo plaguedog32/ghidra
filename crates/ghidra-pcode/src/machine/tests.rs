@@ -204,6 +204,40 @@ fn calls_and_returns_transfer_without_inventing_native_stack_effects() {
 }
 
 #[test]
+fn literal_trap_returns_allow_narrow_targets_without_relaxing_computed_pointers() {
+    for (size, raw, target) in [(1, 0, 0), (1, 0x1234, 0x34), (2, 0x1234, 0x1234)] {
+        let mut state = machine();
+        let program = [PcodeInstruction {
+            address: 0x1000,
+            length: 1,
+            ops: vec![op(Opcode::Return, None, vec![node(0, raw, size)])],
+        }];
+        let result = state.run(&program, SpaceId(1), 0x1000, 10).unwrap();
+        assert!(matches!(result.stop,
+            StopReason::ExternalTransfer { target: actual, ref kind }
+            if actual == target && kind == "return"));
+        assert_eq!(result.operations, 1);
+        assert!(state.snapshot().regions.is_empty());
+    }
+    for (opcode, target) in [
+        (Opcode::Return, node(2, 0, 1)),
+        (Opcode::Branchind, node(0, 0, 1)),
+        (Opcode::Callind, node(0, 0, 1)),
+    ] {
+        let mut state = machine();
+        state.map_bytes(SpaceId(2), 0, &[0]).unwrap();
+        let program = [PcodeInstruction {
+            address: 0x1000,
+            length: 1,
+            ops: vec![op(opcode, None, vec![target])],
+        }];
+        let error = state.run(&program, SpaceId(1), 0x1000, 10).unwrap_err();
+        assert!(matches!(error, MachineError::At { source, .. }
+            if matches!(*source, MachineError::InvalidProgram(_))));
+    }
+}
+
+#[test]
 fn malformed_programs_and_context_operations_fail_explicitly() {
     let mut state = machine();
     let instruction = PcodeInstruction {

@@ -92,6 +92,9 @@ pub(crate) fn hex_address(address: &str) -> Result<u64, String> {
         .strip_prefix("0x")
         .or_else(|| address.strip_prefix("0X"))
         .unwrap_or(address);
+    if digits.starts_with('+') {
+        return Err("Instruction address must be hexadecimal".into());
+    }
     let address = u64::from_str_radix(digits, 16)
         .map_err(|_| "Instruction address must be hexadecimal".to_string())?;
     Ok(address)
@@ -322,6 +325,9 @@ mod tests {
             "0x",
             "",
             "-1000",
+            "+1000",
+            "0x+1000",
+            "0X+1000",
             "10000000000000000",
         ] {
             assert!(super::hex_address(text).is_err(), "{text}");

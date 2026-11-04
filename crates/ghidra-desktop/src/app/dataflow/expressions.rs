@@ -15,6 +15,40 @@ pub(super) const MAX_ITEMS: usize = 8;
 pub(super) const MAX_HEX_DIGITS: usize = 16;
 const MAX_DETAIL_ROWS: usize = 16;
 
+// show_rows requires every row to have exactly this height, excluding spacing.
+// Compact buttons remove vertical padding; the explicit font and minimum size
+// keep the contract independent of the application's normal button padding.
+fn row_height(ui: &egui::Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Monospace)
+        .ceil()
+        .max(22.0)
+}
+
+fn selectable_row(
+    ui: &mut egui::Ui,
+    selection: &mut usize,
+    index: usize,
+    tone: Tone,
+    text: String,
+) -> egui::Response {
+    let text = text.replace(['\r', '\n'], " ");
+    let response = ui.add(
+        egui::Button::selectable(
+            *selection == index,
+            RichText::new(text)
+                .text_style(egui::TextStyle::Monospace)
+                .color(tone.color()),
+        )
+        .small()
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(egui::vec2(0.0, row_height(ui))),
+    );
+    if response.clicked() {
+        *selection = index;
+    }
+    response
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Rows {
     #[default]
@@ -607,16 +641,13 @@ pub(super) fn panel(
         Rows::Values => {
             let count = e.analysis().ssa().values().len();
             selection.value = selection.value.min(count.saturating_sub(1));
+            let height = row_height(&columns[0]);
             egui::ScrollArea::both()
                 .id_salt("expression_values")
-                .show_rows(&mut columns[0], 22.0, count, |ui, rows| {
+                .show_rows(&mut columns[0], height, count, |ui, rows| {
                     for id in rows {
                         let (tone, text) = value_row(e, spaces, id);
-                        ui.selectable_value(
-                            &mut selection.value,
-                            id,
-                            RichText::new(text).monospace().color(tone.color()),
-                        );
+                        selectable_row(ui, &mut selection.value, id, tone, text);
                     }
                 });
             if count > 0 {
@@ -631,16 +662,13 @@ pub(super) fn panel(
         Rows::Operations => {
             let statements = &view.expression_operations;
             selection.operation = selection.operation.min(statements.len().saturating_sub(1));
+            let height = row_height(&columns[0]);
             egui::ScrollArea::both()
                 .id_salt("expression_operations")
-                .show_rows(&mut columns[0], 22.0, statements.len(), |ui, rows| {
+                .show_rows(&mut columns[0], height, statements.len(), |ui, rows| {
                     for index in rows {
                         let (tone, text) = operation_row(e, spaces, statements[index]);
-                        ui.selectable_value(
-                            &mut selection.operation,
-                            index,
-                            RichText::new(text).monospace().color(tone.color()),
-                        );
+                        selectable_row(ui, &mut selection.operation, index, tone, text);
                     }
                 });
             if let Some(&statement) = statements.get(selection.operation) {
@@ -663,6 +691,114 @@ mod tests {
 
     fn sum_loop() -> ExecutionInput {
         serde_json::from_str(include_str!("../../../../../examples/pcode/sum-loop.json")).unwrap()
+    }
+
+    #[test]
+    fn virtual_rows_match_geometry_with_production_spacing_and_long_labels() {
+        let e = crate::expression_report::build(Arc::new(
+            ghidra_analysis::PcodeSsa::new(
+                Arc::new(
+                    ghidra_cfg::Cfg::new(
+                        {
+                            let p = sum_loop();
+                            ghidra_cfg::CfgInput::new(
+                                p.spaces,
+                                p.code_space,
+                                p.entry,
+                                p.instructions,
+                            )
+                        },
+                        Default::default(),
+                    )
+                    .unwrap(),
+                ),
+                &[],
+                ghidra_analysis::AnalysisOptions::native(),
+                Default::default(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+        let spaces = e.analysis().cfg().spaces();
+        let mut labels = vec![value_row(&e, spaces, 0)];
+        labels.push(operation_row(
+            &e,
+            spaces,
+            e.operations().next().unwrap().statement,
+        ));
+        labels.push((Tone::Undefined, "long space name\n".repeat(40)));
+        for font_size in [14.0, 28.0] {
+            for offset in [0.0, 500.0] {
+                let ctx = egui::Context::default();
+                ctx.style_mut(|style| {
+                    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+                    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+                    style.text_styles.insert(
+                        egui::TextStyle::Monospace,
+                        egui::FontId::monospace(font_size),
+                    );
+                });
+                let mut seen = 0;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000.0, 650.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.set_width(350.0);
+                            let height = row_height(ui);
+                            let pitch = height + ui.spacing().item_spacing.y;
+                            let result = egui::ScrollArea::both()
+                                .vertical_scroll_offset(offset)
+                                .show_rows(ui, height, 100, |ui, rows| {
+                                    if offset > 0.0 {
+                                        assert!(rows.start > 0);
+                                    }
+                                    let mut previous: Option<f32> = None;
+                                    let mut selection = 0;
+                                    for id in rows {
+                                        let (tone, text) = &labels[id % labels.len()];
+                                        let response = selectable_row(
+                                            ui,
+                                            &mut selection,
+                                            id,
+                                            *tone,
+                                            text.clone(),
+                                        );
+                                        assert!((response.rect.height() - height).abs() < 0.01);
+                                        if let Some(top) = previous {
+                                            assert!(
+                                                (response.rect.top() - top - pitch).abs() < 0.01
+                                            );
+                                        }
+                                        previous = Some(response.rect.top());
+                                        seen += 1;
+                                    }
+                                });
+                            assert!((result.content_size.y - (100.0 * pitch - 8.0)).abs() < 0.1);
+                        });
+                    },
+                );
+                assert!(seen > 1 && seen < 100);
+                let text_shapes: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::epaint::Shape::Text(text) = &shape.shape {
+                            Some(text)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert!(!text_shapes.is_empty());
+                assert!(text_shapes.iter().all(|shape| shape.galley.rows.len() == 1));
+            }
+        }
     }
 
     fn rows_are_bounded(e: &PcodeExpressions) {

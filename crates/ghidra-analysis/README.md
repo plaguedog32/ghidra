@@ -231,8 +231,10 @@ operations, and no-op/reset statements remain available in the original snapshot
 Expression-node edges point to earlier nodes; SSA leaves can refer to cyclic
 definitions without expanding them. Construction is iterative, with no
 per-value scan of the program. It makes linear passes over values, graph nodes,
-reachable statements and operand pieces, with logarithmic address-space and
-per-operation write lookups. This does not perform pointer disambiguation,
+reachable statements and operand pieces, with logarithmic address-space,
+per-operation write and source-instruction lookups. Source lookup costs
+`O(S log I)` for `S` reachable operations and `I` supplied instructions; term
+storage stays linear in the visited records and pieces. This does not perform pointer disambiguation,
 calling-convention recovery, value propagation, type inference or C generation.
 
 Separate limits bound graph nodes, SSA values, reachable statements, expression

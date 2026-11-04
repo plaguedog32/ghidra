@@ -942,7 +942,7 @@ fn generated_alias_and_memory_programs_match_the_concrete_machine() {
 }
 
 #[test]
-fn long_programs_keep_linear_terms_and_work_without_expanding_ssa() {
+fn long_programs_keep_linear_terms_and_bound_source_lookup_work() {
     fn build(count: usize) -> (usize, u64) {
         let instructions = (0..count)
             .map(|i| {
@@ -964,7 +964,13 @@ fn long_programs_keep_linear_terms_and_work_without_expanding_ssa() {
     let (small_nodes, small) = build(25_000);
     let (large_nodes, large) = build(50_000);
     assert_eq!(large_nodes, 2 * small_nodes);
-    assert!(large <= 2 * small + 128, "work {small} -> {large}");
+    // Each instruction requires one binary source lookup. Its logarithmic
+    // charge grows by one unit on doubling; all remaining work stays linear.
+    let lookups = |count: usize| count as u64 * u64::from(usize::BITS - count.leading_zeros() + 1);
+    assert!(
+        large - lookups(50_000) <= 2 * (small - lookups(25_000)) + 128,
+        "work {small} -> {large}"
+    );
     fn send_sync<T: Send + Sync>() {}
     send_sync::<PcodeExpressions>();
 }

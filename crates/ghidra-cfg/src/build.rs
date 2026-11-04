@@ -122,7 +122,7 @@ enum Role {
     Selector,
     /// LOAD/STORE input1: pointer sized for the selected space.
     Pointer,
-    /// BRANCHIND/CALLIND/RETURN input0: runtime code address value.
+    /// BRANCHIND/CALLIND input0: runtime code address; RETURN also permits a literal sentinel.
     CodePointer,
     /// BRANCH/CBRANCH input0: relative constant or code-space address label.
     BranchLabel,

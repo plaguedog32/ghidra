@@ -736,6 +736,7 @@ impl Builder {
                 bindings,
                 effects,
             } => {
+                self.budget.map(analysis.cfg().instructions().len())?;
                 let Statement::Operation(operation) = analysis
                     .cfg()
                     .statement(*point)

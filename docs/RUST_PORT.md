@@ -311,8 +311,9 @@ this first datatype increment is pending.
 
 This crate does not yet implement bitfields, manual composite offsets,
 datatype-manager/archive workflows, type recovery or datatype-driven ABI rules.
-It takes a final resolved data organization; XML setter-order coupling between
-primitive sizes remains a documented loader limitation. The full port stays
+It takes a final resolved data organization. XML primitive sizes remain independent,
+matching direct assignment in the retained loader; coupled Java setters are a
+separate API and are not invoked while reading compiler specs. The full port stays
 unfinished. See [the datatype crate](../crates/ghidra-types/README.md).
 
 The combined fallback/datatype tree passes 565 default workspace tests and

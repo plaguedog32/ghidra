@@ -135,6 +135,9 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// Test mathematical logical size, including void's zero size. This is not
+    /// Java DataType.isZeroLength's special component classification; void still
+    /// has no embeddable storage and is rejected as a field/array element.
     pub fn is_zero_length(self) -> bool {
         self.size == Some(0)
     }
@@ -156,5 +159,7 @@ pub struct TypeLayout {
     /// Only direct structure/union definitions have fields. An alias copies
     /// geometry, never an expanded copy of the target's field array.
     pub fields: Vec<FieldLayout>,
+    /// Present only on direct arrays. Aliases preserve geometry but do not copy
+    /// this detail; follow the alias target to inspect its array stride.
     pub array_stride: Option<u64>,
 }

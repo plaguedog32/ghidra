@@ -280,6 +280,11 @@ impl DataOrganization {
     /// The size map is built like Ghidra's `TreeMap`: seeded with 1/2/4/8, then each
     /// declared entry in document order, a later entry replacing an earlier one for the
     /// same size. This is `O(n log n)` in the number of entries.
+    ///
+    /// `DataOrganizationImpl.restoreXml` assigns primitive size fields directly;
+    /// it does not call the coupled `setIntegerSize`/`setDoubleSize` methods.
+    /// Primitive sizes therefore remain independent, including zero or nonmonotonic
+    /// declarations. Geometry consumers may reject unsupported sizes separately.
     pub fn resolve(&self, language_pointer_size: u32) -> ResolvedDataOrganization {
         let mut map: BTreeMap<u32, u32> = [1, 2, 4, 8].into_iter().map(|n| (n, n)).collect();
         for entry in &self.size_alignment_map {

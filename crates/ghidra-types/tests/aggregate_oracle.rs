@@ -573,7 +573,8 @@ fn deterministic_acyclic_graphs_match_the_independent_aggregate_oracle() {
             for seed in 0..16 {
                 let nodes = graph(seed, &org);
                 let context = format!("profile={profile}, MS={ms}, seed={seed}");
-                let (_, reference) = check(&nodes, &org, &context);
+                let (actual, reference) = check(&nodes, &org, &context);
+                check_permuted_ids(&actual, &reference, seed + 71, &context);
                 graph_count += 1;
                 type_count += reference.len();
                 field_count += reference
@@ -586,6 +587,89 @@ fn deterministic_acyclic_graphs_match_the_independent_aggregate_oracle() {
     assert_eq!(graph_count, 192);
     assert_eq!(type_count, 24_000);
     assert_eq!(field_count, 24_048);
+}
+
+// Preserve the independent expected layouts while scrambling production IDs.
+// This exercises forward by-value references without teaching the simple
+// reference evaluator to share production's dependency-walk algorithm.
+fn check_permuted_ids(
+    actual: &TypeLayouts,
+    reference: &[ReferenceLayout],
+    seed: u64,
+    context: &str,
+) {
+    let mut random = Deterministic(seed);
+    let mut order: Vec<_> = (0..reference.len()).collect(); // new -> original
+    for end in (1..order.len()).rev() {
+        let choice = random.pick(end + 1);
+        order.swap(end, choice);
+    }
+    let mut new_id = vec![0; order.len()];
+    for (new, old) in order.iter().enumerate() {
+        new_id[*old] = new;
+    }
+    let mut definitions: Vec<_> = order
+        .iter()
+        .map(|old| actual.definitions()[*old].clone())
+        .collect();
+    let mut forward = 0;
+    for (index, definition) in definitions.iter_mut().enumerate() {
+        let mut rewrite = |id: &mut TypeId| {
+            *id = TypeId(new_id[id.0]);
+            forward += usize::from(id.0 > index);
+        };
+        match &mut definition.kind {
+            TypeKind::Alias(target)
+            | TypeKind::Array {
+                element: target, ..
+            } => rewrite(target),
+            TypeKind::Structure(c) | TypeKind::Union(c) => {
+                for field in &mut c.fields {
+                    rewrite(&mut field.ty);
+                }
+            }
+            TypeKind::Pointer { target, .. } => *target = TypeId(new_id[target.0]),
+            TypeKind::Function {
+                result, parameters, ..
+            } => {
+                *result = TypeId(new_id[result.0]);
+                for parameter in parameters {
+                    *parameter = TypeId(new_id[parameter.0]);
+                }
+            }
+            _ => (),
+        }
+    }
+    assert!(forward > 0, "no forward by-value references: {context}");
+    let permuted = TypeLayouts::new(
+        definitions.into(),
+        actual.organization().clone(),
+        Limits::default(),
+    )
+    .unwrap();
+    for (old, oracle) in reference.iter().enumerate() {
+        let layout = permuted.layout(TypeId(new_id[old])).unwrap();
+        assert_eq!(
+            layout.geometry,
+            actual.layout(TypeId(old)).unwrap().geometry,
+            "permuted geometry: {context}"
+        );
+        assert_eq!(
+            layout.array_stride, oracle.stride,
+            "permuted stride: {context}"
+        );
+        let expected: Vec<_> = oracle
+            .members
+            .iter()
+            .map(|(ty, offset, bytes, align)| (new_id[*ty], *offset, *bytes, *align))
+            .collect();
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .map(|f| (f.ty.0, f.offset, f.bytes, f.alignment))
+            .collect();
+        assert_eq!(fields, expected, "permuted fields: {context}");
+    }
 }
 
 #[test]

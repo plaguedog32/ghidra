@@ -64,13 +64,13 @@ Alignment follows the retained `DataOrganizationImpl`, `DataTypeImpl`,
   bit masks. Zero alignments, malformed/unsorted size maps and overflow fail
   explicitly. This engine does not emulate Java signed-int overflow.
 
-The caller supplies a **final** `ResolvedDataOrganization`. This engine does not
-replay XML setters or repair a hand-built organization's coupled primitive sizes.
-In particular, retained Java setters can adjust other integer/float sizes in
-declaration order; `DataOrganization::resolve` currently captures configured size
-fields without that cross-field replay. A pathological custom `.cspec` can
-therefore supply geometry different from Java's eventual settings. No claim of
-complete compiler-spec loader normalization is made here.
+The caller supplies a **final** `ResolvedDataOrganization`. The retained Java
+`DataOrganizationImpl.restoreXml` assigns primitive sizes directly; it does not
+call its separate coupled primitive-size setter methods. `DataOrganization::resolve`
+correctly preserves those independent XML values. This layout engine also leaves
+a hand-built organization's sizes intact rather than imposing C size ordering.
+Zero size/alignment settings are rejected by the geometry validator even though
+the compiler-spec data model can capture them.
 
 All references are checked, including pointer targets, function signatures and
 unreferenced types. An iterative dependency walk rejects aliases/arrays/aggregate
@@ -101,7 +101,14 @@ each integration; the workspace minimum Rust version remains 1.88.
 
 Validation includes 16 layout/reference/error/budget tests, seven independent
 aggregate-oracle tests and the README example. The oracle checks 192 generated
-acyclic graphs (24,000 types and 24,048 fields) against separate arithmetic.
+acyclic graphs (24,000 types and 24,048 fields) against separate arithmetic,
+then permutes every graph's IDs and checks another 24,000 layouts with forward
+and backward by-value references.
 Exact and one-below limits, every smaller work budget, a 100,000-type alias
 chain, pointer recursion and large arrays with constant-size metadata are
 covered. This evidence does not establish complete datatype-framework parity.
+
+Independent review approved the foundation at `e17225c4db`, including separate
+source-derived oracles over about 142,000 shuffled-ID types, exact resource
+boundaries, allocation probes and 100,000-deep aggregates in debug/release.
+Rust 1.88 was not run. The review does not cover later bitfield or ABI consumers.

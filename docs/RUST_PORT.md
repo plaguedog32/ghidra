@@ -142,6 +142,50 @@ Local validation on Windows with Rust 1.99.1:
 
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.
 
+## Pause checkpoint
+
+Work is paused at the user's request. The latest integrated feature commit is
+`fcd1c108cda0b48e5fb8b270dbf8e922778e2caa` on `rust-desktop`. The source and
+documentation are committed locally; these later increments have not been pushed.
+The full Ghidra replacement goal remains unfinished.
+
+The local Windows executable is `target/release/ghidra-rs.exe`. The release build,
+formatting, workspace Clippy with warnings denied, and all 340 default workspace
+tests pass. Processor probes are opt-in; the new real-source function probe was
+run separately and passed. Java-free release checks cover supplied P-code and
+the retained PE32 function described above. The Dataflow views have headless egui
+render tests; native click-through verification remains unavailable.
+
+Resume with these items:
+
+1. Review the new binary-function worker, Dataflow UI, context-commit reporting
+   and `--analyze-function` command. The earlier storage/SSA adapter and
+   `--analyze-pcode` command received independent approval at `b9b26eed4e`, but
+   that approval does not cover the later function increment.
+2. Finish independent review of compiler-spec hardening at `c87b41e8a1`. Its
+   86 language tests pass and all seven earlier findings have implementation
+   fixes. The follow-up review ended with a provider error and no final verdict.
+   It raised an **unverified** possible budget gap: `.cspec` `context_data`
+   diagnostics are built by the shared processor-spec reader before the cspec
+   diagnostic budget checks, potentially amplifying long diagnostic paths.
+   Reproduce and address that path before treating parser hardening as approved.
+3. Review and integrate opt-in liveness-pruned SSA. Its completed implementation
+   is preserved at `1263485e82` on local branch
+   `checkpoint/liveness-pruned-ssa` (also `t3/f6573c1b`), based on `b9b26eed4e`.
+   It is **not merged or independently reviewed**. The implementation adds
+   `PhiPlacement`, `construct_pruned`, mode-aware verification and bounded sparse
+   live-in analysis. Current application analysis still uses unpruned SSA.
+   After review, connect the mode to the P-code adapter, report the actual mode
+   in JSON/UI, and retain regression evidence for temporary frame resets and
+   large loops.
+4. Continue expression simplification, ABI/storage resolution, type propagation
+   and structured decompiler output, then the remaining processor, loader,
+   scripting, debugger, project and framework coverage gates in
+   [the full worklist](FULL_PORT_WORKLIST.md).
+
+No delegate runs remain active at this checkpoint. Completed commits and their
+worktrees are preserved. No PR was created, and no full-parity claim is made.
+
 ## Path to full replacement
 
 1. **Harden the desktop foundation.** Extend the current project, annotation, navigation and function workflows with project collections, richer loaders, searching, and dependable error recovery.

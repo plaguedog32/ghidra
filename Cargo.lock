@@ -1168,6 +1168,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghidra-ssa"
+version = "0.3.0"
+dependencies = [
+ "ghidra-graph",
+]
+
+[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

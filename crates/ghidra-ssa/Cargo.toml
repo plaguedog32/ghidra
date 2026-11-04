@@ -1,0 +1,11 @@
+[package]
+name = "ghidra-ssa"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded generic SSA construction and verification over native control-flow graphs"
+publish = false
+
+[dependencies]
+ghidra-graph = { path = "../ghidra-graph" }

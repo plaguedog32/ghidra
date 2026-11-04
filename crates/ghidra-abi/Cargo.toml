@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 ghidra-languages = { path = "../ghidra-languages" }
 ghidra-pcode = { path = "../ghidra-pcode" }
+ghidra-types = { path = "../ghidra-types" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

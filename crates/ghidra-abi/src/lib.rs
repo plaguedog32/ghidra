@@ -1,14 +1,16 @@
 //! Compiler storage resolution against an immutable language register file.
 //!
 //! Storage resolution, per-pool placement and bare declaration-ordered fallback
-//! allocation are distinct APIs. Prototype rules and complete signature
-//! allocation remain unimplemented. See the crate README for those boundaries.
+//! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
+//! evaluated separately; rule actions and complete signature allocation remain
+//! unimplemented. See the crate README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
 mod error;
 mod fallback;
 mod placement;
+mod predicates;
 mod registry;
 mod resources;
 mod storage;
@@ -26,6 +28,10 @@ pub use fallback::{
 pub use placement::{
     Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,
     PlacementError, PlacementLimits, PlacementOutcome, PlacementRequest, place_parameter,
+};
+pub use predicates::{
+    DatatypeFact, DatatypePredicates, HomogeneousFloat, PredicateError, PredicateLimits,
+    PredicateMatch, PredicateRejection, PredicateStats, PredicateUsage, PrototypeTypes,
 };
 pub use registry::{RegisterDefinition, RegisterFile, RegisterId};
 pub use resources::{

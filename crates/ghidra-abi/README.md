@@ -5,7 +5,7 @@ registers and address spaces. It keeps signed stack addresses, register aliases
 and join significance explicit. It is a native Rust layer and uses no Java or
 Ghidra C++ process.
 
-Whole-signature allocation, prototype-rule evaluation, injection compilation and
+Whole-signature allocation, prototype-rule actions, injection compilation and
 type recovery remain separate stages. Resource-group planning, placement in
 an explicitly selected pool and the retained declaration-ordered *fallback*
 primitive are described below. Successful storage resolution, or a successful
@@ -516,3 +516,102 @@ handling, `this` and hidden-parameter ordering, output strategy and
 `sharestack` semantics, merged-model selection, datatype-driven requests, and
 call effects in SSA. The refused layouts above, a survey of every compiling
 pair and the 1.88 MSRV toolchain remain unvalidated.
+
+## Datatype predicates and rule qualifiers
+
+`DatatypePredicates::new(Arc<TypeLayouts>, PredicateLimits)` builds immutable
+canonical-type and homogeneous-float summaries for one declared datatype graph.
+It shares the layout snapshot and never expands arrays into individual elements.
+`matches_filter` tests a captured `DatatypeFilter`; `matches_rule` tests only a
+rule's datatype and ordered qualifiers. Both return a `PredicateMatch` with the
+first rejection and charged query work. Actions, resource preconditions and side
+effects are not executed, and no storage allocation is performed.
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::{DatatypePredicates, PrototypeTypes};
+use ghidra_languages::{CompilerSpec, DataOrganization};
+use ghidra_types::{TypeDefinition, TypeId, TypeKind, TypeLayouts};
+
+let spec = CompilerSpec::parse_str(r#"<compiler_spec><default_proto>
+<prototype name="p" extrapop="0" stackshift="0"><input>
+<rule><datatype name="float" minsize="4" maxsize="8"/>
+<position index="0"/><consume storage="float"/></rule>
+</input><output/></prototype></default_proto></compiler_spec>"#,
+    None, &Default::default())?;
+let layouts = Arc::new(TypeLayouts::new(vec![
+    TypeDefinition::new("f32", TypeKind::Float { bytes: 4 }),
+    TypeDefinition::new("void", TypeKind::Void),
+].into(), DataOrganization::default().resolve(8), Default::default())?);
+let predicates = DatatypePredicates::new(layouts, Default::default())?;
+let parameters = [TypeId(0)];
+let context = PrototypeTypes { result: TypeId(1), parameters: &parameters,
+    first_vararg: None };
+assert!(predicates.matches_rule(&spec.prototypes[0].input.rules[0], TypeId(0),
+    context, 0, Default::default())?.matched);
+// The consume action has not run; this result is only a predicate match.
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Semantics follow the retained Java `protorules` filters and `MetaDataType.get`:
+
+- Any/meta/array size checks use public `getLength`, not aligned length. Missing
+  or zero maximum means `i32::MAX`, minimum defaults to zero, and a nonempty
+  size list tests membership. Empty composites/zero arrays therefore have
+  filter length one. Unsized function definitions have filter length -1.
+- Ordinary meta filters strip aliases. Signed/unsigned enums map to `int`/`uint`,
+  not the accepted but unreachable `enum_int`/`enum_uint` filter names. `Char`
+  uses compiler signedness and `WChar` maps to `int`. Retained Java maps void to
+  `unknown`, with length zero, and functions to `code`, whose negative length
+  fails XML-default size bounds. Fixed opaque storage explicitly uses the
+  generic unrecognized-type `unknown` fallback; its width never implies float
+  or integer semantics. Incomplete types produce explicit errors when queried.
+- A parsed `array` filter uses the direct-array check of `ArrayFilter`; an
+  alias of an array fails it. Element bounds apply only to direct arrays, with
+  maximum zero meaning unlimited.
+- Homogeneous-float-aggregate requires an outer array/struct after aliases,
+  at least one float leaf, one shared canonical float `TypeId`, and no union or
+  nonfloat leaf. Different IDs with equal widths remain different datatype
+  identities. Empty nested structures/zero arrays add no leaves. The default
+  primitive maximum is four, including an explicit zero setting. This source
+  filter ignores inherited size bounds. Both supported packing modes enable
+  automatic packing, so alignment holes and trailing padding do not disqualify
+  an HFA. Manual-layout extraction is not implemented.
+- Qualifiers use AND with declaration-order short-circuiting. Position compares
+  literally. `datatype_at` selects the return type for any negative index and
+  fails for an absent input slot. Varargs positions are relative to the first
+  variable slot; absent bounds are `i32::MIN..=i32::MAX`, which can include the
+  return position. No first variable slot means false. Subtraction outside the
+  modeled signed-int range is an explicit error instead of Java wraparound.
+
+The caller supplies the datatype and position explicitly, as the retained
+`ModelRule.assignAddress` does. Prototype parameter IDs and return ID are all
+validated before predicate evaluation. The first variable slot must lie within
+or at the end of the input list. Filters reached after short-circuiting are
+validated on demand; invalid unreachable predicates are not evaluated. Hand-built
+size lists mixed with explicit bounds are rejected rather than inventing XML
+attribute order. Class-irrelevant fields remain ignored.
+
+Construction costs `O(types + references)` time/storage with no recursion.
+Canonical aliases and HFA leaf counts are cached once, including billion-element
+arrays; queries do not walk member graphs. Work includes dependency visits,
+summary combinations, prototype validation and conservative size-list scans.
+Each construction/query receives a fresh work budget, with no nested analysis
+budget. `max_types`, `max_references` and `max_depth` apply to construction;
+`max_size_items`, `max_qualifiers` and `max_parameters` apply per query. The size
+item count accumulates across reached `datatype_at` filters as well as the main
+filter. All caps are checked before protected allocation/visits. Errors return
+no partial fact snapshot or match result.
+
+Default tests cover the source quirks, first rejection, malformed IDs/filters,
+short-circuiting, exact/one-below limits and every lower work budget. A 100,000-ID
+alias chain scales linearly and a billion-element array uses two fact records.
+The independent small-graph reference expands leaves recursively, comparing
+7,192 filter queries and 1,344 qualifier queries without production fact helpers.
+Every one of the 230 retained rules is also compared on synthetic type graphs
+under pointer-size profiles 2/4/8 from all 107 referenced compiler specs: 42,780
+filter queries and 6,900 qualifier queries. This checks declaration evaluation,
+not argument allocation for those processor ABIs. Seven compiling mutations of
+source-sensitive branches and budget charges are caught by the default tests.
+These predicates are not yet connected to rule actions, signature allocation,
+SSA call effects, the desktop or a command-line report.

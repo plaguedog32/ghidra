@@ -1088,6 +1088,7 @@ dependencies = [
  "ghidra-languages",
  "ghidra-pcode",
  "ghidra-sleigh",
+ "ghidra-types",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

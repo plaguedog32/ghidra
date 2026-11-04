@@ -16,7 +16,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
-| `crates/ghidra-abi` | Register-backed compiler storage, resource groups, per-pool placement and explicit-request fallback allocation |
+| `crates/ghidra-abi` | Compiler storage, resource groups, explicit fallback allocation, and datatype/qualifier predicates |
 | `crates/ghidra-types` | Bounded declared datatype graphs and compiler-driven scalar, pointer, array and ordinary aggregate layouts |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
@@ -306,8 +306,11 @@ logical zero size remain distinct. An iterative dependency walk rejects
 by-value cycles while permitting recursive pointer types. Counts, byte
 extents, depth and work are bounded, without per-array-element allocation.
 Sixteen core tests and seven independent oracle tests pass, including 24,000
-generated layouts and a 100,000-type alias chain. Full independent review of
-this first datatype increment is pending.
+generated layouts, their shuffled-ID permutations and a 100,000-type alias chain.
+Independent review approved the foundation at `e17225c4db`, adding about 142,000
+source-derived layout comparisons and allocation/deep-graph probes. Its small
+logical-zero/array-detail documentation notes and forward-reference test gap
+are addressed separately; no arithmetic or storage corrections were required.
 
 This crate does not yet implement bitfields, manual composite offsets,
 datatype-manager/archive workflows, type recovery or datatype-driven ABI rules.
@@ -322,6 +325,30 @@ and the release build on Windows/Rust 1.99.1. Java-free release probes retain
 the raw-example and WinHelloCPP constant-analysis results above; namespace and
 stack-loading CLI probes also pass with empty stdout on failures. Rust 1.88,
 other operating systems and native GUI click-through were not verified here.
+
+### Datatype rule predicates
+
+`DatatypePredicates` now derives bounded canonical aliases, Java meta-types and
+homogeneous-float summaries from an owned layout snapshot. It evaluates captured
+datatype filters and ordered position/varargs/other-datatype qualifiers. Array
+counts are summarized without per-element allocation; a 100,000-ID alias chain
+has linear work. Source quirks are explicit: public lengths drive size filters,
+array filters require direct arrays, HFA uses datatype identity and ignores size
+bounds, and void/function meta-type behavior follows the retained Java layer.
+
+Eleven boundary/behavior tests, independent reference comparisons (7,192 filters
+and 1,344 qualifier combinations), and all 230 retained rules over synthetic
+type/pointer profiles pass. The real declaration corpus adds 42,780 filter and
+6,900 qualifier comparisons. Seven compiling mutations are caught. This is a
+library predicate API; actions, resource preconditions, side effects, hidden
+returns, signature allocation, SSA call effects and desktop/report integration
+remain unfinished. Independent review of this new predicate increment is pending.
+
+The predicate tree passes 583 default workspace tests and 13 doctests,
+formatting, workspace Clippy/rustdoc with warnings denied, and the release
+build on Windows/Rust 1.99.1. Java-free release runs retain the raw-example and
+WinHelloCPP analysis results. The declared minimum Rust version and native GUI
+behavior were not revalidated by these library checks.
 
 ### Saved pause: expression inspection milestone
 

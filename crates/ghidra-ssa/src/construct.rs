@@ -4,8 +4,9 @@ use ghidra_graph::{Graph, ImmediateDominator, NodeId};
 
 use crate::error::{Budget, Error, Limits, Resource, Result, account, limit};
 use crate::model::{
-    Block, DefinitionSite, EntryState, OperandSite, Phi, PhiId, Predecessor, RawProgram,
-    RenamedBlock, RenamedStatement, StatementId, UseSite, Value, ValueId, ValueOrigin, VariableId,
+    Block, DefinitionSite, EntryState, OperandSite, Phi, PhiId, PhiPlacement, Predecessor,
+    RawProgram, RenamedBlock, RenamedStatement, StatementId, UseSite, Value, ValueId, ValueOrigin,
+    VariableId,
 };
 
 /// Placeholder for phi operands before renaming fills them. Every operand is
@@ -18,14 +19,15 @@ const UNSET: ValueId = ValueId(usize::MAX);
 /// renamed statement, phi, and value; it borrows neither the graph nor the raw
 /// program. Value IDs are laid out as: entry values (`ValueId(x)` for variable
 /// `x`), then phis in node and phi order, then reachable definitions in node,
-/// statement, and slot order. The form is unpruned: phis are placed at the
-/// iterated dominance frontier of each variable's definitions regardless of
-/// liveness, so some phis can be dead.
+/// statement, and slot order. Phis are placed at the iterated dominance
+/// frontier of each variable's definitions; `placement()` says whether that
+/// set was also restricted to blocks where the variable is live.
 #[derive(Clone, Debug)]
 pub struct Ssa {
     pub(crate) graph: Arc<Graph>,
     pub(crate) entry: NodeId,
     pub(crate) limits: Limits,
+    pub(crate) placement: PhiPlacement,
     pub(crate) entry_states: Vec<EntryState>,
     pub(crate) idom: Vec<ImmediateDominator>,
     pub(crate) blocks: Vec<Block>,
@@ -36,7 +38,8 @@ pub struct Ssa {
 }
 
 impl Ssa {
-    /// Validate `program` against `graph` and `limits`, then build SSA form.
+    /// Validate `program` against `graph` and `limits`, then build unpruned
+    /// SSA form (`PhiPlacement::Unpruned`).
     ///
     /// Runs `Graph::dominators(entry)` and `Dominators::frontiers()` once each;
     /// both have their own graph work budget. Fails without a partial result.
@@ -46,12 +49,39 @@ impl Ssa {
         program: &RawProgram,
         limits: Limits,
     ) -> Result<Self> {
+        Self::construct_with(graph, entry, program, limits, PhiPlacement::Unpruned)
+    }
+
+    /// Like `construct`, but builds liveness-pruned SSA form
+    /// (`PhiPlacement::Pruned`): no phi is placed where its variable is dead.
+    ///
+    /// Liveness is computed from the raw program and bounded by
+    /// `Limits::max_live_ins` and the same `max_work` budget. It makes the
+    /// same two graph analysis calls as `construct` and no others.
+    pub fn construct_pruned(
+        graph: Arc<Graph>,
+        entry: NodeId,
+        program: &RawProgram,
+        limits: Limits,
+    ) -> Result<Self> {
+        Self::construct_with(graph, entry, program, limits, PhiPlacement::Pruned)
+    }
+
+    /// Build SSA form with an explicit phi placement mode.
+    pub fn construct_with(
+        graph: Arc<Graph>,
+        entry: NodeId,
+        program: &RawProgram,
+        limits: Limits,
+        placement: PhiPlacement,
+    ) -> Result<Self> {
         let mut budget = Budget::new(limits.max_work);
-        let built = build(&graph, entry, program, &limits, &mut budget)?;
+        let built = build(&graph, entry, program, &limits, placement, &mut budget)?;
         Ok(Self {
             graph,
             entry,
             limits,
+            placement,
             entry_states: program.variables.clone(),
             idom: built.idom,
             blocks: built.blocks,
@@ -72,6 +102,12 @@ impl Ssa {
 
     pub fn limits(&self) -> Limits {
         self.limits
+    }
+
+    /// The phi placement mode this form was built with. `verify` checks phi
+    /// completeness for this mode and, when pruned, that no phi is dead.
+    pub fn placement(&self) -> PhiPlacement {
+        self.placement
     }
 
     /// SSA work units spent by construction, excluding graph-analysis budgets.
@@ -315,6 +351,7 @@ fn build(
     entry: NodeId,
     program: &RawProgram,
     limits: &Limits,
+    placement: PhiPlacement,
     budget: &mut Budget,
 ) -> Result<Built> {
     let n = graph.node_count();
@@ -419,8 +456,18 @@ fn build(
     drop(def_cursor);
     drop(last_block);
 
+    // Pruned placement needs each variable's upward-exposed blocks. Unpruned
+    // placement builds nothing here and is charged no extra work.
+    let mut liveness = match placement {
+        PhiPlacement::Unpruned => None,
+        PhiPlacement::Pruned => Some(Liveness::new(program, &reachable, budget)?),
+    };
+
     // Cytron et al. placement at the iterated dominance frontier. Node-sized
     // marks are stamped with the variable index, so they are never cleared.
+    // When pruned, a frontier block where the variable is dead gets no phi
+    // and is not propagated further. This yields exactly the iterated
+    // frontier restricted to live-in blocks (see the crate documentation).
     budget.charge(n)?;
     budget.charge(n)?;
     let mut has_phi = vec![usize::MAX; n];
@@ -438,12 +485,24 @@ fn build(
             queued[node] = variable;
             worklist.push(node);
         }
+        // A variable's liveness is computed at its first frontier candidate,
+        // so variables that can never need a phi cost no liveness work.
+        let mut flooded = false;
         while let Some(node) = worklist.pop() {
             budget.tick()?;
             for &frontier in &frontiers[node] {
                 budget.tick()?;
                 if has_phi[frontier] == variable {
                     continue;
+                }
+                if let Some(liveness) = &mut liveness {
+                    if !flooded {
+                        flooded = true;
+                        liveness.flood(graph, &reachable, variable, blocks, limits, budget)?;
+                    }
+                    if !liveness.is_live(frontier, variable) {
+                        continue;
+                    }
                 }
                 has_phi[frontier] = variable;
                 account(&mut phi_count, 1, limits.max_phis, Resource::Phis)?;
@@ -462,6 +521,7 @@ fn build(
             }
         }
     }
+    drop(liveness);
     drop(frontiers);
     drop(def_blocks);
     drop(dom);
@@ -618,6 +678,171 @@ fn for_each_reachable_def(
             budget.charge(raw.defs.len())?;
             for variable in &raw.defs {
                 visit(node, variable.0);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sparse per-variable liveness of the raw program over reachable blocks.
+///
+/// `exposed` lists, per variable, the distinct reachable blocks that read it
+/// before any statement of the same block writes it (a statement's uses come
+/// before its defs). A variable is live on entry to a reachable block iff a
+/// backward walk along reachable predecessors from one of its exposed blocks
+/// reaches that block without entering a block that writes it. There is no
+/// variable-by-node table: node-sized marks are stamped with the variable
+/// index and never cleared.
+struct Liveness {
+    exposed_start: Vec<usize>,
+    exposed: Vec<NodeId>,
+    live: Vec<usize>,
+    kills: Vec<usize>,
+    stack: Vec<NodeId>,
+    live_ins: usize,
+}
+
+impl Liveness {
+    fn new(program: &RawProgram, reachable: &[bool], budget: &mut Budget) -> Result<Self> {
+        let n = program.blocks.len();
+        let variable_count = program.variables.len();
+        // `written[x] == node`: an earlier statement of `node` writes x.
+        // `seen[x] == node`: x is already recorded as exposed in `node`.
+        budget.charge(variable_count)?;
+        budget.charge(variable_count)?;
+        budget.charge(variable_count)?;
+        let mut written = vec![usize::MAX; variable_count];
+        let mut seen = vec![usize::MAX; variable_count];
+        let mut exposed_start = vec![0usize; variable_count + 1];
+        for_each_exposed(
+            program,
+            reachable,
+            &mut written,
+            &mut seen,
+            budget,
+            |_, x| {
+                exposed_start[x + 1] += 1;
+            },
+        )?;
+        budget.charge(variable_count)?;
+        for x in 0..variable_count {
+            exposed_start[x + 1] += exposed_start[x];
+            written[x] = usize::MAX;
+            seen[x] = usize::MAX;
+        }
+        // At most one exposed pair per use operand, so this cannot overflow.
+        budget.charge(variable_count)?;
+        budget.charge(exposed_start[variable_count])?;
+        let mut cursor = exposed_start[..variable_count].to_vec();
+        let mut exposed = vec![0; exposed_start[variable_count]];
+        for_each_exposed(
+            program,
+            reachable,
+            &mut written,
+            &mut seen,
+            budget,
+            |node, x| {
+                exposed[cursor[x]] = node;
+                cursor[x] += 1;
+            },
+        )?;
+        budget.charge(n)?;
+        budget.charge(n)?;
+        Ok(Self {
+            exposed_start,
+            exposed,
+            live: vec![usize::MAX; n],
+            kills: vec![usize::MAX; n],
+            stack: Vec::new(),
+            live_ins: 0,
+        })
+    }
+
+    /// Mark every reachable block where `variable` is live on entry. Each
+    /// live-in pair is counted against `max_live_ins` before it is recorded.
+    fn flood(
+        &mut self,
+        graph: &Graph,
+        reachable: &[bool],
+        variable: usize,
+        def_blocks: &[NodeId],
+        limits: &Limits,
+        budget: &mut Budget,
+    ) -> Result<()> {
+        for &node in def_blocks {
+            budget.tick()?;
+            self.kills[node] = variable;
+        }
+        self.stack.clear();
+        let seeds = &self.exposed[self.exposed_start[variable]..self.exposed_start[variable + 1]];
+        for &node in seeds {
+            budget.tick()?;
+            account(
+                &mut self.live_ins,
+                1,
+                limits.max_live_ins,
+                Resource::LiveIns,
+            )?;
+            self.live[node] = variable;
+            self.stack.push(node);
+        }
+        while let Some(node) = self.stack.pop() {
+            budget.tick()?;
+            for &pred in graph.predecessors(node)? {
+                budget.tick()?;
+                // A writing predecessor is live on entry only if it reads the
+                // variable first, and then it is already a seed.
+                if !reachable[pred] || self.live[pred] == variable || self.kills[pred] == variable {
+                    continue;
+                }
+                account(
+                    &mut self.live_ins,
+                    1,
+                    limits.max_live_ins,
+                    Resource::LiveIns,
+                )?;
+                self.live[pred] = variable;
+                self.stack.push(pred);
+            }
+        }
+        Ok(())
+    }
+
+    /// Only meaningful for the variable most recently flooded.
+    fn is_live(&self, node: NodeId, variable: usize) -> bool {
+        self.live[node] == variable
+    }
+}
+
+/// Visit each (reachable block, variable) pair where the block reads the
+/// variable before writing it, once per pair, in block order. `written` and
+/// `seen` must not hold any node ID on entry.
+fn for_each_exposed(
+    program: &RawProgram,
+    reachable: &[bool],
+    written: &mut [usize],
+    seen: &mut [usize],
+    budget: &mut Budget,
+    mut visit: impl FnMut(NodeId, usize),
+) -> Result<()> {
+    budget.charge(program.blocks.len())?;
+    for (node, block) in program.blocks.iter().enumerate() {
+        if !reachable[node] {
+            continue;
+        }
+        for raw in block {
+            budget.tick()?;
+            budget.charge(raw.uses.len() + raw.defs.len())?;
+            // Every use reads the state before any def of the same statement.
+            for variable in &raw.uses {
+                let x = variable.0;
+                if written[x] != node && seen[x] != node {
+                    seen[x] = node;
+                    visit(node, x);
+                }
+            }
+            for variable in &raw.defs {
+                written[variable.0] = node;
             }
         }
     }

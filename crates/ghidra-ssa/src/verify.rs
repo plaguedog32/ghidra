@@ -2,14 +2,16 @@
 //! recomputes dominance through the graph crate, checks local invariants
 //! directly, checks reaching definitions with an offline dominator-interval
 //! sweep, and checks phi placement against the dominance-frontier closure.
+//! For pruned placement it recomputes raw-program liveness on its own (sorted
+//! pair lists and a separate backward flood, not construction's tables).
 
 use ghidra_graph::{Dominators, ImmediateDominator, NodeId};
 
 use crate::construct::{Ssa, dominator_children, validate_program};
-use crate::error::{Budget, Result, Violation, violation};
+use crate::error::{Budget, Resource, Result, Violation, account, violation};
 use crate::model::{
-    Block, DefinitionSite, PhiId, PhiOperandSite, Predecessor, RawProgram, StatementId, UseSite,
-    Value, ValueId, ValueOrigin, VariableId,
+    Block, DefinitionSite, PhiId, PhiOperandSite, PhiPlacement, Predecessor, RawProgram,
+    StatementId, UseSite, Value, ValueId, ValueOrigin, VariableId,
 };
 
 #[derive(Clone, Copy)]
@@ -91,7 +93,7 @@ impl Ssa {
         self.verify_values(&mut budget)?;
         self.verify_blocks(program, &dom, &mut budget)?;
         let events = self.verify_reaching(program, &parents, &mut budget)?;
-        self.verify_placement(&dom, &events, &mut budget)
+        self.verify_placement(program, &dom, &events, &mut budget)
     }
 
     /// Every value names exactly one defining location, which defines it.
@@ -414,13 +416,19 @@ impl Ssa {
 
     /// Phi sets must be closed under dominance frontiers: if a block defines
     /// a variable or has its phi, every frontier member has a phi for it.
+    /// When pruned, only frontier members where the variable is live need
+    /// one, and every phi must be live.
     fn verify_placement(
         &self,
+        program: &RawProgram,
         dom: &Dominators<'_>,
         events: &[Event],
         budget: &mut Budget,
     ) -> Result<()> {
         let frontiers = dom.frontiers()?;
+        if self.placement == PhiPlacement::Pruned {
+            return self.verify_pruned_placement(program, &frontiers, events, budget);
+        }
         for event in events {
             if !matches!(event.site, Site::Definition) {
                 continue;
@@ -441,6 +449,211 @@ impl Ssa {
             }
         }
         Ok(())
+    }
+
+    /// Pruned placement, per variable in ascending order: every phi must be
+    /// at a block where the variable is live on entry (else `DeadPhi`), and
+    /// every live frontier member of a block that defines the variable or
+    /// has its phi must have its phi (else `MissingPhi`).
+    ///
+    /// Liveness is recomputed from the raw program: exposed reads and
+    /// writes of reachable blocks are collected as sorted (variable, node)
+    /// pairs, and a variable is flooded backward only once it has a phi or
+    /// a frontier candidate to judge.
+    fn verify_pruned_placement(
+        &self,
+        program: &RawProgram,
+        frontiers: &[Vec<NodeId>],
+        events: &[Event],
+        budget: &mut Budget,
+    ) -> Result<()> {
+        let n = self.blocks.len();
+        let variable_count = self.entry_states.len();
+        budget.charge(variable_count)?;
+        budget.charge(variable_count)?;
+        // `written[x] == node`: an earlier statement of `node` writes x.
+        // `read[x] == node`: x is already recorded as exposed in `node`.
+        let mut written = vec![usize::MAX; variable_count];
+        let mut read = vec![usize::MAX; variable_count];
+        let mut exposed: Vec<(usize, NodeId)> = Vec::new();
+        let mut writes: Vec<(usize, NodeId)> = Vec::new();
+        let mut phis: Vec<(usize, PhiId)> = Vec::new();
+        for (node, block) in self.blocks.iter().enumerate() {
+            let Block::Reachable(block) = block else {
+                continue;
+            };
+            budget.tick()?;
+            for (index, phi) in block.phis.iter().enumerate() {
+                budget.tick()?;
+                phis.push((phi.variable.0, PhiId { node, index }));
+            }
+            for raw in &program.blocks[node] {
+                budget.tick()?;
+                budget.charge(raw.uses.len() + raw.defs.len())?;
+                for variable in &raw.uses {
+                    if written[variable.0] != node && read[variable.0] != node {
+                        read[variable.0] = node;
+                        exposed.push((variable.0, node));
+                    }
+                }
+                for variable in &raw.defs {
+                    if written[variable.0] != node {
+                        written[variable.0] = node;
+                        writes.push((variable.0, node));
+                    }
+                }
+            }
+        }
+        drop(written);
+        drop(read);
+        for list in [&mut exposed, &mut writes] {
+            budget.sorting(list.len())?;
+            list.sort_unstable();
+        }
+        budget.sorting(phis.len())?;
+        phis.sort_unstable();
+
+        budget.charge(n)?;
+        budget.charge(n)?;
+        let mut flood = Flood {
+            live: vec![usize::MAX; n],
+            writes: vec![usize::MAX; n],
+            stack: Vec::new(),
+            live_ins: 0,
+        };
+        let (mut event, mut phi, mut seed, mut write) = (0, 0, 0, 0);
+        loop {
+            while events
+                .get(event)
+                .is_some_and(|next| !matches!(next.site, Site::Definition))
+            {
+                budget.tick()?;
+                event += 1;
+            }
+            let next_event = events.get(event).map(|next| next.variable);
+            let next_phi = phis.get(phi).map(|&(variable, _)| variable);
+            let Some(variable) = next_event.into_iter().chain(next_phi).min() else {
+                break;
+            };
+            let seeds = take_variable(&exposed, &mut seed, variable, budget)?;
+            let kills = take_variable(&writes, &mut write, variable, budget)?;
+            let mut flooded = false;
+            while let Some(&(_, id)) = phis.get(phi).filter(|&&(x, _)| x == variable) {
+                budget.tick()?;
+                phi += 1;
+                if !flooded {
+                    flooded = true;
+                    flood.run(self, variable, seeds, kills, budget)?;
+                }
+                if !flood.is_live(id.node, variable) {
+                    return Err(violation(Violation::DeadPhi { phi: id }));
+                }
+            }
+            while let Some(current) = events.get(event).filter(|next| next.variable == variable) {
+                budget.tick()?;
+                event += 1;
+                if !matches!(current.site, Site::Definition) {
+                    continue;
+                }
+                for &frontier in &frontiers[current.node] {
+                    budget.tick()?;
+                    let Block::Reachable(target) = &self.blocks[frontier] else {
+                        return Err(violation(Violation::Reachability { node: frontier }));
+                    };
+                    if !flooded {
+                        flooded = true;
+                        flood.run(self, variable, seeds, kills, budget)?;
+                    }
+                    if !flood.is_live(frontier, variable) {
+                        continue;
+                    }
+                    budget.search(target.phis.len())?;
+                    let variable = VariableId(variable);
+                    if target.phi_for(variable).is_none() {
+                        return Err(violation(Violation::MissingPhi {
+                            node: frontier,
+                            variable,
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The run of `pairs` (sorted by variable) for `variable`, advancing `cursor`
+/// past it. Runs of smaller variables are skipped; each step is charged.
+fn take_variable<'a>(
+    pairs: &'a [(usize, NodeId)],
+    cursor: &mut usize,
+    variable: usize,
+    budget: &mut Budget,
+) -> Result<&'a [(usize, NodeId)]> {
+    while pairs.get(*cursor).is_some_and(|&(x, _)| x < variable) {
+        budget.tick()?;
+        *cursor += 1;
+    }
+    let start = *cursor;
+    while pairs.get(*cursor).is_some_and(|&(x, _)| x == variable) {
+        budget.tick()?;
+        *cursor += 1;
+    }
+    Ok(&pairs[start..*cursor])
+}
+
+/// The verifier's own backward liveness flood, one variable at a time.
+/// Node-sized marks are stamped with the variable index.
+struct Flood {
+    live: Vec<usize>,
+    writes: Vec<usize>,
+    stack: Vec<NodeId>,
+    live_ins: usize,
+}
+
+impl Flood {
+    /// `seeds` are blocks that read `variable` before writing it; `kills`
+    /// are blocks that write it. Only reachable predecessors are followed.
+    fn run(
+        &mut self,
+        ssa: &Ssa,
+        variable: usize,
+        seeds: &[(usize, NodeId)],
+        kills: &[(usize, NodeId)],
+        budget: &mut Budget,
+    ) -> Result<()> {
+        let limit = ssa.limits.max_live_ins;
+        for &(_, node) in kills {
+            budget.tick()?;
+            self.writes[node] = variable;
+        }
+        self.stack.clear();
+        for &(_, node) in seeds {
+            budget.tick()?;
+            account(&mut self.live_ins, 1, limit, Resource::LiveIns)?;
+            self.live[node] = variable;
+            self.stack.push(node);
+        }
+        while let Some(node) = self.stack.pop() {
+            budget.tick()?;
+            for &pred in ssa.graph.predecessors(node)? {
+                budget.tick()?;
+                if !ssa.blocks[pred].is_reachable()
+                    || self.live[pred] == variable
+                    || self.writes[pred] == variable
+                {
+                    continue;
+                }
+                account(&mut self.live_ins, 1, limit, Resource::LiveIns)?;
+                self.live[pred] = variable;
+                self.stack.push(pred);
+            }
+        }
+        Ok(())
+    }
+
+    fn is_live(&self, node: NodeId, variable: usize) -> bool {
+        self.live[node] == variable
     }
 }
 
@@ -491,8 +704,8 @@ mod tests {
     use ghidra_graph::{Graph, Limits as GraphLimits};
 
     use crate::{
-        Block, EntryState, Error, Limits, Phi, RawProgram, RawStatement, Ssa, ValueId, VariableId,
-        Violation,
+        Block, EntryState, Error, Limits, Phi, PhiId, PhiPlacement, RawProgram, RawStatement,
+        Resource, Ssa, ValueId, ValueOrigin, VariableId, Violation,
     };
 
     fn v(index: usize) -> VariableId {
@@ -715,5 +928,209 @@ mod tests {
             violation_of(ssa.verify(&program)),
             Violation::ValueOrigin { .. }
         ));
+    }
+
+    fn build_with(
+        nodes: usize,
+        edges: &[(usize, usize)],
+        program: &RawProgram,
+        placement: PhiPlacement,
+    ) -> Ssa {
+        let graph =
+            Arc::new(Graph::new(nodes, edges.iter().copied(), GraphLimits::default()).unwrap());
+        let ssa = Ssa::construct_with(graph, 0, program, Limits::default(), placement).unwrap();
+        ssa.verify(program).unwrap();
+        ssa
+    }
+
+    // Diamond 0 -> {1, 2} -> 3: x is written in 0 and 1 and read in 3 (a live
+    // join); y is written in 1 and never read (a dead join).
+    fn live_and_dead_join(placement: PhiPlacement) -> (RawProgram, Ssa) {
+        let program = RawProgram {
+            variables: vec![EntryState::Input, EntryState::Input],
+            blocks: vec![
+                vec![stmt(&[], &[0])],
+                vec![stmt(&[], &[0, 1])],
+                vec![],
+                vec![stmt(&[0], &[])],
+            ],
+        };
+        let ssa = build_with(4, &[(0, 1), (0, 2), (1, 3), (2, 3)], &program, placement);
+        (program, ssa)
+    }
+
+    // Loop 0 -> 1 -> 2 -> 1, 1 -> 3: x is written in 0 and 2 and read at the
+    // header; d is written in 2 and never read.
+    fn pruned_loop() -> (RawProgram, Ssa) {
+        let program = RawProgram {
+            variables: vec![EntryState::Input, EntryState::Input],
+            blocks: vec![
+                vec![stmt(&[], &[0])],
+                vec![stmt(&[0], &[])],
+                vec![stmt(&[], &[0, 1])],
+                vec![],
+            ],
+        };
+        let ssa = build_with(
+            4,
+            &[(0, 1), (1, 2), (2, 1), (1, 3)],
+            &program,
+            PhiPlacement::Pruned,
+        );
+        (program, ssa)
+    }
+
+    /// Remove the only phi of `node`, as if placement had skipped it: every
+    /// read of its value reads `replacement` instead, and later value IDs
+    /// shift down so origins still round-trip.
+    fn remove_only_phi(ssa: &mut Ssa, node: usize, replacement: ValueId) {
+        let block = renamed(ssa, node);
+        assert_eq!(block.phis.len(), 1);
+        let removed = block.phis.remove(0);
+        ssa.values.remove(removed.value.0);
+        ssa.phi_count -= 1;
+        ssa.phi_operand_count -= removed.operands.len();
+        let fix = |value: &mut ValueId| {
+            if *value == removed.value {
+                *value = replacement;
+            }
+            if value.0 > removed.value.0 {
+                value.0 -= 1;
+            }
+        };
+        for block in ssa.blocks.iter_mut().filter_map(|block| match block {
+            Block::Reachable(block) => Some(block),
+            Block::Unreachable { .. } => None,
+        }) {
+            for phi in &mut block.phis {
+                fix(&mut phi.value);
+                phi.operands.iter_mut().for_each(fix);
+            }
+            for statement in &mut block.statements {
+                statement.defs.iter_mut().for_each(fix);
+                statement.uses.iter_mut().for_each(fix);
+            }
+        }
+    }
+
+    #[test]
+    fn pruned_missing_live_phi_is_rejected_even_when_uses_read_a_dominating_def() {
+        // Without the join phi, the use in 3 reads the def in 0, which is
+        // its nearest dominating definition, so reaching-definition checks
+        // pass; only liveness-aware completeness catches it.
+        let (program, mut ssa) = live_and_dead_join(PhiPlacement::Pruned);
+        let dominating = renamed(&mut ssa, 0).statements[0].defs[0];
+        remove_only_phi(&mut ssa, 3, dominating);
+        assert_eq!(
+            violation_of(ssa.verify(&program)),
+            Violation::MissingPhi {
+                node: 3,
+                variable: v(0)
+            }
+        );
+        // The same for a live loop-header phi, replaced by the preheader def.
+        let (program, mut ssa) = pruned_loop();
+        let dominating = renamed(&mut ssa, 0).statements[0].defs[0];
+        remove_only_phi(&mut ssa, 1, dominating);
+        assert_eq!(
+            violation_of(ssa.verify(&program)),
+            Violation::MissingPhi {
+                node: 1,
+                variable: v(0)
+            }
+        );
+    }
+
+    #[test]
+    fn dead_phis_and_wrong_placement_modes_are_rejected() {
+        // Unpruned form has a dead phi of y at 3; claiming it is pruned fails.
+        let (program, mut ssa) = live_and_dead_join(PhiPlacement::Unpruned);
+        assert_eq!(renamed(&mut ssa, 3).phis.len(), 2);
+        ssa.placement = PhiPlacement::Pruned;
+        assert_eq!(
+            violation_of(ssa.verify(&program)),
+            Violation::DeadPhi {
+                phi: PhiId { node: 3, index: 1 }
+            }
+        );
+        // Pruned form lacks that phi; claiming it is unpruned fails.
+        let (program, mut ssa) = live_and_dead_join(PhiPlacement::Pruned);
+        assert_eq!(renamed(&mut ssa, 3).phis.len(), 1);
+        ssa.placement = PhiPlacement::Unpruned;
+        assert_eq!(
+            violation_of(ssa.verify(&program)),
+            Violation::MissingPhi {
+                node: 3,
+                variable: v(1)
+            }
+        );
+    }
+
+    #[test]
+    fn pruned_stale_operands_and_corrupt_origins_are_rejected() {
+        let (program, ssa) = pruned_loop();
+        let preheader = ssa.blocks[0].renamed().unwrap().statements[0].defs[0];
+        let header_phi = ssa.blocks[1].renamed().unwrap().phis[0].value;
+        // The preheader def dominates the latch but is stale along it.
+        let mut corrupt = ssa.clone();
+        renamed(&mut corrupt, 1).phis[0].operands[1] = preheader;
+        assert!(matches!(
+            violation_of(corrupt.verify(&program)),
+            Violation::StalePhiOperand { expected, actual, .. }
+                if actual == preheader && expected != preheader
+        ));
+        // ... and dominates the header use, which must read the phi.
+        let mut corrupt = ssa.clone();
+        renamed(&mut corrupt, 1).statements[0].uses[0] = preheader;
+        assert!(matches!(
+            violation_of(corrupt.verify(&program)),
+            Violation::StaleUse { expected, actual, .. }
+                if actual == preheader && expected == header_phi
+        ));
+        let mut corrupt = ssa.clone();
+        corrupt.values[header_phi.0].origin = ValueOrigin::Entry(EntryState::Input);
+        assert_eq!(
+            violation_of(corrupt.verify(&program)),
+            Violation::ValueOrigin { value: header_phi }
+        );
+        let mut corrupt = ssa.clone();
+        corrupt.values[header_phi.0].variable = v(1);
+        assert_eq!(
+            violation_of(corrupt.verify(&program)),
+            Violation::ValueOrigin { value: header_phi }
+        );
+    }
+
+    #[test]
+    fn pruned_verification_has_its_own_live_in_and_work_bounds() {
+        // x is live on entry to 3 and 2; y needs a flood but has no reads.
+        let (program, mut ssa) = live_and_dead_join(PhiPlacement::Pruned);
+        ssa.limits.max_live_ins = 2;
+        ssa.verify(&program).unwrap();
+        ssa.limits.max_live_ins = 1;
+        assert_eq!(
+            ssa.verify(&program).unwrap_err(),
+            Error::LimitExceeded {
+                resource: Resource::LiveIns
+            }
+        );
+        ssa.limits.max_live_ins = 2;
+        let mut fits = None;
+        for max_work in 0..10_000 {
+            ssa.limits.max_work = max_work;
+            match ssa.verify(&program) {
+                Ok(()) => {
+                    fits = Some(max_work);
+                    break;
+                }
+                Err(error) => assert_eq!(
+                    error,
+                    Error::LimitExceeded {
+                        resource: Resource::Work
+                    }
+                ),
+            }
+        }
+        assert!(fits.is_some());
     }
 }

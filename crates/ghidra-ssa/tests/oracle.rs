@@ -4,12 +4,18 @@
 //! first assigns all phis simultaneously from the operand selected by the
 //! incoming edge. Every use must observe the same dynamic definition event.
 //! The oracle uses no dominance, frontier, or renaming logic.
+//!
+//! Phi placement is checked separately against `Naive`, which computes
+//! dominance, frontiers, liveness, and iterated frontiers straight from
+//! their definitions on tiny graphs, without the graph crate.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ghidra_graph::{Graph, Limits as GraphLimits};
 use ghidra_ssa::{
-    EntryState, Limits, Predecessor, RawProgram, RawStatement, Ssa, ValueOrigin, VariableId,
+    EntryState, Limits, PhiPlacement, Predecessor, RawProgram, RawStatement, Ssa, ValueOrigin,
+    VariableId,
 };
 
 struct Random(u64);
@@ -250,23 +256,32 @@ fn exhaustive_short_paths_on_an_irreducible_entry_loop() {
         ],
     };
     let graph = Arc::new(Graph::new(5, edges, GraphLimits::default()).unwrap());
-    let ssa = Ssa::construct(Arc::clone(&graph), 0, &program, Limits::default()).unwrap();
-    ssa.verify(&program).unwrap();
-    // Every path of up to 13 nodes, depth-first without recursion.
-    let mut paths = 0;
-    let mut stack = vec![vec![0]];
-    while let Some(path) = stack.pop() {
-        execute(&ssa, &program, &path);
-        paths += 1;
-        if path.len() < 13 {
-            for &next in graph.successors(*path.last().unwrap()).unwrap() {
-                let mut longer = path.clone();
-                longer.push(next);
-                stack.push(longer);
+    for placement in [PhiPlacement::Unpruned, PhiPlacement::Pruned] {
+        let ssa = Ssa::construct_with(
+            Arc::clone(&graph),
+            0,
+            &program,
+            Limits::default(),
+            placement,
+        )
+        .unwrap();
+        ssa.verify(&program).unwrap();
+        // Every path of up to 13 nodes, depth-first without recursion.
+        let mut paths = 0;
+        let mut stack = vec![vec![0]];
+        while let Some(path) = stack.pop() {
+            execute(&ssa, &program, &path);
+            paths += 1;
+            if path.len() < 13 {
+                for &next in graph.successors(*path.last().unwrap()).unwrap() {
+                    let mut longer = path.clone();
+                    longer.push(next);
+                    stack.push(longer);
+                }
             }
         }
+        assert!(paths > 5_000, "paths {paths}");
     }
-    assert!(paths > 5_000, "paths {paths}");
 }
 
 #[test]
@@ -292,4 +307,219 @@ fn oracle_is_not_vacuous() {
     let ssa = Ssa::construct(graph, 0, &built, Limits::default()).unwrap();
     execute(&ssa, &built, &[0, 2, 3]);
     execute(&ssa, &executed, &[0, 2, 3]);
+}
+
+/// Reference phi placement from definitions alone, for tiny graphs. It uses
+/// no dominator tree, frontier algorithm, worklist, or crate liveness code.
+struct Naive {
+    reachable: Vec<bool>,
+    /// Variables live on entry to each reachable node.
+    live: Vec<BTreeSet<usize>>,
+    /// Per node, the variables whose iterated dominance frontier (over their
+    /// reachable writing nodes) contains it: the unpruned phi set.
+    frontier_phis: Vec<BTreeSet<usize>>,
+}
+
+impl Naive {
+    fn new(n: usize, edges: &[(usize, usize)], entry: usize, program: &RawProgram) -> Self {
+        // Nodes reachable from the entry without passing through `removed`.
+        let reach = |removed: Option<usize>| {
+            let mut seen = vec![false; n];
+            if removed != Some(entry) {
+                seen[entry] = true;
+                let mut changed = true;
+                while changed {
+                    changed = false;
+                    for &(a, b) in edges {
+                        if seen[a] && !seen[b] && removed != Some(b) {
+                            seen[b] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            seen
+        };
+        let reachable = reach(None);
+        // d dominates x iff both are reachable and removing d cuts x off.
+        let dominates: Vec<Vec<bool>> = (0..n)
+            .map(|d| {
+                let without = reach(Some(d));
+                (0..n)
+                    .map(|x| reachable[x] && reachable[d] && (x == d || !without[x]))
+                    .collect()
+            })
+            .collect();
+        // y is in DF(x) iff x dominates a reachable predecessor of y but does
+        // not strictly dominate y.
+        let mut frontier = vec![BTreeSet::new(); n];
+        for &(p, y) in edges {
+            for (x, row) in dominates.iter().enumerate() {
+                if reachable[p] && row[p] && !(row[y] && x != y) {
+                    frontier[x].insert(y);
+                }
+            }
+        }
+        // Reads before any write in the same node, and writes.
+        let mut exposed = vec![BTreeSet::new(); n];
+        let mut writes = vec![BTreeSet::new(); n];
+        for node in 0..n {
+            for statement in &program.blocks[node] {
+                for x in &statement.uses {
+                    if !writes[node].contains(&x.0) {
+                        exposed[node].insert(x.0);
+                    }
+                }
+                for x in &statement.defs {
+                    writes[node].insert(x.0);
+                }
+            }
+        }
+        // live_in = exposed + (live_out - writes), round robin to a fixed point.
+        let mut live = vec![BTreeSet::new(); n];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for node in (0..n).filter(|&node| reachable[node]) {
+                let mut set = exposed[node].clone();
+                for &(_, b) in edges.iter().filter(|&&(a, _)| a == node) {
+                    set.extend(live[b].difference(&writes[node]).copied());
+                }
+                if set != live[node] {
+                    live[node] = set;
+                    changed = true;
+                }
+            }
+        }
+        let mut frontier_phis = vec![BTreeSet::new(); n];
+        for x in 0..program.variables.len() {
+            let sources: Vec<usize> = (0..n)
+                .filter(|&node| reachable[node] && writes[node].contains(&x))
+                .collect();
+            let mut phis = BTreeSet::new();
+            loop {
+                let next: BTreeSet<usize> = sources
+                    .iter()
+                    .chain(&phis)
+                    .flat_map(|&source| frontier[source].iter().copied())
+                    .collect();
+                if next == phis {
+                    break;
+                }
+                phis = next;
+            }
+            for node in phis {
+                frontier_phis[node].insert(x);
+            }
+        }
+        Self {
+            reachable,
+            live,
+            frontier_phis,
+        }
+    }
+
+    fn phis(&self, placement: PhiPlacement, node: usize) -> BTreeSet<usize> {
+        match placement {
+            PhiPlacement::Unpruned => self.frontier_phis[node].clone(),
+            PhiPlacement::Pruned => self.frontier_phis[node]
+                .intersection(&self.live[node])
+                .copied()
+                .collect(),
+        }
+    }
+}
+
+fn phi_variables(ssa: &Ssa, node: usize) -> BTreeSet<usize> {
+    ssa.block(node)
+        .unwrap()
+        .renamed()
+        .unwrap()
+        .phis()
+        .iter()
+        .map(|phi| phi.variable().0)
+        .collect()
+}
+
+#[test]
+fn phi_sets_match_naive_frontiers_and_liveness_in_both_modes() {
+    let mut random = Random(0x0b5e_55ed_11fe);
+    let (mut unpruned_phis, mut pruned_phis, mut entry_phis, mut checked) = (0, 0, 0, 0);
+    for case in 0..4_000 {
+        let (n, edges, entry, program) = random_case(&mut random, case);
+        let graph = Arc::new(Graph::new(n, edges.iter().copied(), GraphLimits::default()).unwrap());
+        let naive = Naive::new(n, &edges, entry, &program);
+        for placement in [PhiPlacement::Unpruned, PhiPlacement::Pruned] {
+            let ssa = Ssa::construct_with(
+                Arc::clone(&graph),
+                entry,
+                &program,
+                Limits::default(),
+                placement,
+            )
+            .unwrap();
+            ssa.verify(&program).unwrap();
+            assert_eq!(ssa.placement(), placement);
+            for (node, &reachable) in naive.reachable.iter().enumerate() {
+                assert_eq!(ssa.is_reachable(node).unwrap(), reachable);
+                if reachable {
+                    assert_eq!(
+                        phi_variables(&ssa, node),
+                        naive.phis(placement, node),
+                        "case {case}, node {node}, {placement:?}"
+                    );
+                }
+            }
+            match placement {
+                PhiPlacement::Unpruned => unpruned_phis += ssa.phi_count(),
+                PhiPlacement::Pruned => {
+                    pruned_phis += ssa.phi_count();
+                    entry_phis += phi_variables(&ssa, entry).len();
+                    for _ in 0..16 {
+                        let mut path = vec![entry];
+                        for _ in 0..random.below(16) {
+                            let last = *path.last().unwrap();
+                            let successors = graph.successors(last).unwrap();
+                            if successors.is_empty() {
+                                break;
+                            }
+                            path.push(successors[random.below(successors.len())]);
+                        }
+                        checked += execute(&ssa, &program, &path);
+                    }
+                }
+            }
+        }
+    }
+    // Both live phis and pruned dead phis must be common, including at entries.
+    assert!(pruned_phis > 8_000, "pruned phis {pruned_phis}");
+    assert!(
+        unpruned_phis > pruned_phis + 3_000,
+        "unpruned {unpruned_phis}, pruned {pruned_phis}"
+    );
+    assert!(entry_phis > 2_000, "entry phis {entry_phis}");
+    assert!(checked > 500_000, "checked {checked}");
+}
+
+#[test]
+fn naive_oracle_distinguishes_live_and_dead_joins() {
+    // Diamond; x is written on one arm. The join phi is live only if x is read.
+    let edges = [(0, 1), (0, 2), (1, 3), (2, 3)];
+    let mut program = RawProgram {
+        variables: vec![EntryState::Input],
+        blocks: vec![
+            vec![],
+            vec![RawStatement::new([], [VariableId(0)])],
+            vec![],
+            vec![],
+        ],
+    };
+    let dead = Naive::new(4, &edges, 0, &program);
+    assert_eq!(dead.phis(PhiPlacement::Unpruned, 3), BTreeSet::from([0]));
+    assert!(dead.phis(PhiPlacement::Pruned, 3).is_empty());
+    program.blocks[3].push(RawStatement::new([VariableId(0)], []));
+    let live = Naive::new(4, &edges, 0, &program);
+    assert_eq!(live.phis(PhiPlacement::Pruned, 3), BTreeSet::from([0]));
+    assert_eq!(live.live[0], BTreeSet::from([0]));
+    assert!(live.live[1].is_empty());
 }

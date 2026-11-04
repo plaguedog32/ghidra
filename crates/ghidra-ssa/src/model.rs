@@ -21,6 +21,21 @@ pub enum EntryState {
     Undefined,
 }
 
+/// Where phis are placed. Both modes place them only at the iterated
+/// dominance frontier of a variable's reachable definitions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum PhiPlacement {
+    /// Every iterated-frontier block gets a phi, live or not, so some phis
+    /// can be dead. This is what `Ssa::construct` builds.
+    #[default]
+    Unpruned,
+    /// Only iterated-frontier blocks where the variable is live on entry get
+    /// a phi: some entry path through the block reads the variable before
+    /// any raw statement writes it. No phi is dead. Built by
+    /// `Ssa::construct_pruned`.
+    Pruned,
+}
+
 /// One raw statement: read every `uses` operand, then write every `defs` operand.
 ///
 /// Uses may repeat a variable; each occurrence is an independent use slot. Defs

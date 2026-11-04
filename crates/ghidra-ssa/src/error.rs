@@ -10,9 +10,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// SSA limits. Graph analyses use the graph's own `ghidra_graph::Limits`.
 ///
-/// `max_work` is a fresh budget for each `Ssa::construct` or `Ssa::verify`
-/// call. Each of those calls also runs two graph analyses with their own
-/// per-call graph budgets; see the crate documentation for the aggregate bound.
+/// `max_work` is a fresh budget for each construction (`Ssa::construct`,
+/// `Ssa::construct_pruned`, `Ssa::construct_with`) or `Ssa::verify` call. Each
+/// of those calls also runs two graph analyses with their own per-call graph
+/// budgets; see the crate documentation for the aggregate bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     /// Declared variables, including variables that are never referenced.
@@ -26,6 +27,11 @@ pub struct Limits {
     pub max_phis: usize,
     /// Sum of phi arities (incoming operands) across all phis.
     pub max_phi_operands: usize,
+    /// Pruned placement only: live-in (reachable block, variable) pairs
+    /// computed, counted per call. Liveness is computed only for variables
+    /// whose definitions have a non-empty dominance frontier. Unpruned
+    /// construction and verification never use it.
+    pub max_live_ins: usize,
     pub max_work: u64,
 }
 
@@ -38,6 +44,7 @@ impl Default for Limits {
             max_values: 16_000_000,
             max_phis: 4_000_000,
             max_phi_operands: 16_000_000,
+            max_live_ins: 16_000_000,
             max_work: 200_000_000,
         }
     }
@@ -51,6 +58,7 @@ pub enum Resource {
     Values,
     Phis,
     PhiOperands,
+    LiveIns,
     Work,
 }
 
@@ -124,10 +132,16 @@ pub enum Violation {
         actual: ValueId,
     },
     /// A definition (or phi) of `variable` reaches `node` through a dominance
-    /// frontier edge, but `node` has no phi for it.
+    /// frontier edge, but `node` has no phi for it. With pruned placement this
+    /// is reported only when `variable` is live on entry to `node`.
     MissingPhi {
         node: NodeId,
         variable: VariableId,
+    },
+    /// Pruned placement only: a phi of a variable that is not live on entry
+    /// to its block.
+    DeadPhi {
+        phi: PhiId,
     },
 }
 

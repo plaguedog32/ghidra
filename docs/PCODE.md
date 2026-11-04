@@ -546,14 +546,31 @@ SH-2A's 40,960-byte `resbank_base`). These metadata records are not executable
 operands; validating them as execution `Varnode`s may reject their widths. The
 `program` object retains the execution-width checks.
 
-Sixteen default compiler/lifter integration tests pass, including per-token byte order, context precedence, tracked/context separation, delay slots, and concrete Rust execution. Seven opt-in source probes cover this checkout's x86-64, ARM7 LE/BE, MIPS32 LE/BE, ARM7 little-instruction/big-data, and AArch64 BE64 sources. An eighth probe exercises the desktop worker's Thumb IT continuation, verifying that the following MOV remains conditional:
+Twenty-eight default compiler/lifter tests pass, including per-token byte order,
+context precedence, tracked/context separation, delay slots, word-space pointer
+scaling/byte extents, and concrete Rust execution. Eleven opt-in source tests
+cover selected x86-64, ARM7 LE/BE/mixed-endian, all seven ARM v8 catalog
+variants, MIPS32 LE/BE, AArch64 BE64, SH-2A, RISC-V32/64 and NDS32 BE semantics.
+A separate desktop probe exercises Thumb IT continuation, verifying that the
+following MOV remains conditional:
 
 ```sh
 cargo test -p ghidra-sleigh --test upstream_specs -- --ignored --test-threads=1
 cargo test -p ghidra-desktop upstream_thumb_it -- --ignored
 ```
 
-These are bounded instruction probes, not processor-wide parity. The adapter rejects ROM and word-addressed spaces, catalog space truncation, changing defaults within a delay-slot bundle, and unsupported operations; current source/compiler coverage must be established per specification. The compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode. Its same-width extensions are explicitly converted to identity `COPY` operations while retaining strict P-code validation.
+These are bounded instruction probes, not processor-wide parity. The adapter
+admits non-default word-addressed storage with byte offsets for declared
+varnodes and word-unit LOAD/STORE pointers, preserving the target word size for
+the machine to scale once. It rejects word-addressed code, word-storage
+address-of whose fixed-symbol/operand provenance is lost by the dependency,
+ROM, catalog space truncation, changing defaults within a delay-slot bundle,
+and unsupported operations. Generic CSR exports can still fail with a pointer
+width error; current source/compiler coverage must be established per
+specification. CSR privilege and interrupt side effects are unmodeled. The
+compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode.
+Its same-width extensions are explicitly converted to identity `COPY`
+operations while retaining strict P-code validation.
 
 ## Compiler specification data
 

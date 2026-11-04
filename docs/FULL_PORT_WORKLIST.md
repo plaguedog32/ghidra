@@ -31,6 +31,13 @@ review. Word-addressed code, word-space address-of provenance/conversion,
 generic CSR pointer-width lowering and the NDS32 LE source/catalog mismatch
 remain explicit gaps; CSR privilege and interrupt side effects are unmodeled.
 
+Desktop Dataflow now includes lazy reduced-expression inspection and worker
+exports through the same producer as CLI `--simplify`. Independent review
+approved the integration and stale-result/clipboard guards. Whole-workbench
+headless interaction and real-function byte-identity checks pass; native
+window and OS clipboard verification still require the unavailable computer-use
+helper. The projection does not rewrite operations or produce structured C.
+
 The decompiler gate requires a genuine P-code-to-structured-output pipeline: P-code CFG construction, SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. Native P-code CFGs, an alias-aware pruned SSA adapter, owned def-use indexing and typed expression reconstruction now exist, with abstract whole-space memory dependencies and explicit unknown effects. Recovered x86/x64 function lifting is connected to a desktop Dataflow view and JSON command. Typed expression inspection/export is available in desktop Dataflow, optional `--analyze-pcode --expressions` output, and every `--analyze-function` report. Sparse conditional constant-propagation facts have independent library approval and desktop/JSON integration, with its compact-window layout fix independently approved; undefined/reset/memory/opaque state stays unknown. Typed expression simplification has independent approval and opt-in --simplify CLI export, with a source-preserving value projection, guarded fault/memory semantics and no operation/CFG rewriting. Generic parallel-copy scheduling and edge-specific phi lowering have independent raw-path evidence and cross-lab approval; P-code/code-generation wiring remains.
 
 ABI storage inspection has an independently reviewed resource-group planner, per-pool placement engine and explicit-request fallback allocator. Java-view datatype-filter and qualifier evaluation has independent approval. General primitive extraction and union refinement have independent approval; a trailing-empty-member address-boundary finding is fixed. Explicit selected-pentry assignments and ordered extra-register/stack consumption effects now operate on allocation state, with separate Java/native threshold-index policies and bounded rollback. The native general join action is implemented and reviewed, with its consumed-stack NoFit finding fixed. Full datatype-driven signature allocation, model-rule dispatch, dual-class/member joins, pointer/hidden-return/shared-stack handling, and call-effect integration remain. The Java compiler-spec and C++ decompiler datatype views differ, including named Go array matching and float-alias identity; a separate converted native graph and native predicates/extraction now have independent review approval, with no allocation callers yet.
@@ -58,7 +65,7 @@ signature allocation and call effects; graph conversion alone does not meet
 the decompiler gate.
 
 The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
-all workspace targets, 798 tests, 22 doctests and the release executable pass.
+all workspace targets, 810 tests, 22 doctests and the release executable pass.
 MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
 CI run 41839264716 passed the locked Rust 1.88 tests/doc examples and stable
 checks/source probes/release builds on Windows, Linux and macOS at source

@@ -41,7 +41,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | Native P-code CFGs, alias-aware liveness-pruned SSA, typed expression reconstruction/inspection/export; x86/x64 function lifting, Dataflow view and headless reports | Other processor function flows, dataflow simplification, ABI/type recovery and structured output |
+| Decompilation | Native P-code CFGs, alias-aware liveness-pruned SSA, typed expressions, constant facts and value simplification; x86/x64 function lifting, Dataflow inspection and headless reports | Other processor function flows, broader IR optimization, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -162,7 +162,7 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 798 default workspace tests and
+The current analysis/ABI/datatype/SSA tree passes 810 default workspace tests and
 22 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
@@ -691,7 +691,8 @@ Both headless analysis commands accept opt-in `--simplify`, implying constants
 and expressions and adding `ghidra-rs.simplification` version 1. Reports retain
 source IDs and snapshot guards, deterministic term IDs and the shared 64 MiB
 cap including the newline. Without the flag, all previous output bytes remain
-unchanged. The desktop worker/view is not yet connected. CI now has a raw
+unchanged. A lazy desktop reduced-expression worker/view is connected below.
+CI now has a raw
 P-code `--simplify` smoke step on each stable host; the new run must pass before
 claiming that increment's cross-platform behavior.
 
@@ -711,8 +712,47 @@ The preceding value checkpoint's CI run `41844505885` passed stable and Rust
 runner was assigned; GitHub annotated hosted ARM64 capacity constraints, with
 no failed test/build step. The simplification run `41847716217` likewise passed
 all four Windows/Linux jobs, while its two macOS jobs never acquired a runner.
-The newer combined run `41854064085` is queued. macOS verification remains open
+The combined run `41854064085` and ARM v8 source run `41857803833` likewise
+passed all four Windows/Linux jobs. In the ARM run both macOS jobs were
+cancelled with runner ID 0 and no steps; GitHub again annotated hosted ARM64
+capacity constraints. macOS verification of these increments remains open
 until those jobs execute; the ARM64 matrix target is retained.
+
+### Desktop reduced-expression inspection
+
+Dataflow now offers **Reduced expressions**, built lazily from the completed
+function's existing constant facts. A dedicated worker computes and caches the
+optional projection, preserving the other inspection modes after an error.
+It keeps one running task, one replaceable queued task and one result slot.
+Request keys and shared snapshot identity reject stale builds and exports;
+program, function and processor changes invalidate the view. Already-running
+bounded work completes before its stale result is discarded.
+
+Virtualized lists compare original SSA values/operations with canonical terms,
+list actual reductions, and expose faults/refused folds. Details stay one level
+deep with capped operands and literals. UNDEFINED, OPAQUE, phi and memory-state
+leaves retain their meaning. Term links reveal their selected row, and source
+navigation uses the first executed operation containing an expression-origin
+node. Copying reduced JSON serializes on the worker through the CLI's shared
+producer and preserves a valid view if the 64 MiB export cap fails. The copy
+plus its newline matches the function command's `--simplify` output.
+
+Independent review approved `4be9970ab2` with no actionable findings. It checked
+32 actual-worker interleavings, pending-operation controls and exhaustive
+per-operation source-node ownership using separate probes. Both toolchains
+pass 810 default workspace tests and 22 doctests. Stable workspace/all-target
+Clippy, Rust 1.88 rustdoc and formatting pass; the Rust 1.88 release build
+succeeds. Headless tests exercise the complete 1000x650
+workbench at fonts 14/28, exact row selection/source navigation, a single copy,
+stale/foreign responses, panic/disconnect recovery and bounded visible-row
+formatting without changing project metadata. Java-free release probes retain
+the original default and simplified command bytes. The real WinHelloCPP
+`401E46` desktop export is 9,305,622 bytes and, with its final newline, matches
+the 9,305,623-byte CLI document exactly: 10,990 terms, 113 literal values and
+283 propagated values. Recovery remains incomplete. Native app discovery was
+retried after integration and still returned `Computer Use native pipe is
+unavailable`; no app was launched. Real window, dialogs, display scaling and
+the OS clipboard remain unverified.
 
 ### Parallel-copy scheduling and phi lowering
 

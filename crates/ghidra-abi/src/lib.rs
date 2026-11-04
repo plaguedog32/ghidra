@@ -2,15 +2,20 @@
 //!
 //! Storage resolution, per-pool placement and bare declaration-ordered fallback
 //! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
-//! evaluated separately. Selected-pool assignments and ordered resource effects
-//! support rule execution; the full rule dispatcher and signature allocator
-//! remain unimplemented. See the crate README for those boundaries.
+//! evaluated separately, over either the Java datatype view or the converted
+//! native decompiler view (`NativeTypeGraph`). Selected-pool assignments and
+//! ordered resource effects support rule execution; the full rule dispatcher
+//! and signature allocator remain unimplemented. See the crate README for
+//! those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
 mod error;
 mod fallback;
 mod native_alignments;
+mod native_extract;
+mod native_predicates;
+mod native_types;
 mod placement;
 mod predicates;
 mod primitives;
@@ -33,6 +38,21 @@ pub use fallback::{
 pub use native_alignments::{
     NativeAlignmentError, NativeAlignmentLimits, NativeAlignmentMap, NativeAlignmentOrigin,
     NativeAlignmentUsage, NativePrimitiveGeometry,
+};
+pub use native_extract::{
+    NativeExtractionError, NativeExtractionLimits, NativeExtractionOptions,
+    NativeExtractionOutcome, NativeExtractionStats, NativeInvalidExtraction, NativePrimitive,
+    NativePrimitiveExtraction,
+};
+pub use native_predicates::{
+    NativeHfa, NativeHfaRejection, NativePredicateError, NativePredicateLimits,
+    NativePredicateMatch, NativePredicateUsage,
+};
+pub use native_types::{
+    NATIVE_INT_MAX, NativeArray, NativeBitfield, NativeConversionError, NativeDroppedField,
+    NativeField, NativeFieldKind, NativeOrigin, NativeRange, NativeShape, NativeType,
+    NativeTypeError, NativeTypeGraph, NativeTypeId, NativeTypeLimits, NativeTypeOptions,
+    NativeTypeStats,
 };
 pub use placement::{
     Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,

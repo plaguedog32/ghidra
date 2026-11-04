@@ -627,8 +627,8 @@ decompiler uses a different type factory: an alias of an array still has array
 metatype, float aliases retain distinct HFA identities, void has its own
 metatype, and code has size one. A named Go array can therefore match the
 `x86-64-golang.cspec` array-to-stack rule in C++ but fail Java's direct-array
-check. A decompiler-specific type view/policy is still required before wiring
-these predicates into signature recovery. HFA's ignored size bounds are shared
+check. The separate decompiler view is `NativeTypeGraph` below; this Java API
+is unchanged, and neither is wired into signature recovery yet. HFA's ignored size bounds are shared
 by both source layers: the first HFA join rule in `AARCH64_win.cspec` can match
 varargs HFAs larger than its declared maximum 16. Later action code must preserve
 that source behavior. Repeated `matches_rule` calls validate the input list each
@@ -878,52 +878,246 @@ declaration-scan references compare 5,047 maps and 6,863,920 alignment/geometry
 answers, including all 107 retained specs and 321 resolved organization inputs.
 These are source-derived Rust oracles; no C++ or Java process was run.
 
-## Native datatype conversion contract still to implement
+## Native datatype graph
 
-Source audits of `PcodeDataTypeManager`, native `type.cc` and `modelrules.cc`
-show that a decompiler view needs a converted graph, not just a switch over
-Java's canonical type kind. The required policy is the existing declared
-layout as transported to and decoded by the native decompiler; direct C++
-constructors have different zero-array behavior.
+`NativeTypeGraph::new(Arc<TypeLayouts>, &NativeAlignmentMap, NativeTypeOptions,
+NativeTypeLimits)` converts every declared type into the form the retained
+native decompiler decodes after Java transport: `PcodeDataTypeManager`'s
+encoders followed by the `TypeFactory` decoders in `type.cc`. It is a separate
+view. `TypeLayouts`, `DatatypePredicates` and `PrimitiveExtraction` keep their
+Java semantics, defaults, work charges and callers; nothing is reinterpreted.
+The graph retains the original `Arc<TypeLayouts>` and an owned copy of the
+alignment map, and is `Clone + Send + Sync`. The map is an explicit input:
+`NativeAlignmentMap::from_organization(layouts.organization())` models the
+Java bridge, while `NativeAlignmentMap::new` is a standalone native decode.
 
-| Declared kind | Required converted native behavior |
+```rust
+use std::sync::Arc;
+use ghidra_abi::{NativeAlignmentMap, NativeTypeGraph, NativeTypeId};
+use ghidra_languages::{DataOrganization, MetaType};
+use ghidra_types::{TypeDefinition, TypeId, TypeKind, TypeLayouts};
+
+let layouts = Arc::new(TypeLayouts::new(vec![
+    TypeDefinition::new("f32", TypeKind::Float { bytes: 4 }),
+    TypeDefinition::new("alias", TypeKind::Alias(TypeId(0))),
+    TypeDefinition::new("void", TypeKind::Void),
+    TypeDefinition::new("fn", TypeKind::Function { result: TypeId(2),
+        parameters: vec![], variadic: false }),
+].into(), DataOrganization::default().resolve(8), Default::default())?);
+let map = NativeAlignmentMap::from_organization(layouts.organization(), Default::default())?;
+let graph = NativeTypeGraph::new(layouts, &map, Default::default(), Default::default())?;
+let alias = graph.get(graph.native(TypeId(1))?)?;
+assert_eq!((alias.alias_of, alias.canonical), (Some(NativeTypeId(0)), NativeTypeId(0)));
+let code = graph.get(graph.native(TypeId(3))?)?;
+assert_eq!((code.meta, code.size, code.aligned_size), (MetaType::Code, 1, 1));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+### Identity contract
+
+- `NativeTypeId(i)` for `i` below the source count is the decoded form of
+  `TypeId(i)`. Distinct source IDs denote distinct source datatype objects and
+  always produce distinct native objects; nothing is merged by width or
+  structure, so two `Float { bytes: 4 }` definitions are different HFA
+  identities. A caller wanting two uses to share an identity must reference
+  one source definition.
+- A converted alias is a typedef clone with its own identity and origin. It
+  copies meta-type, geometry and the enum flag; `alias_of` is the immediate
+  target (`typedefImm`) and `canonical` the first non-alias object. Its shape
+  is the canonical object's ranges into shared field storage, so an alias
+  costs O(1) and never copies fields. Fields, array elements and bitfield
+  bases keep the declared object, including aliases.
+- Decoder-synthesized objects follow the source objects in deterministic
+  first-use order. `SyntheticBase { size, meta }` (`getBase`) and
+  `SyntheticByteArray { count }` are interned by key; `UnionBitfield { owner,
+  field }` is one object per union field. They never alias converted source
+  objects here. A real `TypeFactory` may resolve them to core types, or merge
+  equally named wrappers, through names and native IDs that the declared graph
+  does not contain; complete `TypeFactory` interning is not modeled. None is a
+  float, so HFA identity does not depend on that choice.
+
+### Conversion policy
+
+| Declared kind | Decoded native form |
 | --- | --- |
-| Alias | Preserve its own object identity and canonical structural target separately; composite children retain their identities |
-| Void | Void metatype, size/aligned size zero and alignment one; primitive extraction rejects it |
-| Function | Code metatype, size/aligned size/alignment one |
-| Integer/float/bool/enum/pointer | Native primitive geometry; enum transport tags normalize to Int/Uint |
-| Zero-count array | Opaque fallback, normally Unknown of size one, rather than Array |
-| Nonzero array | Retain encoded public size and require `count × native element aligned size` to match; reject mismatch |
-| Opaque storage below 16 bytes | Unknown primitive with native primitive geometry |
-| Opaque storage at least 16 bytes | Fieldless Struct with original size/aligned size and alignment one |
-| Structure/union | Preserve public size, explicit Java composite alignment and offsets; round native aligned size to that alignment |
-| Incomplete | Explicit conversion failure; pointers need not inspect incomplete target geometry merely to be queried as leaves |
+| Void | Void, size and aligned size 0, alignment 1 (`TypeVoid`) |
+| Function | Code, size/aligned size/alignment 1 under every map (`TypeCode`) |
+| Integer, float, builtin, pointer | Int/Uint/Bool/Float/Ptr with `primitive_geometry` of the Java raw length; char signedness from the organization; wide char is Int |
+| Enum | Int/Uint (transport `enum_int`/`enum_uint` is normalized at type.cc:1572), `enumeration` set, primitive geometry |
+| Opaque below 16 bytes | Unknown primitive |
+| Opaque of 16 bytes or more | Fieldless Struct, size = aligned size = width, alignment 1 |
+| Zero-count array | Opaque transport of its public length 1: normally Unknown size 1, aligned per the map; never Array; the element is not transported |
+| Nonzero array | Array keeps the encoded public size. The count, `count × element aligned size` and the size must be native ints, and the product must equal the size; otherwise `ArraySizeMismatch`/`Arithmetic`. Alignment is the element's; aligned size equals size |
+| Structure, union | Public length (one for empty composites), the explicit Java alignment, and native aligned size rounded up to it; layout field offsets |
+| Alias | Typedef clone, above |
+| Incomplete | `NativeConversionError::Incomplete` |
 
-Do not infer identity from equal widths. Native factory interning also depends
-on names/native ids absent from the current declared graph. A Rust adapter
-must define a source-object identity contract or accept an identity mapping;
-full `TypeFactory` interning is separate work.
+Composite conversion follows `encodeStructure`/`encodeUnion` and then
+`decodeFields`. Zero-length components are not transported. Structure fields
+replicate `decodeField`/`decodeBitField` checks in source order: dependency,
+void field, non-integer bitfield base, out-of-order, overlap drop (reported by
+`dropped_fields()`), int arithmetic and fit. Union fields must fit. Examples:
+a Java enum or pointer of three bytes has aligned length 3, so an array of two
+encodes 6 while native needs 8 and fails. An empty structure with minimum
+alignment 16 has Java public and aligned length 1 but native aligned size 16;
+an array of two encodes 2 against an expected 32 and fails.
 
-The bridge omits zero-byte components. Non-byte structure bitfields live in
-a separate native vector and are invisible to primitive extraction. A byte-
-range structure bitfield becomes an ordinary field at its declared offset:
-retain the base object when native size matches, otherwise synthesize a base
-of the narrowed width (Int/Uint retains its class; other classes become
-Unknown). Native `getBase` changes oversized synthesized bases into unknown-
-byte arrays, using the configured architecture maximum (default ten). Union
-bitfield wrappers instead follow opaque encoding. Reusing Java's Unknown
-wrapper primitives for all of these cases would change ABI behavior.
+**Bitfields.** Structure bitfields are decoded from the transported effective
+width, normalized bit offset and byte offset, with the layout byte order (taken
+to be the default data space's). A range is byte aligned iff width and bit
+offset are multiples of 8. It is minimized as in `address.cc` and becomes an
+ordinary visible field at its offset: the declared base object (alias and enum
+identity kept) when its native size equals the range, otherwise `getBase` of
+the width with the base's Int/Uint meta-type (others become Unknown). A resized
+enum is therefore a plain Int/Uint. Widths above `max_basetype_size` (default
+10 from `Architecture::resetDefaultsInternal`; validated `8..=i32::MAX`) become
+`SyntheticByteArray`: the actual native array of the Unknown size-one base,
+whose size doubles if the map pads one byte to two. Other bitfields are kept in
+`bitfields()` with byte offset/size, least significant bit, width and base;
+extraction never visits them. Union bitfields are opaque objects of their
+storage width (Unknown below 16 bytes, fieldless Struct otherwise). Zero-width
+bitfields are omitted.
 
-Native structure extraction checks every visible field's absolute alignment
-and expected next offset, even for packed structures. It checks no trailing
-padding and no direct alignment of root scalars/array elements. Union member
-flags remain context-local. Native HFA must use these extraction checks and
-exact leaf identity; the current Java cached homogeneous summary is
-insufficient. For example, packed `{float32; opaque16}` can be native HFA
-because the opaque tail emits no primitive, while an array of a 21-byte
-variant becomes unaligned at its second float. A cached empty-output summary
-must not skip visible structure checks that can still record holes.
+**Failures and loadability.** Conversion failures are per type and typed. They
+are returned by `native()`/`get()` only for that type, and by-value dependents
+fail with `Dependency { root }`. Pointer targets and function signatures are not
+by-value dependencies: a pointer to an incomplete or mismatched type is an
+ordinary queryable Ptr. `load_blocker()` separately reports a failed type
+reachable through by-value, pointer and function references, distinguishing
+this queryable snapshot from a fully loadable one. Loadable means converted
+under this contract; it does not prove a real factory accepts the stream.
+Sizes, alignments, counts, offsets, products and sums are checked against the
+native int range; no value wraps.
 
-Conversion, native predicates/extraction, compound rule execution, complete
-signatures and SSA call effects remain required. The Java APIs remain the
-current default and are not silently reinterpreted as native semantics.
+**Bounds.** Source types, fields and references are checked before allocation,
+synthetic objects before each allocation, plus dependency depth and work.
+Construction is iterative and `O(types + fields + references + s log s)` for
+`s` synthetic objects. A failed decode rolls back its fields and new synthetic
+objects. Accessors allocate nothing.
+
+## Native primitive extraction
+
+`NativePrimitiveExtraction::new(Arc<NativeTypeGraph>, root, options, limits)`
+ports `PrimitiveExtractor` (modelrules.cc:142-249) to the native shapes. The
+options are the source arguments: start offset (a nonnegative native int),
+union rejection, nested arrays as primitives, and the semantic per-context
+`max_primitives`. The outcome is `Valid { primitives, contains_unknown,
+aligned, contains_holes }` or `Invalid(reason)`: the maximum, a rejected, empty
+or incompatible union, or an unsupported meta-type such as Void. Semantic
+invalidity is an outcome; resource limits, root conversion failures, invalid
+options and int overflow are errors. Each primitive keeps its exact native
+object and origin.
+
+- Unknown sets the unknown flag and is emitted; Int, Uint, Bool, Code, Float
+  and Ptr are emitted. Arrays expand with the native element aligned size as
+  stride, unless nested arrays are primitives and the array is below the
+  current context root.
+- Every visible structure field is checked, packed or not. The absolute
+  offset is the structure start plus the field offset; it is unaligned when not
+  a multiple of the field alignment. The expected offset starts at the
+  structure's start, is rounded to that alignment, and a mismatch is a hole;
+  then it becomes the field offset plus native aligned size. There is no
+  trailing check and no direct alignment check of roots or array elements.
+  Fieldless and empty-output structures still have their field checks.
+- Each union member is a fresh context at array depth zero that permits
+  unions. Members are refined in source order on native aligned sizes with the
+  float preference and overlap rule of `commonRefinement`; member flags are
+  dropped; the result must fit the parent's maximum.
+
+Offsets are checked when used. The expected offset is kept wide and checked
+when the next field consumes it; the value after the last field or element is
+unused, as in the source. Traversal uses explicit task stacks, one per
+context, and expands arrays lazily. An array whose elements are inert
+(fieldless structures or arrays of them) is skipped only when the exact
+traversal could not fail on depth or offset, so outcomes are unchanged; only
+work and statistics differ. Live records include refinement scratch. Limits
+are checked before growth, refinement is work-bounded, and errors return no
+partial prefix.
+
+For example, packed `{float, opaque16}` emits one aligned float. Natural
+`{u8, u32}` is aligned without holes from start 0 but unaligned with holes from
+start 1; packed `{u8, u32}` is the reverse from starts 0 and 3. A float array
+started at offset 1 has no alignment flag. `{float}` with minimum alignment 8
+repeats without a trailing check. A nonbyte bitfield before a float leaves a
+native hole. Under the default map Java pads a 17-byte opaque component to 24
+bytes; with a map entry `16 -> 1` the packed `{float, opaque17}` element is 21
+bytes and its second array element's float is unaligned.
+
+## Native datatype predicates
+
+`NativeTypeGraph::matches_filter`, `matches_rule` and
+`homogeneous_float_aggregate` evaluate parsed filters and qualifiers against
+decoded types, with the query boundaries of `DatatypePredicates`: prototype
+IDs, qualifier/parameter counts and the first variable slot are validated
+first; each filter is validated when reached; qualifiers short-circuit in
+declaration order. No action, precondition or side effect runs. Native
+differences:
+
+- Sizes are native `getSize`: void 0, code 1, zero arrays 1.
+- Meta-types are native: aliases keep their target's; Void matches void; Code
+  matches functions; enums are Int/Uint, so `enum_int`/`enum_uint` never match;
+  Struct matches opaque data of 16 bytes or more. `partenum` is an invalid
+  filter because native `string2metatype` has no such name.
+- The array filter tests the native meta-type, so an alias of an array
+  matches. A named Go array matches the `x86-64-golang.cspec` array-to-stack
+  rule natively but not in Java.
+- HFA requires Array/Struct, then native extraction from offset 0 with unions
+  rejected, arrays expanded and `maxprimitives` (default 4, including 0). The
+  result must be valid, nonempty, without unknowns, aligned and without holes,
+  with a Float first leaf and every leaf the same native object. Size bounds
+  are ignored, as in both source layers. With F, A = alias F and B = alias A,
+  `{F, A}` and `{A, B}` fail natively while `{A, A}` matches; Java accepts all
+  three. Opaque tails emit nothing, and invisible bitfields can leave holes.
+
+One work budget covers each query. Each reached HFA filter runs extraction with
+the remaining work and the query's live/depth limits, and its work is added.
+Semantic rejection, including the primitive maximum, is `false`; resource
+exhaustion is a `Limit` error. A conversion failure is an error only when a
+reached filter evaluates that type.
+
+## Native validation evidence
+
+The native alignment dependency was re-audited against type.cc:3805, 3821,
+3921-3944, 5172 and 5200 and against `parseCompilerConfig` running before core
+types are decoded. Decode, defaults, floor lookup and the two-lookup padding
+agree; no defect was found, so it is unchanged.
+
+Default tests include 13 graph tests, 14 extraction tests, 9 predicate tests
+and 2 unit tests of the private bit-range logic, all with hand-derived
+expectations. They cover every kind, odd and nonmonotonic maps, aliases,
+forward IDs, bitfields in both byte orders, exact and one-below limits, every
+lower work budget, and 100,000-deep alias, structure and extraction chains.
+A separate oracle decodes maps into the dense native vector, converts types
+recursively from the Java transport facts and runs a literal recursive port of
+the extractor, refinement, HFA and filters. Over 1,200 generated graph/map
+instances (random organizations, both byte orders, bridge, default and
+declared maps, basetype limits 8/10/12) it compares about 22,800 conversions,
+1.04 million extractions, 64,000 HFA answers, 518,000 filter answers and
+loadability; counters require every failure, invalid and HFA class. A fixed
+graph under all 107 retained compiler organizations at pointer sizes 4 and 8
+adds 188,000 extractions and 282,000 filter answers. The oracle shares only
+`TypeLayouts` with production. Twenty-three compiling semantic mutations of the
+new modules are all caught: union flags and depth, expected-offset rules,
+refinement sizes, float preference, the inert skip, bitfield base selection,
+the basetype boundary, array mismatch, the opaque threshold, composite
+rounding, alias identity, code geometry, zero arrays, HFA holes, native sizes,
+array bounds and loadability. These are source-derived Rust
+references; no C++ or Java process was run, and this increment has not been
+independently reviewed.
+
+## Native gaps and remaining work
+
+- Nothing consumes these APIs yet: no rule dispatcher, join/member actions,
+  signature allocation, SSA call effects, CLI or desktop flow.
+- `TypeFactory` names, native IDs, core-type caches and interning; typedef
+  formats; pointer typedef settings and relative pointers; string and unicode
+  transports; spacebase and partial types; variable-length and native
+  incomplete flags; and function prototype decoding are not modeled.
+- The decoder's overlap-drop, out-of-order and fit failures are implemented,
+  but validated layouts never reach them in the tests.
+- Bitfield byte order is the layout's, assumed equal to the default data space.
+- Large arrays are traversed exactly within the work budget unless their
+  elements are inert; there is no general cached summary. An HFA query on 100
+  million `{opaque16}` structures (nothing emitted, but one visible field check
+  each) is therefore a work error where the source loop would finish.
+- Repeated queries re-validate prototypes and rerun extraction.

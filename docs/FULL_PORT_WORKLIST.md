@@ -37,3 +37,10 @@ native pipe was unavailable, including after its recovery sequence. No app
 was launched or changed. Headless layout tests remain separate evidence;
 binary opening, native dialogs, navigation and inspection still need a real
 window check when that helper is available.
+
+Native datatype conversion has a source-derived contract in the ABI crate
+README. Bounded native alignment-map decoding and primitive geometry now
+exist, including the resolved compiler-organization bridge. A native view
+still needs converted identities, array-size validation, opaque/zero-array
+normalization, bitfield promotion/filtering and absolute field checks; changing
+only metatype filters would not meet this gate.

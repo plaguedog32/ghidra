@@ -563,6 +563,101 @@ fn later_effect_error_restores_prior_effects_and_prior_value_extents() {
 }
 
 #[test]
+fn every_effect_budget_error_has_the_same_limit_variant() {
+    let r = plan(
+        &(reg("r0", "general") + &reg("r1", "general") + &stack(64, 4)),
+        false,
+    );
+    let effects = [all(C::General), extra()];
+    let b = apply(
+        &mut fresh(&r),
+        &r,
+        &effects,
+        EffectContext {
+            alignment: 4,
+            ..context(4)
+        },
+    );
+    assert_eq!(b.usage.work, 28);
+    let cases = [
+        (
+            EffectLimits {
+                max_effects: 1,
+                ..Default::default()
+            },
+            "effects",
+        ),
+        (
+            EffectLimits {
+                max_examined_entries: 2,
+                ..Default::default()
+            },
+            "examined entries",
+        ),
+        (
+            EffectLimits {
+                max_group_references: 1,
+                ..Default::default()
+            },
+            "group references",
+        ),
+        (
+            EffectLimits {
+                max_group_updates: 1,
+                ..Default::default()
+            },
+            "group updates",
+        ),
+    ];
+    for (limits, resource) in cases {
+        let mut s = fresh(&r);
+        assert!(
+            matches!(s.apply_effects(&r,&effects,context(4),StackThresholdIndexing::NativeGroup,limits),Err(EffectError::Limit(actual)) if actual==resource)
+        );
+        assert_eq!(statuses(&s), statuses(&fresh(&r)));
+    }
+    for max_work in 0..b.usage.work {
+        let mut s = fresh(&r);
+        assert!(matches!(
+            s.apply_effects(
+                &r,
+                &effects,
+                EffectContext {
+                    alignment: 4,
+                    ..context(4)
+                },
+                StackThresholdIndexing::NativeGroup,
+                EffectLimits {
+                    max_work,
+                    ..Default::default()
+                }
+            ),
+            Err(EffectError::Limit("work"))
+        ));
+        assert_eq!(statuses(&s), statuses(&fresh(&r)));
+    }
+    // Invalid geometry is a placement error, rather than a budget error.
+    let mut s = fresh(&r);
+    assert!(matches!(
+        s.apply_effects(
+            &r,
+            &effects,
+            EffectContext {
+                alignment: 0,
+                ..context(4)
+            },
+            StackThresholdIndexing::NativeGroup,
+            Default::default()
+        ),
+        Err(EffectError::Placement {
+            effect: 1,
+            source: PlacementError::InvalidRequest(_)
+        })
+    ));
+    assert_eq!(statuses(&s), statuses(&fresh(&r)));
+}
+
+#[test]
 fn selected_assignment_all_lower_work_caps_restore_state() {
     let r = plan(&stack(64, 4), false);
     let request = PoolRequest {

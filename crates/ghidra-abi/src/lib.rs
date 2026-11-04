@@ -10,6 +10,7 @@
 mod compiler;
 mod error;
 mod fallback;
+mod native_alignments;
 mod placement;
 mod predicates;
 mod primitives;
@@ -28,6 +29,10 @@ pub use fallback::{
     FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest, FallbackUsage, GroupState,
     OccupiedExtent, PoolAssignment, PoolRequest, SlotRange, StackThresholdIndexing,
     UnexecutedDeclarations,
+};
+pub use native_alignments::{
+    NativeAlignmentError, NativeAlignmentLimits, NativeAlignmentMap, NativeAlignmentOrigin,
+    NativeAlignmentUsage, NativePrimitiveGeometry,
 };
 pub use placement::{
     Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,

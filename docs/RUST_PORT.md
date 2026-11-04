@@ -16,7 +16,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
-| `crates/ghidra-abi` | Compiler storage, resource groups, explicit fallback, datatype predicates and primitive/union extraction |
+| `crates/ghidra-abi` | Compiler storage, resource groups/effects, explicit fallback, Java datatype predicates/extraction and native primitive alignment |
 | `crates/ghidra-types` | Bounded datatype graphs, compiler-driven ordinary layouts and GCC/MS bitfield storage |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
@@ -148,15 +148,17 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current allocation-operation tree passes 646 default workspace tests and
-15 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
+The current analysis/ABI tree passes 660 default workspace tests and
+16 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
 storage, compiler datatype predicates and primitive/union extraction are
 integrated. Independent review approved the extraction and bitfield fixes;
 its trailing-empty-member boundary finding is addressed below. The newer
-selected-pool assignment and resource-effect operations await independent
-review. These increments
+selected-pool assignment and resource-effect operations also received
+independent approval. Their budget errors now have one typed classification.
+Native primitive alignment has directed and independent oracle coverage;
+the converted native datatype graph remains to be implemented. These increments
 are committed locally and have not been pushed.
 
 Native visual and click-through verification was attempted again on
@@ -433,7 +435,7 @@ creating value extents or modifying the parameter's result.
 Raw-size countdown, exact tile classes and declaration order follow the
 retained action implementations. Stack thresholds offer explicit Java
 pentry-index and native C++ group-index policies, including a checked error
-for Java's out-of-range grouped-alternative case. Twelve directed tests and
+for Java's out-of-range grouped-alternative case. Thirteen directed tests and
 5,184 independent reference executions cover both policies and resource
 limits. Full model-rule dispatch, compound joins, pointer transformation,
 hidden-return/shared-stack signatures and datatype-driven call effects remain
@@ -446,6 +448,37 @@ survivor exposed a test gap around positive cursors shared with exclusion
 tiles; the new directed regression closes it. Java-free release example and
 WinHelloCPP analysis reports retain their prior results. Rust 1.88,
 cross-platform and native GUI verification remain open.
+
+Independent review approved `504e0d486f`, adding 96,000 source-shaped effect
+executions without a correctness/resource failure. Its error-classification
+finding is fixed: all effect-budget exhaustion is now `EffectError::Limit`,
+including nested placement work, while invalid placement remains distinct.
+The scan bound includes the extra stack-entry check per effect.
+
+### Native datatype geometry foundation
+
+`NativeAlignmentMap` now decodes the native factory's alignment rules with
+sparse storage, checked construction limits and signed-int geometry bounds.
+It distinguishes a missing map from a declared map, preserves last-wins
+entries, fills gaps by floor lookup and performs the native raw-size padding
+followed by final alignment lookup. Its compiler-organization helper imports
+the resolved map sent by the upstream bridge. Java's absolute/default/pointer
+alignment rules remain separate.
+
+Ten directed tests and independent dense/scan references compare 5,047 maps
+and 6,863,920 answers, including all 107 retained specs and 321 resolved
+organization inputs. Ten compiling mutations are caught. The integrated tree
+passes 660 default tests, 16 doctests, formatting, workspace Clippy/rustdoc
+with warnings denied and the release build on Windows/Rust 1.99.1.
+
+Source audits show the full native datatype view also needs graph conversion:
+distinct alias identity, native scalar/composite geometry, array decode-size
+checks, opaque/zero-array normalization, bitfield filtering/promotion and
+absolute field alignment/hole checks. The ABI README records this contract.
+The existing Java predicate/extraction APIs are unchanged; native graph
+conversion, native rule predicates/extraction and complete signature recovery
+remain required. This alignment component does not imply C output or inferred
+types, native GUI verification, MSRV validation or cross-platform parity.
 
 ### Saved pause: expression inspection milestone
 

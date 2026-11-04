@@ -740,8 +740,8 @@ Independent review approved the extraction and bitfield integration at
 `3299780b59`, with about 3.28 million valid release reference comparisons,
 327,000 rejections and 225,000 bitfield pieces. Its low-severity trailing-empty-
 member finding is fixed: traversal now carries widened offsets, and converts
-only when emitting a primitive. A zero-size tail at the exclusive end 2^64
-therefore succeeds when it emits nothing. A collapsed zero-array wrapper or
+only when emitting a primitive. A zero-size tail at or beyond the exclusive
+end 2^64 therefore succeeds when it emits nothing. A collapsed zero-array wrapper or
 zero-width bitfield there still fails because it emits a real piece outside
 the address domain. Directed tests cover empty arrays, structures, aliases,
 unions and both nested-array modes.
@@ -794,13 +794,14 @@ invalid-address success cases, not invented storage.
 
 The batch uses one work budget, including stack placement, and bounds effects,
 entry visits, group reads and journaled group writes before protected growth.
-It scans at most effects × pentries; no byte-sized allocation or recursion is
+It examines at most effects × (pentries + 1) entries, including each stack-entry
+check; no byte-sized allocation or recursion is
 used. Outcomes are owned, state remains tied to its original compiler overlay,
 and every actual error rolls back the entire batch. Effects consume logical
 resources rather than creating value extents. The future rule dispatcher must
 separately preserve upstream's filter/precondition/action/commit/effect ordering.
 
-Twelve directed tests pin raw sizing, justification, representative-space
+Thirteen directed tests pin raw sizing, justification, representative-space
 checks, threshold order, exact work charges, every lower work budget and error
 rollback. Five independent oracle tests compare 5,184 executions over fixture-
 owned declaration/group maps in both source policies, with grouped alternatives,
@@ -808,8 +809,121 @@ alias pools, aligned pools, exhaustion and all effect budgets.
 Fourteen compiling semantic/accounting mutations are caught. The first run
 exposed a positive-cursor test gap: an exclusion tile sharing an aligned pool's
 nonzero cursor must be skipped. A new explicit regression pins that behavior.
+Independent review approved this increment at `504e0d486f` and compared 96,000
+additional source-shaped executions. Its error-classification finding is fixed:
+all budget exhaustion now returns `EffectError::Limit`, including nested
+placement work. Invalid placement remains a distinct error. A directed test
+checks every cap and all 28 lower work budgets, including rollback.
 
 Complete rule matching/dispatch, pointer synthesis, hidden-return control flow,
 join/member/dual composition and shared-stack signatures remain required.
 These operations are not yet connected to datatype-driven signature allocation,
 SSA call effects, the CLI or desktop.
+
+## Native primitive alignment
+
+`NativeAlignmentMap` ports the retained C++ `TypeFactory` alignment decoder and
+primitive geometry, independently of Java's datatype layout rules. It uses
+sorted sparse breakpoints rather than the native vector indexed by byte size;
+a key at `i32::MAX` therefore requires two records, not billions of slots.
+
+`new(None, limits)` selects the native 1/2/4/8 defaults. `new(Some(entries),
+limits)` imports exactly those records, with no added positive-size defaults.
+Duplicates are last-wins, alignment at size zero is always one, gaps inherit
+the preceding value and sizes beyond the final key use its value. An explicit
+empty map is an error. Positive-size entries require positive alignments;
+sizes/alignments outside signed-int range fail instead of invoking native
+overflow or division-by-zero behavior.
+
+`from_organization(&resolved, limits)` models the compiler-organization bridge.
+`DecompInterface.initializeProcess` calls `compilerSpec.encode`, and
+`DataOrganizationImpl.encode` emits the complete resolved nonempty map,
+including Java's seeded entries. An empty organization map is omitted and
+selects native defaults. Passing only a compiler spec's raw override vector
+to `new` is a standalone native-map decode, not this resolved bridge.
+
+`primitive_geometry(size)` first rounds the raw size using its map alignment,
+then queries alignment again at that rounded size. Native pointer and enum
+objects use this primitive path too. Java's absolute alignment cap, default
+alignment and default pointer alignment do not enter this calculation. This
+is a two-lookup rule, not repeated rounding until alignment stabilizes. The
+result must remain within positive signed-int size, with zero yielding
+void-compatible `(0,0,1)` geometry. Queries allocate nothing, use logarithmic
+lookup and leave construction usage unchanged.
+
+Construction bounds declaration count (including duplicates) and work before
+protected visits/allocations. Fixed defaults take five records and six work
+units even when the declaration cap is zero. Declared maps take `O(N log N)`
+time and `O(N)` storage; no storage is proportional to the largest size key.
+This is a native geometry component, not a converted native datatype graph,
+type factory, decompiler or calling-convention allocator.
+
+```rust
+use ghidra_abi::{NativeAlignmentMap, NativeAlignmentError};
+use ghidra_languages::{DataOrganization, SizeAlignment};
+
+let organization = DataOrganization::default().resolve(8);
+let bridge = NativeAlignmentMap::from_organization(&organization, Default::default())?;
+assert_eq!(bridge.primitive_geometry(3)?.aligned_size, 4);
+let raw = NativeAlignmentMap::new(Some(&[SizeAlignment { size: 4, alignment: 2 }]),
+    Default::default())?;
+assert_eq!(raw.alignment(2), 1); // A raw native map does not add Java's seeded keys.
+# Ok::<(), NativeAlignmentError>(())
+```
+
+Ten directed tests cover decoder defaults versus explicit maps, the resolved
+bridge, raw/padded alignment lookup, signed-int bounds, sparse huge keys, exact
+construction budgets and immutable ownership. Independent dense-table and
+declaration-scan references compare 5,047 maps and 6,863,920 alignment/geometry
+answers, including all 107 retained specs and 321 resolved organization inputs.
+These are source-derived Rust oracles; no C++ or Java process was run.
+
+## Native datatype conversion contract still to implement
+
+Source audits of `PcodeDataTypeManager`, native `type.cc` and `modelrules.cc`
+show that a decompiler view needs a converted graph, not just a switch over
+Java's canonical type kind. The required policy is the existing declared
+layout as transported to and decoded by the native decompiler; direct C++
+constructors have different zero-array behavior.
+
+| Declared kind | Required converted native behavior |
+| --- | --- |
+| Alias | Preserve its own object identity and canonical structural target separately; composite children retain their identities |
+| Void | Void metatype, size/aligned size zero and alignment one; primitive extraction rejects it |
+| Function | Code metatype, size/aligned size/alignment one |
+| Integer/float/bool/enum/pointer | Native primitive geometry; enum transport tags normalize to Int/Uint |
+| Zero-count array | Opaque fallback, normally Unknown of size one, rather than Array |
+| Nonzero array | Retain encoded public size and require `count × native element aligned size` to match; reject mismatch |
+| Opaque storage below 16 bytes | Unknown primitive with native primitive geometry |
+| Opaque storage at least 16 bytes | Fieldless Struct with original size/aligned size and alignment one |
+| Structure/union | Preserve public size, explicit Java composite alignment and offsets; round native aligned size to that alignment |
+| Incomplete | Explicit conversion failure; pointers need not inspect incomplete target geometry merely to be queried as leaves |
+
+Do not infer identity from equal widths. Native factory interning also depends
+on names/native ids absent from the current declared graph. A Rust adapter
+must define a source-object identity contract or accept an identity mapping;
+full `TypeFactory` interning is separate work.
+
+The bridge omits zero-byte components. Non-byte structure bitfields live in
+a separate native vector and are invisible to primitive extraction. A byte-
+range structure bitfield becomes an ordinary field at its declared offset:
+retain the base object when native size matches, otherwise synthesize a base
+of the narrowed width (Int/Uint retains its class; other classes become
+Unknown). Native `getBase` changes oversized synthesized bases into unknown-
+byte arrays, using the configured architecture maximum (default ten). Union
+bitfield wrappers instead follow opaque encoding. Reusing Java's Unknown
+wrapper primitives for all of these cases would change ABI behavior.
+
+Native structure extraction checks every visible field's absolute alignment
+and expected next offset, even for packed structures. It checks no trailing
+padding and no direct alignment of root scalars/array elements. Union member
+flags remain context-local. Native HFA must use these extraction checks and
+exact leaf identity; the current Java cached homogeneous summary is
+insufficient. For example, packed `{float32; opaque16}` can be native HFA
+because the opaque tail emits no primitive, while an array of a 21-byte
+variant becomes unaligned at its second float. A cached empty-output summary
+must not skip visible structure checks that can still record holes.
+
+Conversion, native predicates/extraction, compound rule execution, complete
+signatures and SSA call effects remain required. The Java APIs remain the
+current default and are not silently reinterpreted as native semantics.

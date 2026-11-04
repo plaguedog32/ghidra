@@ -101,7 +101,16 @@ pub enum EffectError {
         source: PlacementError,
     },
     #[error(transparent)]
-    Allocation(#[from] FallbackError),
+    Allocation(FallbackError),
+}
+
+impl From<FallbackError> for EffectError {
+    fn from(error: FallbackError) -> Self {
+        match error {
+            FallbackError::Limit(resource) => Self::Limit(resource),
+            other => Self::Allocation(other),
+        }
+    }
 }
 
 impl AllocationState {
@@ -334,7 +343,10 @@ impl AllocationState {
             },
             budget.nested_limits(),
         )
-        .map_err(|source| EffectError::Placement { effect, source })?;
+        .map_err(|source| match source {
+            PlacementError::Limit(resource) => EffectError::Limit(resource),
+            source => EffectError::Placement { effect, source },
+        })?;
         budget.work_u64(placement.work)?;
         if matches!(
             placement.outcome,

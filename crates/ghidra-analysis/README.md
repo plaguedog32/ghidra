@@ -256,3 +256,189 @@ roles, opaque dependencies, undefined resets, phi cycles, exact limits,
 deterministic IDs and 25k/50k straight-line scaling. The arithmetic evaluator
 itself is shared with the already-tested P-code core; these tests establish the
 reconstruction's binding and state semantics, not a fresh arithmetic proof.
+
+## Sparse conditional constant propagation
+
+`PcodeConstants::new(Arc<PcodeExpressions>, ConstantLimits)` runs classic
+whole-value SCCP over a verified expression snapshot and its owned `PcodeSsa`.
+It returns owned immutable facts: one lattice element per SSA value and per
+expression term, plus executable graph nodes and feasible edges. It never
+rewrites terms, removes operations, executes target code or falls back to a
+weaker result. It is `Send + Sync`.
+
+```rust
+use std::sync::Arc;
+use ghidra_analysis::{AnalysisOptions, ConstantFact, PcodeConstants, PcodeExpressions, PcodeSsa};
+use ghidra_cfg::{Cfg, CfgInput, ProgramPoint};
+use ghidra_pcode::machine::ExecutionInput;
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let input: ExecutionInput = serde_json::from_str(include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"), "/../../examples/pcode/sum-loop.json")))?;
+let cfg = Arc::new(Cfg::new(CfgInput::new(input.spaces, input.code_space,
+    input.entry, input.instructions), Default::default())?);
+let analysis = Arc::new(PcodeSsa::new(cfg, &[], AnalysisOptions::pcode_program(),
+    Default::default())?);
+let terms = Arc::new(PcodeExpressions::new(analysis.clone(), Default::default())?);
+let facts = PcodeConstants::new(terms, Default::default())?;
+// `COPY r0, 0` before the loop is constant.
+let first = analysis.statement_id(ProgramPoint::new(0x1000, 0)).unwrap();
+let zero = analysis.ssa().statement(first)?.defs()[0];
+assert_eq!(facts.value(zero)?.constant().and_then(|v| v.to_u64()), Some(0));
+// The loop phis meet constants with their updates: not single constants.
+let mut phis = 0;
+for node in facts.executable_nodes() {
+    for phi in analysis.ssa().block(node)?.renamed().unwrap().phis() {
+        assert_eq!(facts.value(phi.value())?, ConstantFact::Unknown);
+        phis += 1;
+    }
+}
+assert!(phis > 0);
+// The fixed conservative policy is reported with the facts.
+let policy = facts.policy();
+assert!(policy.prunes_constant_branches && !policy.models_memory);
+# Ok(())
+# }
+# example().unwrap();
+```
+
+**Lattice.** `ConstantFact` is `Unreached < Constant(value) < Unknown`; two
+different constants meet to `Unknown`. `Unreached` (bottom) only means that
+no executable definition was found; it is never used for unknown state. Every
+entry value (`EntryState::Input` and `EntryState::Undefined`), native-entry or
+merged-instruction reset definition, opaque havoc output, memory-state value,
+LOAD and fixed-offset memory read is `Unknown` as soon as it executes.
+Undefined state is never treated optimistically and never becomes zero, so a
+phi meeting an undefined path with `5` is `Unknown`. Memory contents are not
+modeled: a load after a constant store is `Unknown`. Constants keep their
+exact declared width, 1 to 512 bytes.
+
+**Transfer functions.** A literal, including SUBPIECE/INSERT/ZPULL/SPULL/
+PTRADD metadata, is its constant. A join, extract or pure operation is
+`Unknown` if any input is `Unknown`, `Unreached` if any remaining input is
+`Unreached`, and otherwise evaluated exactly. Joins compose pieces by value
+significance and extracts slice by least-significant byte offset,
+independently of memory byte order. Pure operations use
+`ghidra_pcode::evaluate_pure`; `COPY` and same-width `CAST` share their
+input's constant. When evaluation fails (division by zero, an unsupported
+opcode or float format, invalid operands), the result is `Unknown` and an
+`EvaluationFault` names the statement, term, opcode and error. Only faults
+whose inputs are still constant at the fixpoint are reported; one seen in an
+optimistic intermediate state, such as a loop divisor that is 0 until the
+backedge raises it, is not. The term is unchanged and control flow is not cut:
+the CFG has no trap edges, so every outcome of the block stays feasible. No
+algebraic identities with unknown operands (`x * 0`, `x ^ x`) are applied and
+partially known bytes are not tracked, so a value whose pieces are only partly
+constant is `Unknown` as a whole.
+
+**Feasibility.** The entry node is executable through the virtual entry edge.
+A CFG block's semantic out-edges follow their `ghidra-cfg` roles. A
+block-ending CBRANCH with a constant condition enables only its taken outcome
+(nonzero is true, as in the concrete machine), read from the condition's full
+operand binding, joined across aliases. An `Unknown` condition enables both,
+and an `Unreached` one neither until it rises (on SSA built by `PcodeSsa` an
+executed use is dominated by an executed definition, so this does not occur
+at the fixpoint). Every other role is enabled when its block executes:
+fallthrough, BRANCH, both `CallReturn` and `CallNoReturn` outcomes of every
+call, RETURN, the unresolved `IndirectBranch` exit and UNIMPLEMENTED. Constant
+BRANCHIND/CALLIND targets are reported as term facts but never become new
+edges, and userops keep the CFG's fallthrough. Each semantic edge maps to the
+augmented SSA graph through
+`PcodeSsa::edge_reset`: an edge split by a reset node enables `from -> reset`,
+and the reset's single `reset -> to` edge is enabled when the reset executes.
+Several semantic edges (for example CBRANCH true and false to the same point,
+or a relative and a native self-branch) can share one distinct graph edge; it
+is feasible if any of them is. Relative branches, including to operation 0,
+have no reset node and keep their instruction's temporaries. Phis meet only
+operands whose incoming edge is feasible, including the virtual entry operand
+and backedges that become feasible later. Feasibility is relative to the
+supplied CFG, which may omit unresolved indirect targets; it is not a claim
+about complete machine control flow.
+
+**Queries.** `value(ValueId)` and `expression(ExpressionId)` return facts. An
+SSA leaf term has its value's fact; any other term is `Unreached` unless its
+statement executed. An executed statement gives a fact to every operand term,
+including memory addresses and stored values. `constants()` lists all constant
+values. `is_node_executable`, `executable_nodes`, `is_statement_executable`,
+`is_edge_executable(from, to)` (distinct augmented graph edges),
+`is_cfg_edge_feasible(EdgeId)` and `feasible_cfg_edges` (semantic edges, first
+hop) expose flow facts. `faults()` lists fixpoint evaluation faults, `stats()`
+the counters below, `limits()` the limits used and `policy()` the fixed
+conservative choices (`ConstantPolicy`) with the snapshot's `AnalysisOptions`.
+The result owns its `Arc<PcodeExpressions>` and is the least fixpoint of
+these monotone transfer functions, so it does not depend on worklist order and
+is identical for equal inputs.
+
+**Algorithm and complexity.** The pass builds a `ghidra_ssa::DefUseIndex`
+and keeps two FIFO worklists, newly feasible graph edges and raised values.
+Both deduplicate: an edge is queued once, and a value only when its lattice
+level rises, at most twice. A newly executable node folds its phis over
+feasible operands and executes its statements once. Each executed statement
+gets a plan: its needed terms in ascending ID (topological) order with child,
+parent, SSA-leaf and definition-root links. A raised value notifies only its
+use sites from the index; a statement updates only the affected leaf and
+propagates upward through parent links. Computations count unreached children
+and are evaluated at most once, when the last one becomes constant. A newly
+feasible edge folds one operand per phi at its target. There is no recursion,
+no dense value-by-node structure and no rescan of a program, statement or
+expression prefix per value. With `V` values, `N` graph nodes, `E` graph
+edges, `C` semantic edges, `T` plan terms and links of executed statements,
+`U` def-use records and `A` phi operands, work is
+`O(V + N + (E + C) log E + T log T + U + A)` plus the evaluation cost below.
+
+**Accounting.** `ConstantLimits` caps graph nodes, distinct graph edges,
+semantic CFG edges, values, reachable statements and expression nodes before
+allocation. Plan records (terms, child links, parent links, leaf and root
+records), pending entries in the global worklists and in each statement-local
+traversal or propagation stack, and owned evaluated constant bytes are checked
+before each growth. Literal payloads and COPY/CAST results are shared, not
+counted again. The evaluator takes a contiguous `[Value]` slice, so each
+evaluation clones its constant inputs; these transient copies are charged as
+work and dropped after the call, and only the result is retained and counted
+as bytes. `max_work` is one deterministic budget: every record visited costs
+at least one unit, binary searches cost `floor(log2 n) + 2`, sorts
+`n (ceil(log2 n) + 1)`, constant comparisons one unit per 64-bit word, and
+joins/extracts their byte widths. Each `evaluate_pure` call is charged before
+it runs: `4 + 2 * (input + output words)`, plus the product of the operand
+word counts (+1 each) for multiplication, twice that for division and
+remainder, and a fixed float term with an extra quadratic term for INT2FLOAT.
+The nested def-use index runs under `ConstantLimits::def_use` with its own
+budget, so aggregate work is at most `max_work + def_use.max_work`. `stats()`
+reports both separately with executable/feasible counts, plan records, queue
+peak, phi folds, notifications, evaluations, faults and fact totals.
+Exhaustion returns `ConstantError::Limit` with no partial result or
+all-unknown fallback. Ordinary Rust allocation failure is not caught.
+Malformed input, such as a shared non-leaf term, a CBRANCH that does not end
+its block, a decreasing fact or two different constants for one value at the
+same lattice level, is reported as `ConstantError::Inconsistent`.
+
+**Limitations.** This is a library dataflow stage; no CLI or desktop view
+uses it yet. Facts are whole values: no ranges, known bits or partially known
+aliases, and no algebraic identities. Memory is not modeled at all, so stores
+never reach loads, and calls, userops and other opaque effects have no
+summaries. Indirect targets are never resolved, so feasibility is relative to
+the supplied CFG. Faults never cut control, so code after a definite trap
+stays feasible. The pass requires statement-local non-leaf terms, as
+`PcodeExpressions` builds them. It performs no pointer disambiguation, ABI or
+calling-convention modeling, simplification, rewriting or code generation.
+
+Tests compare every value, term, node, graph edge, semantic edge and fault
+with an independent dense round-robin reference fixpoint, and check facts
+against the concrete `Machine` after every executed operation and at every
+block entry for generated branching and looping programs in both byte orders,
+both temporary scopes and both phi placements. Every reference comparison
+also checks bounds derived from the SSA shape alone: each statement executes
+once, notifications stay within twice the def-use statement records and phi
+folds within four times the phi operands. Targeted tests cover equal and
+conflicting diamonds, dead branches, undefined incoming paths, entry
+self-loops and entry backedges through native reset nodes, optimistic loop
+invariants, delayed backedge feasibility, joins that must refold on a late
+value or a late edge, irreducible cycles, temporary resets against relative
+branches, duplicate semantic and reset edges, repeated uses and repeated phi
+operands, aliases, memory and opaque conservatism, calls that clobber branch
+inputs, indirect control, metadata roles with hand-computed results, odd and
+512-byte widths, fixpoint and transient faults, exact and one-below limits
+(including the nested def-use limits) and linear chain, loop and fan-out
+scaling. The pure arithmetic evaluator is shared with the P-code core and is
+not re-proven here; these tests establish binding, lattice and control
+semantics.

@@ -1,6 +1,6 @@
 # Full Rust replacement worklist
 
-The active, unfinished objective is to replace Ghidra's functionality without a Java build or runtime requirement. Work has resumed after the saved pause; the current native milestones do not complete that objective. The retained source has 114 module manifests and 150 SLEIGH specifications under `Ghidra/`; neither those counts nor a successful source compilation establish functional parity.
+The unfinished objective is to replace Ghidra's functionality without a Java build or runtime requirement. Work is paused at the user's requested stopping point; the current native milestones do not complete that objective. The retained source has 114 module manifests and 150 SLEIGH specifications under `Ghidra/`; neither those counts nor a successful source compilation establish functional parity. The current handoff is recorded in [RUST_PORT.md](RUST_PORT.md#paused-checkpoint-2026-11-04).
 
 The main framework areas still require these coverage gates:
 
@@ -39,12 +39,12 @@ headless interaction and real-function byte-identity checks pass; native
 window and OS clipboard verification still require the unavailable computer-use
 helper. The projection does not rewrite operations or produce structured C.
 
-A separate pre-existing compiler defect loses the address-space identity of
-direct branches/calls through non-default-space sub-table exports. Byte- and
-word-space reproductions are confirmed; a compiler provenance fix remains.
-Its source-audited [compiler repair contract](SLEIGH_TARGET_PROVENANCE.md)
-covers owned/streaming targets, exported widths, address units, local labels
-and vendored compiler identity; no implementation is claimed yet.
+A pre-existing compiler defect lost the address-space identity of direct
+branches/calls through non-default-space sub-table exports. A repair is
+integrated locally at `da2b34ea83`, following the source-audited
+[compiler repair contract](SLEIGH_TARGET_PROVENANCE.md). It preserves
+owned/streamed targets, exported widths, address units, local labels and
+vendored compiler identity. It has not been independently reviewed or pushed.
 The next control-flow structurer must follow the source-audited
 [execution and closure contract](CONTROL_FLOW_STRUCTURING.md). That contract is
 design groundwork; no structuring implementation or C emitter is claimed yet.
@@ -79,11 +79,17 @@ Direct native-object predicate queries now cover synthesized types and native
 prototype IDs, with independent approval at `0123268173`. Full rule dispatch
 and per-member actions remain governed by the source-derived
 [native allocation contract](NATIVE_MEMBER_ALLOCATION.md).
+Native one-value fallback allocation and its shared budget/journal kernel are
+integrated locally at `48c91d72ac`, with native floor-alignment and failure
+ordering. Independent review remains pending; this is not rule dispatch or
+whole-signature allocation.
 ELF RELR metadata inspection remains pending under its
 [loader contract](ELF_RELR_PORT_CONTRACT.md); relocations are not applied.
 
-The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
-846 workspace tests, 23 doctests and the release executable pass.
+The local combined checkpoint passes 868 workspace tests and 24 doctests on
+Windows with stable 1.99.1 and Rust 1.88.0. The earlier approved checkpoint's
+846 tests, 23 doctests and release executable also passed; the combined tree
+has not received a new release/Java-free or cross-platform validation claim.
 MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
 CI run 41839264716 passed the locked Rust 1.88 tests/doc examples and stable
 checks/source probes/release builds on Windows, Linux and macOS at source

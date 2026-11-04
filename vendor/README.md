@@ -95,22 +95,24 @@ producers must still version their blobs.
 ## Testing the forks on their own
 
 Both packages declare Rust 1.85 and are built here with stable and 1.88.
-`wazabin-pcode` tests with its own lockfile:
+From the repository root, use Python 3.12 or newer to run their suites in
+isolated temporary copies:
 
 ```sh
-cargo test --locked --manifest-path vendor/wazabin-pcode/Cargo.toml
+python scripts/Test-VendoredSleigh.py
+python scripts/Test-VendoredSleigh.py --toolchain 1.88.0
 ```
 
-`wazabin-sleigh` must see the forked `wazabin-pcode`, which needs a command-line
-patch; Cargo then rewrites the package's own lockfile, so restore it afterwards:
-
-```sh
-cargo test --manifest-path vendor/wazabin-sleigh/Cargo.toml --all-features \
-  --config "patch.crates-io.wazabin-pcode.path='vendor/wazabin-pcode'"
-git checkout -- vendor/wazabin-sleigh/Cargo.lock
-```
+The helper runs all-feature P-code tests, SLEIGH library tests and both
+packages' documentation tests. It patches the copied SLEIGH package to the
+copied P-code fork and gives them a separate target directory. Only the
+temporary SLEIGH lockfile may change to select that path dependency; hashes
+verify that checked-in sources and lockfiles stay unchanged. Temporary
+copies and logs remain available for inspection. CI runs the helper with
+Python 3.13 in both toolchain matrices, including for vendor-only changes.
 
 Its development dependencies (`clap`, `criterion`, `serde_json`, `bincode`) are
 fetched for these runs only. Its `allocations` integration test reads an x86-64
 specification from an `open_sleigh` checkout outside the package and fails
-without one; it measures allocations rather than checking semantics.
+without one; it measures allocations rather than checking semantics and is
+excluded by the helper's SLEIGH library/documentation selection.

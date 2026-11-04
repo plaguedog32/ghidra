@@ -160,7 +160,44 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ## Development checkpoint
 
-### Current verification checkpoint
+### Paused checkpoint: 2026-11-04
+
+Work is paused at the user's requested stopping point. The full replacement
+goal remains unfinished. The last pushed, independently reviewed checkpoint
+is `3a2f78686db1db905f508c4bc8e26c48a309984c` on `rust-desktop`.
+
+Three additional commits are integrated locally and have not been pushed:
+
+- `c5328b9c0a`: unchanged, pinned SLEIGH/P-code compiler packages with retained
+  licenses and verified registry provenance.
+- `da2b34ea83`: preserve qualified direct-target space, exported width and
+  address units through the owned and streamed compiler paths.
+- `48c91d72ac`: native one-value fallback allocation, including shared
+  floor-alignment arithmetic and a reusable budget/journal kernel.
+
+The compiler repair and native fallback allocator still require independent
+review. Their passing tests do not establish approval. The combined tree
+passes 868 default workspace tests and 24 doctests on Windows with stable
+1.99.1 and Rust 1.88.0, plus formatting and workspace all-target Clippy with
+warnings denied. Release/Java-free output evidence in the preceding approved
+checkpoint applies to that earlier tree; it has not been repeated here.
+
+Compiler-fork tests now have an isolated-copy CI helper,
+`scripts/Test-VendoredSleigh.py`; see [the vendor testing instructions](../vendor/README.md#testing-the-forks-on-their-own).
+Vendor changes trigger both workflow matrices. The helper requires Python
+3.12 or newer for testing only; the Rust executable does not require Python.
+All six selected fork suites pass on stable 1.99.1 and Rust 1.88.0, with
+checked-in compiler sources and lockfiles unchanged. The external-checkout
+allocation benchmark is excluded, as documented in the vendor instructions.
+
+The separate structuring implementation task was asked to stop and preserve
+its checkout. No structuring implementation is integrated. Resume by
+reviewing the two local increments and any preserved structuring draft before
+starting another feature. ELF RELR inspection remains design-only under its
+[port contract](ELF_RELR_PORT_CONTRACT.md). Existing stashes are retained.
+Native window/clipboard checks and fresh cross-platform CI remain open gates.
+
+### Previous approved verification checkpoint
 
 The current analysis/ABI/datatype/SSA tree passes 846 default workspace tests and
 23 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
@@ -311,9 +348,9 @@ Native executables are available in that run's artifacts. These checks do not
 verify native window interaction or full Ghidra parity. Historical checkpoints
 below retain the validation limits that applied when they were recorded.
 
-### Active continuation: compiler storage
+### Earlier continuation: compiler storage
 
-The full replacement goal is active again after the saved pause below.
+This continuation followed the earlier saved pause below.
 `ghidra-abi` now resolves compiler declarations against physical language registers
 and address spaces. The `--compiler-storage ROOT LANGUAGE_ID COMPILER_ID` command
 compiles the selected SLEIGH source and exports the register layout, original

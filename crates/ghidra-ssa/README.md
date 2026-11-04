@@ -656,8 +656,8 @@ With N source nodes, E edges, B copy blocks and P phi operands, pass time is
 storage is `O(N + P + E + B)` in addition to the retained source. It is iterative,
 and no scheduling table is allocated for all value slots per edge.
 
-Thirteen tests compare mutable-variable execution to actual lowered graph
-paths, including entry/self-loops, irreducible loops, critical edges,
+The thirteen tests include mutable-variable execution on actual lowered graph
+paths, entry/self-loops, irreducible loops, critical edges,
 unreachable predecessors, undefined inputs, repeated uses, simultaneous defs,
 dead unpruned phis and pruned forms. Generated checks cover 750 programs in both
 modes, 24,000 paths and 1,561,607 uses. A 100,000-node/value case produces
@@ -671,5 +671,10 @@ prologues, critical-edge routing, incoming operands, identity edges and limits.
 
 Neither API is connected to P-code expression projection, CLI/desktop export,
 structured control-flow generation or C output yet. The source SSA and its
-verifier are unchanged. Independent cross-lab review of these lowering APIs is
-still required before downstream integration.
+verifier are unchanged. Independent cross-lab review approved `698383f147`
+with no correctness findings. A separate reference checked 438,378 schedules
+in three input orders, 120,000 lowerings and 51.2 million uses, including
+undefined values, critical-edge splits and one-shot prologues. Stable/Rust
+1.88 crate tests, limits, graph reuse, ownership, lint and docs also passed.
+That review does not establish correctness of future P-code or code-generation
+consumers.

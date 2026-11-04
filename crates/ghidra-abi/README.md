@@ -945,7 +945,10 @@ action refuses them and returns no partial allocation:
   non-first group of the stack pool is `GroupInUse`, and a consumed first stack
   group is `Unsupported` (upstream would compute slots from status -1). These
   checks run only when the action would succeed, because a `NoFit` returns no
-  storage.
+  storage. For a consumed first stack group, native minimum/capacity rejection
+  is checked with its actual -1 cursor first; an invented cursor zero would
+  incorrectly reject allocations that native would attempt. Native-int
+  overflow during that check remains an explicit refusal.
 - **Join-pool tiles.** Upstream nests the tile's join-space varnode in the new
   join. Here the tile contributes its own physical pieces in place, with the
   same significance; constant padding stays unheld padding. The following are
@@ -966,8 +969,9 @@ action refuses them and returns no partial allocation:
   same bytes and significance. Zero-width tiles, which would never finish the
   source fit loop, are `InvalidDeclaration` (the parser rejects them first).
 
-Byte order is inherited policy. Native address spaces share the translator's
-byte order. The per-space model maps the first entry: a register entry uses its
+Byte order is inherited policy. Native ordinary spaces and the join space use
+the translator's byte order, but native `OtherSpace` is explicitly little
+endian. The per-space model maps the first entry: a register entry uses its
 space (the SLEIGH source's global order in the adapter), a stack entry its
 backing space, and a join or `OTHER` entry the default space. Tile placement
 and join-piece traversal keep the per-space rules of `place_parameter`. Stack
@@ -994,7 +998,8 @@ Work charges, with `lookup(n) = bits(n) + 1`, are:
   stack when spilling.
 - 2 per tile visit in either loop (entry plus status read), and 1 per status
   write.
-- For the spill: 1 status read, the nested placement and 1 write.
+- For the spill: 1 status read, the nested placement and 1 write. A consumed
+  first group instead adds 1 for the bounded native -1-cursor rejection check.
 - For each taken tile: the nested placement, a binding lookup, the join-piece
   count for a bit-slice join pool, the held-span charges shared with fallback,
   and an occupied-extent lookup per held span.
@@ -1007,7 +1012,7 @@ Work is linear in tiles, plus logarithmic lookups.
 
 ### Validation evidence
 
-`tests/join_action.rs` has 26 directed tests with hand-derived expectations.
+`tests/join_action.rs` has 27 directed tests with hand-derived expectations.
 They cover defaults and true-only toggles, the first-entry byte order in a
 mixed-endian layout, and `RuleAction` attributes. They work all eight
 byte-order/significance/justification combinations by hand. Further cases:
@@ -1038,12 +1043,27 @@ backfill, 292 over positive cursors) and 272 gap spans. They also include
 are compared after every request. The oracle covers single-range tiles; join
 tiles are covered by the directed tests.
 
-In an isolated copy, all 41 compiling mutations of `join.rs` were caught by
+On builder commit `990469108e`, all 41 compiling mutations of `join.rs` were caught by
 `join_action` and `join_oracle`. The mutations cover defaults and toggles, the
 list byte order, tile and stack eligibility, the start search, backfill and
 positive cursors, the alignment reset, stack justification and cursor, float
 conversion, cropping, ordering, rollback, safeguards, budget charges and limit
 classification.
+
+Independent review at `3cfb331be8` returned **Changes requested: one verified
+P2.** The consumed first stack group incorrectly masked a spill below its
+minimum size. The fix preserves native minimum/capacity rejection using the
+actual -1 cursor before refusing an allocation from that consumed group.
+Regressions cover both stack growth directions, partial-slot rounding,
+alignment, native-int overflow, whole-state rollback, later fallback and every
+smaller work budget; the rejection path has a hand-derived 21-unit work pin.
+The review also reran all five real probes and found no other blocking issue.
+Its `OtherSpace` byte-order clarification is reflected above. A root-run copy
+of the reviewer's original failing probe now passes. Ten additional compiling
+mutations of the rejection preflight are caught, including a fake zero cursor,
+wrong signed remainder/rounding, exact minimum/capacity boundaries, work charges
+and native-int limits. The fixed tree's five real-profile probes pass on Rust
+1.88 release too.
 
 `tests/join_real.rs` is ignored by default; run
 `cargo test --release -p ghidra-abi --test join_real -- --ignored`. It compiles

@@ -320,6 +320,40 @@ fn crop(piece: &mut PlacedPiece, excess: u32, from_start: bool) -> Result<(), &'
     Ok(())
 }
 
+/// Native getAddrBySlot's rejection checks with status -1, before any
+/// address construction. A consumed stack group remains unsupported when
+/// native code would allocate, but it must not mask a guaranteed NoFit.
+fn consumed_stack_rejection(
+    declared: &ghidra_languages::ParamEntry,
+    size: u32,
+    type_align: u32,
+) -> Result<Option<NoFit>, &'static str> {
+    if size < declared.min_size {
+        return Ok(Some(NoFit::BelowMinimum));
+    }
+    let alignment = i64::from(declared.alignment());
+    if alignment == 0 || alignment > i64::from(i32::MAX) || declared.max_size > i32::MAX as u32 {
+        return Err("consumed stack geometry exceeds the native int range");
+    }
+    let mut cursor = -1_i64;
+    let type_align = i64::from(type_align);
+    if type_align > alignment {
+        // C++ remainder truncates toward zero, as Rust's signed remainder
+        // does. Preserve that check rather than probing from an invented 0.
+        let adjustment = type_align - ((cursor * alignment) % type_align);
+        if adjustment > i64::from(i32::MAX) {
+            return Err("consumed stack alignment exceeds the native int range");
+        }
+        cursor += adjustment / alignment;
+    }
+    let slots = i64::from(size) / alignment + i64::from(i64::from(size) % alignment != 0);
+    let next = cursor + slots;
+    if next > i64::from(i32::MAX) {
+        return Err("consumed stack slots exceed the native int range");
+    }
+    Ok((next > i64::from(declared.max_size) / alignment).then_some(NoFit::SlotsExhausted))
+}
+
 impl AllocationState {
     /// Run one `<join>` action for a value of the given raw size/alignment.
     /// Success commits the consumed tiles, skipped tiles and the stack cursor.
@@ -539,6 +573,20 @@ impl AllocationState {
             let cursor = match self.groups.get(group.0) {
                 Some(GroupState::Available { used_slots }) => *used_slots,
                 Some(GroupState::Consumed) => {
+                    budget.work(1)?;
+                    if let Some(reason) =
+                        consumed_stack_rejection(&source.entries[index], uncovered, align as u32)
+                            .map_err(|reason| JoinError::Unsupported {
+                                site: entry.site,
+                                reason,
+                            })?
+                    {
+                        return Ok(JoinAssignment {
+                            config,
+                            outcome: JoinOutcome::NoFit(JoinNoFit::Stack { uncovered, reason }),
+                            usage: usage(&budget, tiles.len(), self.occupied.len()),
+                        });
+                    }
                     return Err(JoinError::Unsupported {
                         site: entry.site,
                         reason: "the stack pool's resource group is consumed",

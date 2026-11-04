@@ -822,6 +822,168 @@ fn every_no_fit_is_transactional_including_skips_and_stack_holes() {
 }
 
 #[test]
+fn consumed_stack_group_preserves_native_no_fit_before_its_safeguard() {
+    let prior = r#"<pentry minsize="1" maxsize="4" storage="ptr"><addr space="stack" offset="8"/></pentry>"#;
+    let input = regs(&["r0"], 4, "general") + prior + &stack(4, 16, 4, 8);
+    for positive in [false, true] {
+        let resources = plan(&input, Layout { positive, ..LE });
+        let mut state = fresh(&resources, IN);
+        state
+            .assign_pool(
+                &resources,
+                PoolRequest {
+                    entry: 1,
+                    size: 4,
+                    alignment: 1,
+                    justification: Justification::Default,
+                },
+                Default::default(),
+            )
+            .unwrap();
+        let before = snapshot(&state);
+        // The register would consume four bytes, leaving two, which native
+        // getAddrBySlot rejects before reading its consumed (-1) cursor.
+        let rejected = join(&mut state, &resources, attrs(), 6, 4);
+        assert_eq!(
+            rejected.outcome,
+            JoinOutcome::NoFit(JoinNoFit::Stack {
+                uncovered: 2,
+                reason: NoFit::BelowMinimum
+            })
+        );
+        // Three entry bindings and three language spaces: both lookups cost3.
+        // Header/binding/space 7, initialization 7, start/tile/status 5,
+        // stack-group read 1, native consumed-cursor rejection 1 =21.
+        assert_eq!(resources.storage().bindings().len(), 3);
+        assert_eq!(resources.storage().register_file().spaces().len(), 3);
+        assert_eq!(rejected.usage.work, 21);
+        assert_eq!(snapshot(&state), before);
+        for work in 0..21 {
+            let mut trial = state.clone();
+            assert!(matches!(
+                trial.assign_join(
+                    &resources,
+                    &attrs(),
+                    JoinRequest::new(6, 4),
+                    JoinLimits {
+                        max_work: work,
+                        ..Default::default()
+                    }
+                ),
+                Err(JoinError::Limit("work"))
+            ));
+            assert_eq!(snapshot(&trial), before);
+        }
+        // A later rule can still allocate the register after the NoFit.
+        assert!(matches!(
+            state
+                .assign_pool(
+                    &resources,
+                    PoolRequest {
+                        entry: 0,
+                        size: 4,
+                        alignment: 1,
+                        justification: Justification::Default,
+                    },
+                    Default::default()
+                )
+                .unwrap()
+                .outcome,
+            FallbackOutcome::Assigned(_)
+        ));
+        let consumed = snapshot(&state);
+        // With all register tiles consumed, native status -1 permits five
+        // slots in a four-slot pool; probing from cursor 0 would be wrong.
+        assert!(matches!(
+            state.assign_join(
+                &resources,
+                &attrs(),
+                JoinRequest::new(20, 1),
+                Default::default()
+            ),
+            Err(JoinError::Unsupported { .. })
+        ));
+        assert_eq!(snapshot(&state), consumed);
+        assert_eq!(
+            join(&mut state, &resources, attrs(), 21, 1).outcome,
+            JoinOutcome::NoFit(JoinNoFit::Stack {
+                uncovered: 21,
+                reason: NoFit::SlotsExhausted
+            })
+        );
+        assert_eq!(snapshot(&state), consumed);
+        assert_eq!(
+            join(&mut state, &resources, attrs(), 24, 1).outcome,
+            JoinOutcome::NoFit(JoinNoFit::Stack {
+                uncovered: 24,
+                reason: NoFit::SlotsExhausted
+            })
+        );
+        assert_eq!(snapshot(&state), consumed);
+        // Alignment is still the original request's when no register was
+        // chosen: from -1, native alignment 8 advances to slot 2, not 0.
+        assert_eq!(
+            join(&mut state, &resources, attrs(), 12, 8).outcome,
+            JoinOutcome::NoFit(JoinNoFit::Stack {
+                uncovered: 12,
+                reason: NoFit::SlotsExhausted
+            })
+        );
+        assert_eq!(snapshot(&state), consumed);
+        assert!(matches!(
+            state.assign_join(
+                &resources,
+                &attrs(),
+                JoinRequest::new(8, 8),
+                Default::default()
+            ),
+            Err(JoinError::Unsupported { .. })
+        ));
+        assert_eq!(snapshot(&state), consumed);
+        assert!(matches!(
+            state.assign_join(
+                &resources,
+                &attrs(),
+                JoinRequest::new(4, i32::MAX as u32),
+                Default::default()
+            ),
+            Err(JoinError::Unsupported { .. })
+        ));
+        assert_eq!(snapshot(&state), consumed);
+    }
+    // Alignment arithmetic can fit while cursor + slots overflows a native
+    // int. That is a refusal, not a wrapped capacity success or a NoFit.
+    let input = regs(&["r0"], 4, "general") + prior + &stack(1, 16, 1, 8);
+    let resources = plan(&input, LE);
+    let mut state = fresh(&resources, IN);
+    for entry in [0, 1] {
+        state
+            .assign_pool(
+                &resources,
+                PoolRequest {
+                    entry,
+                    size: 4,
+                    alignment: 1,
+                    justification: Justification::Default,
+                },
+                Default::default(),
+            )
+            .unwrap();
+    }
+    let before = snapshot(&state);
+    assert!(matches!(
+        state.assign_join(
+            &resources,
+            &attrs(),
+            JoinRequest::new(i32::MAX as u32, i32::MAX as u32 - 1),
+            Default::default()
+        ),
+        Err(JoinError::Unsupported { .. })
+    ));
+    assert_eq!(snapshot(&state), before);
+}
+
+#[test]
 fn float_joins_convert_only_a_single_partial_tile() {
     let list = regs(&["d0", "d1"], 8, "float") + &regs(&["r0", "r1"], 4, "general");
     let r = plan(&list, LE);

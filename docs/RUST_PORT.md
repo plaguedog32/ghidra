@@ -162,8 +162,8 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 764 default workspace tests and
-21 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
+The current analysis/ABI/datatype/SSA tree passes 792 default workspace tests and
+22 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
@@ -178,8 +178,9 @@ filter/qualifier/HFA evaluation are integrated as separate APIs, with
 independent review approval. Bitfield value reads and numeric formatting now
 have directed and independent-bigint evidence and cross-lab approval. The
 review's guard-specific test gap is fixed. Opt-in typed expression
-simplification/export has independent approval. New parallel-copy and phi
-lowering APIs have path-oracle evidence; their cross-lab review is pending.
+simplification/export has independent approval. Parallel-copy and phi
+lowering APIs have independent approval. Native general ABI join allocation
+has been reviewed, and its stack-rejection-order finding is fixed.
 Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
@@ -663,12 +664,50 @@ exact limits and 100,000-element cases. A committed raw-path reference compares
 29,716,765 observations on 12,010 lowerings. All 21 compiling mutations are
 caught. The combined tree passes 764 tests and 21 doctests on stable and Rust
 1.88, workspace Clippy/rustdoc with warnings denied and the Rust 1.88 release
-build. Cross-lab review remains pending for this stage.
+build. Independent cross-lab review approved `698383f147`, including 438,378
+schedules in three input orders and 120,000 lowerings with 51.2 million use
+comparisons. It found no correctness defects; its documentation wording nit
+is fixed. This evidence does not validate future downstream consumers.
 
 This is generic SSA lowering, with no location coalescing/interference pass or
 P-code/export/code-generation consumer yet. Abstract memory tokens are not
 concrete memory-copy operations. Complete signature allocation, structuring,
 type propagation and readable decompiled output remain required.
+
+### Native general ABI join allocation
+
+`AllocationState::assign_join` now implements the native `MultiSlotAssign`
+action over explicit raw size/alignment requests. It selects exact-class
+single-group exclusion tiles, follows start/alignment/backfill behavior,
+spills uncovered bytes when enabled, and returns most-significant-first pieces
+or a float-conversion recipe with provenance. Success commits resource state;
+NoFit and errors restore skipped tiles, cursors and occupied extents. Nested
+placement work and allocations have checked shared budgets.
+
+The source's non-advancing adjacency fit loop is preserved, so allocation can
+span consumed gaps. Defaults use the first list entry's byte order, with true
+reverse flags toggling it. Per-space endian/exact-alignment policy and explicit
+refusals for unsafe overlap, invalid geometry and unsupported nested joins
+remain visible. Native OTHER space's little endian is an exception to the
+ordinary translator-order rule; the inherited OTHER-to-default mapping is
+documented as a model policy.
+
+Review at `3cfb331be8` returned **Changes requested: one verified P2.** A
+consumed stack-group safeguard masked native minimum-size NoFit. The fix
+preserves minimum/capacity rejection with the native -1 cursor before applying
+that refusal. Regression tests cover signed remainder/alignment, partial-slot
+rounding, native-int overflow, both stack growth directions, complete rollback,
+later fallback, all lower work budgets and an absolute work pin. The reviewer's
+original failing probe now passes; ten additional compiling mutations are
+caught. No other blocking finding was reported. The builder's 41 mutations,
+6,000-layout/18,044-request oracle and five compiled real-profile probes remain
+separate evidence. The combined tree passes 792 tests and 22 doctests on both
+local toolchains, workspace Clippy and Rust 1.88 rustdoc with warnings denied.
+The Rust 1.88 release build and all five opt-in real-profile probes also pass.
+
+This action is not full calling-convention allocation. Native datatype-driven
+requests, rule dispatch, pointer conversion, hidden returns, shared stacks,
+dual-class/member joins, output recovery and SSA call effects remain required.
 
 ### Saved pause: expression inspection milestone
 

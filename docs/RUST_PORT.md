@@ -187,8 +187,9 @@ the native one-value fallback allocator (`48c91d72ac`) with no required
 changes. Its six additional probes include 4,466 arithmetic comparisons and
 65 multi-span budget/rollback cases. The compiler provenance review found
 one adapter integration gap: direct destinations were checked as storage
-extents. The address-only fix and its three regressions require a fresh
-re-check. Structuring and ELF RELR work remain separate open gates.
+extents. The address-only fix (`c5f880a4d4`) and its three regressions received
+independent re-check approval at `b794c84497`, with no required changes.
+Structuring and ELF RELR work remain separate open gates.
 
 The address-boundary correction passes 871 default workspace tests and 24
 doctests on stable and Rust 1.88, formatting and workspace all-target Clippy.

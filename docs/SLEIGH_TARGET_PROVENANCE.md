@@ -2,7 +2,7 @@
 
 This is a source-audited implementation contract for a confirmed compiler
 defect, not a claim of processor parity. Implementation evidence follows the
-contract below; independent review is still required.
+contract below; independent review and the adapter re-check are approved.
 
 ## Reproduction and loss
 
@@ -270,4 +270,12 @@ exported widths independent of wrapping. Cross-space execution/CFG refusal
 is unchanged. The combined tree passes 871 default tests and 24 doctests on
 stable and Rust 1.88, workspace Clippy, all 11 opt-in source probes on Rust
 1.88 release, and Java-free release report baselines. The adapter correction
-still needs a fresh independent re-check.
+received independent approval at `b794c84497`, with no required changes.
+The re-check reproduced the corrected code/auxiliary-space boundaries through
+CFG, SSA, storage binding and CLI execution, and confirmed computed/storage
+refusals and context behavior.
+
+One separate source-semantic follow-up remains: the re-check observed that a
+starred exported operand used as a value becomes a LOAD, where native SLEIGH
+can use a fixed varnode. Its introduction point was not established. This is
+not covered by the direct-target repair or a claim of complete export parity.

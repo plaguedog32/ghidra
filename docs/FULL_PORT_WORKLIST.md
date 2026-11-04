@@ -56,7 +56,10 @@ branches/calls through non-default-space sub-table exports. A repair is
 integrated locally at `da2b34ea83`, following the source-audited
 [compiler repair contract](SLEIGH_TARGET_PROVENANCE.md). It preserves
 owned/streamed targets, exported widths, address units, local labels and
-vendored compiler identity. It has not been independently reviewed or pushed.
+vendored compiler identity. Independent review approved the provenance and
+arithmetic, then an adapter address-boundary fix received re-check approval
+at `b794c84497`. Exported-operand value lowering and other handle forms still
+need follow-up; direct-target support does not establish all export semantics.
 The next control-flow structurer must follow the source-audited
 [execution and closure contract](CONTROL_FLOW_STRUCTURING.md). That contract is
 design groundwork; no structuring implementation or C emitter is claimed yet.

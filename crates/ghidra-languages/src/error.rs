@@ -87,7 +87,8 @@ pub enum DiagnosticKind {
     InvalidAttribute,
     /// Attribute not part of the upstream schema; ignored like Ghidra does.
     UnknownAttribute,
-    /// Element not part of the upstream schema; ignored like Ghidra does.
+    /// Element not expected at this position. As a warning Ghidra ignores it too; as an
+    /// error Ghidra rejects it (for example a nested element inside a leaf tag).
     UnknownElement,
     /// A schema form this crate reads but does not model (reported, not guessed).
     UnsupportedForm,

@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// Resource bounds for discovery and XML parsing.
+/// Resource bounds for discovery, XML parsing and compiler-spec reading.
+///
+/// Missing fields deserialize to their [`Default`] values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Limits {
     /// Largest XML file read, in bytes.
     pub max_file_bytes: u64,
@@ -34,6 +37,16 @@ pub struct Limits {
     pub max_ldefs_files: usize,
     /// Most language definitions accepted across the catalog.
     pub max_languages: usize,
+    /// Most diagnostics one `.cspec` may produce. One more stops the parse with
+    /// [`Error::Limit`]; a spec is never returned with diagnostics missing.
+    pub max_cspec_diagnostics: usize,
+    /// Most diagnostic bytes one `.cspec` may produce, counting each diagnostic's message
+    /// and path. Exceeding it stops the parse with [`Error::Limit`].
+    pub max_cspec_diagnostic_bytes: usize,
+    /// Most semantic work units one `.cspec` may use: one per element the compiler-spec
+    /// reader visits, one per `sizes` list item and one per pair of `<group>` entries
+    /// compared. Exceeding it stops the parse with [`Error::Limit`].
+    pub max_cspec_work: u64,
 }
 
 impl Default for Limits {
@@ -48,6 +61,9 @@ impl Default for Limits {
             max_walk_depth: 48,
             max_ldefs_files: 4096,
             max_languages: 20_000,
+            max_cspec_diagnostics: 10_000,
+            max_cspec_diagnostic_bytes: 2 * 1024 * 1024,
+            max_cspec_work: 16_000_000,
         }
     }
 }
@@ -454,8 +470,9 @@ pub(crate) fn decode_java_unsigned(text: &str) -> Option<u64> {
     text.parse::<u64>().ok()
 }
 
-/// Ghidra `SpecXmlUtils.decodeBoolean`: first character y/t/1 is true, n/f/0 is false.
-/// Returns `None` for anything else (Ghidra then defaults to false).
+/// Ghidra `SpecXmlUtils.decodeNullableBoolean`: first character y/t/1 is true, n/f/0 is
+/// false. Returns `None` for anything else; the caller applies Ghidra's fallback (false
+/// for `decodeBoolean(value)`, the given default for `decodeBoolean(value, default)`).
 pub(crate) fn decode_java_bool(text: &str) -> Option<bool> {
     match text.as_bytes().first() {
         Some(b'y' | b't' | b'1') => Some(true),

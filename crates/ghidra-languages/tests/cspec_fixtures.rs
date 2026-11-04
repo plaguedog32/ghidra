@@ -637,8 +637,8 @@ fn prototype_attributes() {
                constructor="true">
       <input pointermax="16" thisbeforeretpointer="yes" killedbycall="1"/>
       <output/>
-      <pcode inject="uponentry"><body>x = 1;</body></pcode>
       <pcode inject="uponreturn" dynamic="true"/>
+      <pcode inject="uponentry"><body>x = 1;</body></pcode>
       <sharestack first="input" align="8"/>
       <paramrange><range space="stack" first="0" last="15"/></paramrange>
     </prototype>
@@ -660,9 +660,16 @@ fn prototype_attributes() {
     assert_eq!(p.input.pointer_max, Some(16));
     assert!(p.input.this_before_return_pointer);
     assert!(p.input.killed_by_call);
+    // Ghidra names them `@@inject_uponreturn` then `@@inject_uponentry`; this is the only
+    // order of two payloads it accepts.
     assert_eq!(p.injections.len(), 2);
-    assert_eq!(p.injections[0].pcode.body.as_deref(), Some("x = 1;"));
-    assert_eq!(p.injections[1].pcode.dynamic, Some(true));
+    assert_eq!(
+        p.injections[0].point,
+        ghidra_languages::InjectionPoint::UponReturn
+    );
+    assert!(p.injections[0].pcode.is_dynamic());
+    assert_eq!(p.injections[0].pcode.effective_body(), None);
+    assert_eq!(p.injections[1].pcode.body.as_deref(), Some("x = 1;"));
     let share = p.share_stack.as_ref().unwrap();
     assert!(share.input_first);
     assert_eq!(share.align, Some(8));
@@ -787,7 +794,7 @@ fn spec_level_declarations() {
     <tracked_set space="ram"><set name="DF" val="0"/></tracked_set>
   </context_data>
   <callfixup name="probe"><target name="__probe"/><pcode paramshift="1"><input name="x" size="4"/><body>r0 = x;</body></pcode></callfixup>
-  <callotherfixup targetop="nop"><pcode><output name="y"/><body/></pcode></callotherfixup>"#,
+  <callotherfixup targetop="nop"><pcode dynamic="true"><output name="y"/><body/></pcode></callotherfixup>"#,
     ));
     assert_eq!(spec.property("a"), Some("2"));
     let sp = spec.stack_pointer.as_ref().unwrap();
@@ -815,7 +822,9 @@ fn spec_level_declarations() {
     assert_eq!(fixup.pcode.param_shift, Some(1));
     assert_eq!(fixup.pcode.inputs[0].size, Some(4));
     assert_eq!(spec.callother_fixups[0].pcode.outputs[0].size, None);
+    // A dynamic payload may have an empty body; the text is kept as written.
     assert_eq!(spec.callother_fixups[0].pcode.body.as_deref(), Some(""));
+    assert_eq!(spec.callother_fixups[0].pcode.effective_body(), None);
     // Positive growth: the default prototype's stack entry (maxsize 500, align 4) has
     // 500 % 4 == 0, so no error. Duplicate spacebase is the only error.
     assert_eq!(errors(&spec), [DiagnosticKind::DuplicateEntry]);

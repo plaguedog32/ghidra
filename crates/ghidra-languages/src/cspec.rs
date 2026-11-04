@@ -19,16 +19,28 @@
 //!   kept. Either way the enclosing prototype is marked [`ModelStatus::Incomplete`].
 //! - Recognised elements that are not turned into typed data are listed in
 //!   [`CompilerSpec::unmodeled`].
+//! - Warnings are for input Ghidra also ignores (unknown attributes, discarded elements,
+//!   values Ghidra silently defaults). They do not stop a spec from being fully modeled.
+//!   Input Ghidra rejects (for example an element nested inside a leaf tag such as
+//!   `<consume>`) is an error.
+//! - Reading is bounded. Besides the XML limits, [`Limits::max_cspec_work`],
+//!   [`Limits::max_cspec_diagnostics`] and [`Limits::max_cspec_diagnostic_bytes`] cap the
+//!   semantic work and the diagnostics one file may cause. When a budget runs out the
+//!   parse fails with [`Error::Limit`]; no partial spec is returned. Repeated names and
+//!   keys are found through sets, not by rescanning, and quoted spec text in diagnostics
+//!   is clipped.
 //!
 //! Ghidra checks that need the language and are therefore *not* made here: that named
 //! registers and address spaces exist, that a `<pentry>` maxsize fits its register, that
 //! offsets fit their space, that overlapping entries nest legally, that a join overlaps
 //! an earlier entry, and the `spacebase`/`stackpointer` register lookups.
 //!
-//! A successfully returned [`CompilerSpec`] means the file was parsed.
+//! A successfully returned [`CompilerSpec`] means the file was parsed within the limits.
 //! [`CompilerSpec::is_fully_modeled`] says whether every ABI declaration in it was captured
 //! without errors. Neither means the ABI can be executed.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -205,7 +217,8 @@ pub struct DataOrganization {
     pub float_size: Option<u32>,
     pub double_size: Option<u32>,
     pub long_double_size: Option<u32>,
-    /// `<size_alignment_map>` entries in document order (duplicates included).
+    /// `<size_alignment_map>` entries in document order (duplicates included). Ghidra
+    /// puts them into a map, so for a repeated size the last entry wins.
     pub size_alignment_map: Vec<SizeAlignment>,
     pub bitfield_packing: Option<BitfieldPacking>,
 }
@@ -231,8 +244,8 @@ pub struct ResolvedDataOrganization {
     pub float_size: u32,
     pub double_size: u32,
     pub long_double_size: u32,
-    /// Sorted by size. Ghidra seeds 1/2/4/8 → 1/2/4/8 and the spec's entries override
-    /// or extend that map (later duplicates win).
+    /// Sorted by size, one entry per size. Ghidra seeds 1/2/4/8 → 1/2/4/8 and the spec's
+    /// entries override or extend that map (later duplicates win).
     pub size_alignment_map: Vec<SizeAlignment>,
     pub use_ms_bitfield_convention: bool,
     pub bitfield_type_alignment_enabled: bool,
@@ -241,11 +254,15 @@ pub struct ResolvedDataOrganization {
 
 impl ResolvedDataOrganization {
     /// Alignment for a primitive of `size` bytes from the size map, if listed.
+    ///
+    /// Uses a binary search, relying on [`DataOrganization::resolve`]'s order (sorted by
+    /// size, one entry per size). For a hand-built map without that order the answer is
+    /// unspecified, but the call never panics.
     pub fn alignment_for_size(&self, size: u32) -> Option<u32> {
         self.size_alignment_map
-            .iter()
-            .find(|e| e.size == size)
-            .map(|e| e.alignment)
+            .binary_search_by_key(&size, |e| e.size)
+            .ok()
+            .map(|i| self.size_alignment_map[i].alignment)
     }
 }
 
@@ -253,21 +270,19 @@ impl DataOrganization {
     /// Apply Ghidra's defaults. `language_pointer_size` is the default address space's
     /// pointer size, which Ghidra uses when `<pointer_size>` is absent; it needs the
     /// language, so the caller supplies it.
+    ///
+    /// The size map is built like Ghidra's `TreeMap`: seeded with 1/2/4/8, then each
+    /// declared entry in document order, a later entry replacing an earlier one for the
+    /// same size. This is `O(n log n)` in the number of entries.
     pub fn resolve(&self, language_pointer_size: u32) -> ResolvedDataOrganization {
-        let mut map: Vec<SizeAlignment> = [1, 2, 4, 8]
-            .into_iter()
-            .map(|n| SizeAlignment {
-                size: n,
-                alignment: n,
-            })
-            .collect();
+        let mut map: BTreeMap<u32, u32> = [1, 2, 4, 8].into_iter().map(|n| (n, n)).collect();
         for entry in &self.size_alignment_map {
-            match map.iter_mut().find(|e| e.size == entry.size) {
-                Some(existing) => existing.alignment = entry.alignment,
-                None => map.push(*entry),
-            }
+            map.insert(entry.size, entry.alignment);
         }
-        map.sort_by_key(|e| e.size);
+        let map: Vec<SizeAlignment> = map
+            .into_iter()
+            .map(|(size, alignment)| SizeAlignment { size, alignment })
+            .collect();
         let bits = self.bitfield_packing.clone().unwrap_or_default();
         ResolvedDataOrganization {
             absolute_max_alignment: self.absolute_max_alignment.unwrap_or(0),
@@ -342,6 +357,11 @@ pub struct InjectParameter {
 
 /// A `<pcode>` payload. The body is SLEIGH-style p-code source; it is kept verbatim and
 /// not compiled here.
+///
+/// Ghidra (`InjectPayloadSleigh.restoreXml`) reads `<input>`/`<output>` parameters, then
+/// at most one `<body>`, which must be the last child. A payload that is not dynamic
+/// needs a body that is non-empty after trimming; otherwise Ghidra rejects the file and
+/// an error is reported here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PcodeSnippet {
     pub param_shift: Option<i32>,
@@ -349,9 +369,30 @@ pub struct PcodeSnippet {
     pub incidental_copy: Option<bool>,
     pub inputs: Vec<InjectParameter>,
     pub outputs: Vec<InjectParameter>,
-    /// `<body>` text exactly as written (CDATA unwrapped).
+    /// `<body>` text exactly as written (CDATA unwrapped, not trimmed).
     pub body: Option<String>,
     pub line: u32,
+}
+
+impl PcodeSnippet {
+    /// The source Ghidra would compile: the body trimmed like Java's `String.trim`
+    /// (characters up to U+0020), or `None` when absent or empty after trimming.
+    pub fn effective_body(&self) -> Option<&str> {
+        self.body
+            .as_deref()
+            .map(java_trim)
+            .filter(|b| !b.is_empty())
+    }
+
+    /// True when the payload is generated at analysis time (`dynamic="true"`).
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic == Some(true)
+    }
+}
+
+/// Java `String.trim`: strips characters at or below U+0020 from both ends.
+fn java_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c <= ' ')
 }
 
 /// `<callfixup name>`: replaces calls to the named targets with a p-code snippet.
@@ -437,8 +478,9 @@ pub struct ParamEntry {
     pub min_size: u32,
     pub max_size: u32,
     /// `align` as declared (or the legacy `size` attribute, which Ghidra reads as align).
+    /// With both, the later one in document order wins, as in `ParamEntry.restoreXml`.
     pub align: Option<u32>,
-    /// `storage` (or deprecated `metatype`); `general` when absent.
+    /// `storage` (or deprecated `metatype`, later one wins); `general` when absent.
     pub storage_class: StorageClass,
     pub extension: Extension,
     pub storage: Storage,
@@ -529,16 +571,29 @@ impl MetaType {
 }
 
 /// `<datatype>` filter as declared.
+///
+/// Size attributes follow `SizeRestrictedFilter.restoreAttributesXml`, which reads them in
+/// document order: `minsize`/`maxsize` after a non-empty `sizes` list, or `sizes` after a
+/// non-zero `minsize`/`maxsize`, is rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatatypeFilter {
     pub class: DatatypeClass,
+    /// `minsize`; `None` when absent or replaced by a `sizes` list.
     pub min_size: Option<u32>,
+    /// `maxsize`; `None` when absent or replaced by a `sizes` list. Ghidra treats a
+    /// missing or zero maximum as unbounded.
     pub max_size: Option<u32>,
-    /// `sizes="3,5,6,7"` in written order. Exclusive with min/max size.
+    /// `sizes="3,5,6,7"` in written order, duplicates kept (Ghidra uses them as a set).
+    /// Pieces are separated by one comma or a run of spaces and each must be a positive
+    /// decimal `int` (`SizeRestrictedFilter.initFromSizeList`). Empty when absent or when
+    /// the list has no pieces (for example `sizes=","`), which Ghidra treats as no size
+    /// restriction. When non-empty, `min_size` and `max_size` are `None`: Ghidra derives
+    /// both from the list.
     pub sizes: Vec<u32>,
-    /// Homogeneous aggregates only.
+    /// `maxprimitives`, homogeneous aggregates only (Ghidra ignores it elsewhere and keeps
+    /// its default for values `<= 0`).
     pub max_primitives: Option<u32>,
-    /// Arrays only.
+    /// `minelements`/`maxelements`, arrays only (Ghidra ignores them elsewhere).
     pub min_elements: Option<u32>,
     pub max_elements: Option<u32>,
 }
@@ -710,6 +765,11 @@ pub enum InjectionPoint {
 }
 
 /// A prototype-level `<pcode inject=..>`.
+///
+/// Ghidra registers each one as `<model>@@inject_uponentry` once an `uponentry` payload
+/// has been seen in the prototype, else `<model>@@inject_uponreturn`, and rejects a name
+/// registered twice. So a prototype may hold at most an `uponreturn` payload followed by
+/// an `uponentry` one; other combinations are reported as errors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrototypeInjection {
     pub point: InjectionPoint,
@@ -903,12 +963,15 @@ impl CompilerSpec {
         Self::from_path_with(path, &Limits::default())
     }
 
+    /// Read a `.cspec` file under `limits`: the XML limits, then the compiler-spec work
+    /// and diagnostic budgets. A budget that runs out is an [`Error::Limit`].
     pub fn from_path_with(path: &Path, limits: &Limits) -> Result<CompilerSpec, Error> {
         let doc = xml::parse_file(path, limits)?;
-        Self::from_element(&doc, Some(path))
+        Self::from_element(&doc, Some(path), limits)
     }
 
-    /// Parse spec text. `path` is only used for diagnostics.
+    /// Parse spec text under `limits` (see [`Self::from_path_with`]). `path` is only used
+    /// for diagnostics.
     pub fn parse_str(
         text: &str,
         path: Option<&Path>,
@@ -916,23 +979,25 @@ impl CompilerSpec {
     ) -> Result<CompilerSpec, Error> {
         let label = path.map(Path::to_path_buf).unwrap_or_default();
         let doc = xml::parse_text(text, &label, limits)?;
-        Self::from_element(&doc, path)
+        Self::from_element(&doc, path, limits)
     }
 
-    fn from_element(doc: &Element, path: Option<&Path>) -> Result<CompilerSpec, Error> {
+    fn from_element(
+        doc: &Element,
+        path: Option<&Path>,
+        limits: &Limits,
+    ) -> Result<CompilerSpec, Error> {
         if doc.name != "compiler_spec" {
             return Err(Error::Schema {
                 path: path.map(Path::to_path_buf).unwrap_or_default(),
                 line: doc.line,
-                message: format!("root element is <{}>, expected <compiler_spec>", doc.name),
+                message: format!(
+                    "root element is <{}>, expected <compiler_spec>",
+                    Q(&doc.name)
+                ),
             });
         }
-        let mut reader = Reader {
-            path: path.map(Path::to_path_buf),
-            diagnostics: Vec::new(),
-            errors: 0,
-            stack_growth: StackGrowth::Negative,
-        };
+        let mut reader = Reader::new(path, limits);
         let mut spec = CompilerSpec {
             path: path.map(Path::to_path_buf),
             properties: Vec::new(),
@@ -966,7 +1031,13 @@ impl CompilerSpec {
         // Ghidra makes the first plain <prototype> the default when no <default_proto>
         // has been seen yet.
         let mut fallback_default: Option<String> = None;
+        // BasicCompilerSpec's `seenThisCall`: set by <default_proto>, <prototype> and
+        // <modelalias> names, but not by a top-level <resolveprototype>.
+        let mut seen_thiscall = false;
         for child in &doc.children {
+            if !reader.step(1) {
+                break;
+            }
             match child.name.as_str() {
                 "properties" => reader.read_properties(child, &mut spec.properties),
                 "data_organization" => {
@@ -983,40 +1054,34 @@ impl CompilerSpec {
                 }
                 "callfixup" => {
                     if let Some(fixup) = reader.read_callfixup(child) {
-                        if spec.call_fixups.iter().any(|f| f.name == fixup.name) {
-                            reader.warn(
-                                DiagnosticKind::DuplicateEntry,
-                                child.line,
-                                format!("callfixup `{}` repeated", fixup.name),
+                        // PcodeInjectLibrary.registerInject: "CallFixup registered
+                        // multiple times".
+                        if reader.seen.call_fixups.insert(fixup.name.clone()) {
+                            spec.call_fixups.push(fixup);
+                        } else {
+                            let msg = format!(
+                                "callfixup `{}` repeated; Ghidra rejects a fixup registered twice. Keeping the first",
+                                Q(&fixup.name)
                             );
+                            reader.error(DiagnosticKind::DuplicateEntry, child.line, msg);
                         }
-                        spec.call_fixups.push(fixup);
                     }
                 }
                 "callotherfixup" => {
                     if let Some(fixup) = reader.read_callotherfixup(child) {
-                        if spec
-                            .callother_fixups
-                            .iter()
-                            .any(|f| f.target_op == fixup.target_op)
-                        {
-                            reader.warn(
-                                DiagnosticKind::DuplicateEntry,
-                                child.line,
-                                format!("callotherfixup `{}` repeated", fixup.target_op),
+                        // PcodeInjectLibrary.registerInject: "Duplicate <callotherfixup>".
+                        if reader.seen.callother_fixups.insert(fixup.target_op.clone()) {
+                            spec.callother_fixups.push(fixup);
+                        } else {
+                            let msg = format!(
+                                "callotherfixup `{}` repeated; Ghidra rejects a duplicate. Keeping the first",
+                                Q(&fixup.target_op)
                             );
+                            reader.error(DiagnosticKind::DuplicateEntry, child.line, msg);
                         }
-                        spec.callother_fixups.push(fixup);
                     }
                 }
-                "context_data" => {
-                    let data = pspec::read_context_data_element(child, path);
-                    for d in data.diagnostics {
-                        reader.push(d);
-                    }
-                    spec.context_sets.extend(data.context_sets);
-                    spec.tracked_sets.extend(data.tracked_sets);
-                }
+                "context_data" => reader.read_context_data(child, path, &mut spec),
                 "stackpointer" => {
                     if let Some(sp) = reader.read_stack_pointer(child) {
                         if let Some(old) = &spec.stack_pointer {
@@ -1025,7 +1090,8 @@ impl CompilerSpec {
                                 child.line,
                                 format!(
                                     "<stackpointer> repeated; `{}` replaces `{}`",
-                                    sp.register, old.register
+                                    Q(&sp.register),
+                                    Q(&old.register)
                                 ),
                             );
                         }
@@ -1035,14 +1101,14 @@ impl CompilerSpec {
                 }
                 "spacebase" => {
                     if let Some(sb) = reader.read_space_base(child) {
-                        if spec.space_bases.iter().any(|s| s.name == sb.name) {
+                        if reader.seen.space_bases.insert(sb.name.clone()) {
+                            spec.space_bases.push(sb);
+                        } else {
                             reader.error(
                                 DiagnosticKind::DuplicateEntry,
                                 child.line,
-                                format!("duplicate spacebase `{}`; ignored", sb.name),
+                                format!("duplicate spacebase `{}`; ignored", Q(&sb.name)),
                             );
-                        } else {
-                            spec.space_bases.push(sb);
                         }
                     }
                 }
@@ -1077,22 +1143,26 @@ impl CompilerSpec {
                         );
                         continue;
                     };
+                    if !reader.step(1) {
+                        break;
+                    }
                     let name = match proto.name.as_str() {
                         "prototype" => reader
                             .read_prototype(proto)
                             .and_then(|p| spec.add_prototype(&mut reader, p)),
                         "resolveprototype" => reader
-                            .read_merged(proto, &spec)
+                            .read_merged(proto)
                             .and_then(|m| spec.add_merged(&mut reader, m)),
                         other => {
                             reader.error(
                                 DiagnosticKind::UnknownElement,
                                 proto.line,
-                                format!("<{other}> in <default_proto>; expected <prototype>"),
+                                format!("<{}> in <default_proto>; expected <prototype>", Q(other)),
                             );
                             None
                         }
                     };
+                    seen_thiscall |= name.as_deref() == Some(THISCALL);
                     if seen_default {
                         reader.warn(
                             DiagnosticKind::DuplicateEntry,
@@ -1105,9 +1175,11 @@ impl CompilerSpec {
                     }
                 }
                 "prototype" => {
-                    if let Some(name) = reader
+                    let name = reader
                         .read_prototype(child)
-                        .and_then(|p| spec.add_prototype(&mut reader, p))
+                        .and_then(|p| spec.add_prototype(&mut reader, p));
+                    seen_thiscall |= name.as_deref() == Some(THISCALL);
+                    if let Some(name) = name
                         && fallback_default.is_none()
                         && !seen_default
                     {
@@ -1115,18 +1187,19 @@ impl CompilerSpec {
                     }
                 }
                 "modelalias" => {
-                    if let Some(alias) = reader.read_alias(child, &spec) {
+                    if let Some(alias) = reader.read_alias(child) {
+                        seen_thiscall |= alias.name == THISCALL;
                         spec.add_alias(&mut reader, alias);
                     }
                 }
                 "resolveprototype" => {
-                    if let Some(merged) = reader.read_merged(child, &spec) {
+                    if let Some(merged) = reader.read_merged(child) {
                         spec.add_merged(&mut reader, merged);
                     }
                 }
                 "eval_current_prototype" | "eval_called_prototype" => {
                     reader.unknown_attrs(child, &["name"]);
-                    reader.no_children(child);
+                    reader.leaf(child);
                     if let Some(name) = reader.require(child, "name") {
                         let slot = if child.name == "eval_current_prototype" {
                             &mut spec.eval_current_prototype
@@ -1171,7 +1244,7 @@ impl CompilerSpec {
                 }
                 "aggressivetrim" => {
                     reader.unknown_attrs(child, &["signext"]);
-                    reader.no_children(child);
+                    reader.leaf(child);
                     // decodeBoolean(null) is false in Ghidra.
                     spec.aggressive_trim =
                         Some(reader.bool_attr(child, "signext").unwrap_or(false));
@@ -1186,8 +1259,8 @@ impl CompilerSpec {
                             DiagnosticKind::InvalidAttribute,
                             child.line,
                             format!(
-                                "<prefersplit> style {:?} is not `inhalf` (the only strategy); ignored",
-                                other.unwrap_or("")
+                                "<prefersplit> style \"{}\" is not `inhalf` (the only strategy); ignored",
+                                Q(other.unwrap_or(""))
                             ),
                         ),
                     }
@@ -1209,7 +1282,7 @@ impl CompilerSpec {
                 }
                 "funcptr" => {
                     reader.unknown_attrs(child, &["align"]);
-                    reader.no_children(child);
+                    reader.leaf(child);
                     if reader.require(child, "align").is_some()
                         && let Ok(Some(align)) = reader.u32_attr(child, "align")
                     {
@@ -1218,7 +1291,7 @@ impl CompilerSpec {
                 }
                 "deadcodedelay" => {
                     reader.unknown_attrs(child, &["space", "delay"]);
-                    reader.no_children(child);
+                    reader.leaf(child);
                     if let (Some(space), Some(_)) = (
                         reader.require(child, "space"),
                         reader.require(child, "delay"),
@@ -1239,7 +1312,8 @@ impl CompilerSpec {
                                 DiagnosticKind::UnsupportedForm,
                                 child.line,
                                 format!(
-                                    "<register name=\"{name}\"> in <inferptrbounds> needs the language; ignored"
+                                    "<register name=\"{}\"> in <inferptrbounds> needs the language; ignored",
+                                    Q(&name)
                                 ),
                             ),
                         }
@@ -1248,7 +1322,10 @@ impl CompilerSpec {
                 other => reader.warn(
                     DiagnosticKind::UnknownElement,
                     child.line,
-                    format!("ignored element <{other}> in <compiler_spec> (Ghidra discards it)"),
+                    format!(
+                        "ignored element <{}> in <compiler_spec> (Ghidra discards it)",
+                        Q(other)
+                    ),
                 ),
             }
         }
@@ -1259,7 +1336,10 @@ impl CompilerSpec {
                     reader.warn(
                         DiagnosticKind::MissingElement,
                         doc.line,
-                        format!("no <default_proto>; Ghidra uses the first <prototype> `{name}`"),
+                        format!(
+                            "no <default_proto>; Ghidra uses the first <prototype> `{}`",
+                            Q(&name)
+                        ),
                     );
                     spec.default_model = Some(name);
                 }
@@ -1270,24 +1350,35 @@ impl CompilerSpec {
                 ),
             }
         }
-        if let Some(default) = spec.default_model.clone()
-            && spec.model(THISCALL).is_none()
-        {
-            if spec.prototype(&default).is_some() {
-                spec.aliases.push(ModelAlias {
-                    name: THISCALL.into(),
-                    parent: default,
-                    implicit: true,
-                    line: None,
-                });
-            } else {
-                reader.error(
+        if !seen_thiscall && let Some(default) = spec.default_model.clone() {
+            match (
+                reader.seen.models.get(THISCALL),
+                reader.seen.models.get(&default),
+            ) {
+                (Some(_), _) => reader.error(
+                    DiagnosticKind::DuplicateEntry,
+                    doc.line,
+                    format!(
+                        "a top-level <resolveprototype> named `{THISCALL}` does not count for Ghidra, which adds its implicit `{THISCALL}` alias too and rejects the duplicate name"
+                    ),
+                ),
+                (None, Some(ModelKind::Prototype)) => {
+                    reader.seen.models.insert(THISCALL.into(), ModelKind::Alias);
+                    spec.aliases.push(ModelAlias {
+                        name: THISCALL.into(),
+                        parent: default,
+                        implicit: true,
+                        line: None,
+                    });
+                }
+                (None, _) => reader.error(
                     DiagnosticKind::InconsistentSpec,
                     doc.line,
                     format!(
-                        "default model `{default}` is not a plain prototype, so Ghidra cannot alias `{THISCALL}` to it"
+                        "default model `{}` is not a plain prototype, so Ghidra cannot alias `{THISCALL}` to it",
+                        Q(&default)
                     ),
-                );
+                ),
             }
         }
         for (slot, label) in [
@@ -1295,33 +1386,46 @@ impl CompilerSpec {
             (&spec.eval_called_prototype, "eval_called_prototype"),
         ] {
             if let Some(name) = slot
-                && spec.model(name).is_none()
+                && !reader.seen.models.contains_key(name.as_str())
             {
                 reader.warn(
                     DiagnosticKind::UnresolvedReference,
                     doc.line,
-                    format!("<{label}> names unknown model `{name}`; Ghidra uses the default"),
+                    format!(
+                        "<{label}> names unknown model `{}`; Ghidra uses the default",
+                        Q(name)
+                    ),
                 );
             }
+        }
+        if let Some(message) = reader.exhausted.take() {
+            return Err(Error::Limit {
+                path: path.map(Path::to_path_buf).unwrap_or_default(),
+                message,
+            });
         }
         spec.diagnostics = reader.diagnostics;
         Ok(spec)
     }
 
-    fn name_taken(&self, name: &str) -> bool {
-        self.model(name).is_some()
+    /// Record `name` for `kind`; false (with an error) when a model already has it.
+    fn claim_name(reader: &mut Reader, name: &str, kind: ModelKind, line: u32) -> bool {
+        if reader.seen.models.contains_key(name) {
+            let what = match kind {
+                ModelKind::Prototype => "keeping the first",
+                ModelKind::Alias => "alias ignored",
+                ModelKind::Merged => "ignored",
+            };
+            let msg = format!("multiple prototype models named `{}`; {what}", Q(name));
+            reader.error(DiagnosticKind::DuplicateEntry, line, msg);
+            return false;
+        }
+        reader.seen.models.insert(name.to_owned(), kind);
+        true
     }
 
     fn add_prototype(&mut self, reader: &mut Reader, proto: PrototypeModel) -> Option<String> {
-        if self.name_taken(&proto.name) {
-            reader.error(
-                DiagnosticKind::DuplicateEntry,
-                proto.line,
-                format!(
-                    "multiple prototype models named `{}`; keeping the first",
-                    proto.name
-                ),
-            );
+        if !Self::claim_name(reader, &proto.name, ModelKind::Prototype, proto.line) {
             return None;
         }
         let name = proto.name.clone();
@@ -1330,27 +1434,14 @@ impl CompilerSpec {
     }
 
     fn add_alias(&mut self, reader: &mut Reader, alias: ModelAlias) {
-        if self.name_taken(&alias.name) {
-            reader.error(
-                DiagnosticKind::DuplicateEntry,
-                alias.line.unwrap_or(0),
-                format!(
-                    "multiple prototype models named `{}`; alias ignored",
-                    alias.name
-                ),
-            );
-            return;
+        let line = alias.line.unwrap_or(0);
+        if Self::claim_name(reader, &alias.name, ModelKind::Alias, line) {
+            self.aliases.push(alias);
         }
-        self.aliases.push(alias);
     }
 
     fn add_merged(&mut self, reader: &mut Reader, merged: MergedModel) -> Option<String> {
-        if self.name_taken(&merged.name) {
-            reader.error(
-                DiagnosticKind::DuplicateEntry,
-                merged.line,
-                format!("multiple prototype models named `{}`; ignored", merged.name),
-            );
+        if !Self::claim_name(reader, &merged.name, ModelKind::Merged, merged.line) {
             return None;
         }
         let name = merged.name.clone();
@@ -1418,10 +1509,10 @@ impl CompilerSpec {
         &self,
         language_pointer_size: u32,
     ) -> ResolvedDataOrganization {
-        self.data_organization
-            .clone()
-            .unwrap_or_default()
-            .resolve(language_pointer_size)
+        match &self.data_organization {
+            Some(org) => org.resolve(language_pointer_size),
+            None => DataOrganization::default().resolve(language_pointer_size),
+        }
     }
 
     pub fn coverage(&self) -> SpecCoverage {
@@ -1445,9 +1536,23 @@ impl CompilerSpec {
         }
     }
 
-    /// True when a default model exists, every prototype is [`ModelStatus::Complete`],
-    /// nothing Ghidra uses was left unmodeled and no error was reported. This is a data
-    /// capture statement: registers are still unresolved and no allocation is performed.
+    /// Whether every ABI declaration in the file was captured as typed data that Ghidra's
+    /// loader would also accept, as far as this can be checked without the language.
+    ///
+    /// True exactly when all of these hold:
+    /// - a default model exists;
+    /// - no [`Severity::Error`] diagnostic was recorded, so nothing Ghidra rejects was
+    ///   seen (bad numbers, nested elements in leaf tags, static p-code without a body,
+    ///   duplicate names, ...);
+    /// - every prototype is [`ModelStatus::Complete`];
+    /// - no element Ghidra uses is listed as [`UnmodeledReason::NotModeled`].
+    ///
+    /// Warnings do not count against it: they describe input Ghidra ignores or defaults
+    /// in the same way (unknown attributes, discarded elements, unrecognised booleans).
+    ///
+    /// This is a data-capture statement only. Register names, address spaces and sizes
+    /// are unresolved, p-code bodies are not compiled, and no parameter allocation is
+    /// performed.
     pub fn is_fully_modeled(&self) -> bool {
         let c = self.coverage();
         self.default_model().is_some()
@@ -1461,25 +1566,83 @@ impl CompilerSpec {
 // Reader
 // ---------------------------------------------------------------------------------------
 
+/// Longest piece of spec text (a name or attribute value) quoted in a diagnostic, in bytes.
+const QUOTE_BYTES: usize = 64;
+
+/// Longest diagnostic message kept, in bytes. Quoting is already clipped, so this only
+/// guards messages that quote several pieces.
+const MAX_MESSAGE_BYTES: usize = 1024;
+
+/// Spec text quoted in a diagnostic, clipped to [`QUOTE_BYTES`] without copying the rest.
+struct Q<'a>(&'a str);
+
+impl fmt::Display for Q<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.len() <= QUOTE_BYTES {
+            return f.write_str(self.0);
+        }
+        let cut = floor_char_boundary(self.0, QUOTE_BYTES);
+        write!(f, "{}… ({} bytes)", &self.0[..cut], self.0.len())
+    }
+}
+
+/// Largest index `<= max` that is a char boundary of `text`.
+fn floor_char_boundary(text: &str, max: usize) -> usize {
+    let mut i = max.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// What a model name belongs to, for duplicate and reference checks while reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelKind {
+    Prototype,
+    Alias,
+    Merged,
+}
+
+/// Names and keys already read, so repeats are found in constant time instead of by
+/// rescanning the growing lists.
+#[derive(Default)]
+struct Seen {
+    /// Every model name (prototype, alias, merged) in Ghidra's single name space.
+    models: HashMap<String, ModelKind>,
+    properties: HashSet<String>,
+    call_fixups: HashSet<String>,
+    callother_fixups: HashSet<String>,
+    space_bases: HashSet<String>,
+    /// Sizes already in `<size_alignment_map>`, across repeated `<data_organization>`s.
+    size_alignments: HashSet<u32>,
+}
+
+/// Reads one `<compiler_spec>` tree under the compiler-spec budgets.
+///
+/// Work accounting: [`Reader::step`] charges one unit for each element a reading loop
+/// visits, one for each `sizes` list item and one for each pair of `<group>` entries
+/// compared. Every loop over elements, list items or pairs checks the result and stops
+/// once any budget is exhausted, so no semantic work continues past the budget. Each
+/// diagnostic charges one against the count budget and its message plus path bytes
+/// against the byte budget. The first exhausted budget is kept in `exhausted`, and the
+/// parse then returns [`Error::Limit`] instead of a spec.
 struct Reader {
     path: Option<PathBuf>,
     diagnostics: Vec<Diagnostic>,
+    diagnostic_bytes: usize,
     /// Error diagnostics so far; prototypes compare before/after.
     errors: usize,
+    work: u64,
+    max_work: u64,
+    max_diagnostics: usize,
+    max_diagnostic_bytes: usize,
+    /// Why reading stopped early, once a budget is exhausted.
+    exhausted: Option<String>,
+    seen: Seen,
     /// Growth from the last `<stackpointer>` seen. Ghidra reads sequentially, so entries
     /// before the stack pointer use the default (negative).
     stack_growth: StackGrowth,
 }
-
-const PENTRY_ATTRS: &[&str] = &[
-    "minsize",
-    "maxsize",
-    "align",
-    "size",
-    "storage",
-    "metatype",
-    "extension",
-];
 
 const DATA_ORG_VALUES: &[&str] = &[
     "absolute_max_alignment",
@@ -1507,8 +1670,108 @@ fn is_valid_formal_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '/'))
 }
 
+/// `ParamEntry.orderWithinGroup(first, second)` with `first` declared earlier: the message
+/// Ghidra throws, or `None` when the two entries can be told apart.
+fn order_within_group(first: &ParamEntry, second: &ParamEntry) -> Option<&'static str> {
+    if second.min_size > first.max_size || first.min_size > second.max_size {
+        return None;
+    }
+    if first.storage_class != second.storage_class {
+        return (first.storage_class == StorageClass::General)
+            .then_some("<pentry> tags with a specific type must come before the general type");
+    }
+    Some("<pentry> tags within a group must be distinguished by size or type")
+}
+
+/// Java `SpecXmlUtils.decodeInt` for a field that must not be negative: `0..=i32::MAX`.
+/// Larger values would wrap negative in Java's `BigInteger.intValue`, so they are
+/// rejected rather than reinterpreted.
+fn java_nonneg_int(text: &str) -> Option<u32> {
+    xml::decode_java_int(text)
+        .filter(|v| (0..=i64::from(i32::MAX)).contains(v))
+        .and_then(|v| u32::try_from(v).ok())
+}
+
+/// Why a `sizes` list is rejected.
+#[derive(Debug, PartialEq, Eq)]
+enum SizeListError {
+    /// A piece (1-based index) that `Integer.parseInt` rejects or that is `<= 0`.
+    Piece(usize),
+    /// A piece with non-ASCII characters. Java also accepts other Unicode decimal digits;
+    /// those are not decoded here.
+    NonAscii(usize),
+    /// The work budget ran out.
+    Budget,
+}
+
 impl Reader {
-    fn push(&mut self, d: Diagnostic) {
+    fn new(path: Option<&Path>, limits: &Limits) -> Reader {
+        Reader {
+            path: path.map(Path::to_path_buf),
+            diagnostics: Vec::new(),
+            diagnostic_bytes: 0,
+            errors: 0,
+            work: 0,
+            max_work: limits.max_cspec_work,
+            max_diagnostics: limits.max_cspec_diagnostics,
+            max_diagnostic_bytes: limits.max_cspec_diagnostic_bytes,
+            exhausted: None,
+            seen: Seen::default(),
+            stack_growth: StackGrowth::Negative,
+        }
+    }
+
+    fn exhaust(&mut self, message: String) {
+        if self.exhausted.is_none() {
+            self.exhausted = Some(message);
+        }
+    }
+
+    /// Charge `units` of semantic work. Returns false once any budget is exhausted;
+    /// callers stop their loop.
+    fn step(&mut self, units: u64) -> bool {
+        if self.exhausted.is_some() {
+            return false;
+        }
+        self.work = self.work.saturating_add(units);
+        if self.work > self.max_work {
+            let msg = format!(
+                "compiler spec needs more than {} units of semantic work (Limits::max_cspec_work)",
+                self.max_work
+            );
+            self.exhaust(msg);
+            return false;
+        }
+        true
+    }
+
+    fn push(&mut self, mut d: Diagnostic) {
+        if self.exhausted.is_some() {
+            return;
+        }
+        if d.message.len() > MAX_MESSAGE_BYTES {
+            let cut = floor_char_boundary(&d.message, MAX_MESSAGE_BYTES);
+            d.message.truncate(cut);
+            d.message.push('…');
+        }
+        if self.diagnostics.len() >= self.max_diagnostics {
+            let msg = format!(
+                "compiler spec produces more than {} diagnostics (Limits::max_cspec_diagnostics)",
+                self.max_diagnostics
+            );
+            self.exhaust(msg);
+            return;
+        }
+        let bytes = d.message.len() + d.path.as_ref().map_or(0, |p| p.as_os_str().len());
+        if self.diagnostic_bytes.saturating_add(bytes) > self.max_diagnostic_bytes {
+            let msg = format!(
+                "compiler spec diagnostics exceed {} bytes (Limits::max_cspec_diagnostic_bytes)",
+                self.max_diagnostic_bytes
+            );
+            self.exhaust(msg);
+            return;
+        }
+        self.diagnostic_bytes += bytes;
         if d.severity == Severity::Error {
             self.errors += 1;
         }
@@ -1534,50 +1797,83 @@ impl Reader {
         self.diag(Severity::Warning, kind, line, message);
     }
 
+    /// Unknown attributes, which Ghidra ignores: one warning each (at most
+    /// `Limits::max_attributes` per element).
     fn unknown_attrs(&mut self, el: &Element, known: &[&str]) {
         for (key, _) in &el.attrs {
             if !known.contains(&key.as_str()) {
-                let msg = format!("ignored attribute `{key}` on <{}>", el.name);
+                let msg = format!("ignored attribute `{}` on <{}>", Q(key), Q(&el.name));
                 self.warn(DiagnosticKind::UnknownAttribute, el.line, msg);
             }
         }
     }
 
-    fn no_children(&mut self, el: &Element) {
-        for child in &el.children {
-            let msg = format!("ignored element <{}> in <{}>", child.name, el.name);
-            self.warn(DiagnosticKind::UnknownElement, child.line, msg);
-        }
+    /// `el` is read by Ghidra with `parser.start()` then `parser.end(el)`, so a nested
+    /// element makes it reject the file. One error names the first nested element.
+    fn leaf(&mut self, el: &Element) {
+        let Some(first) = el.children.first() else {
+            return;
+        };
+        let more = match el.children.len() - 1 {
+            0 => String::new(),
+            n => format!(" (and {n} more)"),
+        };
+        let msg = format!(
+            "<{}> must not contain elements but holds <{}>{more}; Ghidra rejects nested elements here",
+            Q(&el.name),
+            Q(&first.name)
+        );
+        self.error(DiagnosticKind::UnknownElement, first.line, msg);
+    }
+
+    /// An element Ghidra reads as a leaf but otherwise ignores (unknown children of
+    /// `<data_organization>` and `<bitfield_packing>`): a warning, plus an error if it
+    /// holds nested elements.
+    fn ignored_leaf(&mut self, el: &Element, parent: &str) {
+        let msg = format!(
+            "ignored element <{}> in <{parent}> (Ghidra ignores it too)",
+            Q(&el.name)
+        );
+        self.warn(DiagnosticKind::UnknownElement, el.line, msg);
+        self.leaf(el);
     }
 
     fn require<'e>(&mut self, el: &'e Element, attr: &str) -> Option<&'e str> {
         let value = el.attr(attr);
         if value.is_none() {
-            let msg = format!("<{}> is missing required attribute `{attr}`", el.name);
+            let msg = format!("<{}> is missing required attribute `{attr}`", Q(&el.name));
             self.error(DiagnosticKind::MissingAttribute, el.line, msg);
         }
         value
     }
 
     fn invalid(&mut self, el: &Element, attr: &str, text: &str, what: &str) {
-        let msg = format!("<{}> `{attr}=\"{text}\"` is not {what}", el.name);
+        let msg = format!(
+            "<{}> `{}=\"{}\"` is not {what}",
+            Q(&el.name),
+            Q(attr),
+            Q(text)
+        );
         self.error(DiagnosticKind::InvalidAttribute, el.line, msg);
     }
 
-    /// `Ok(None)` when absent; `Err` (already reported) when malformed or out of range.
+    /// A Java `int` field that must not be negative (sizes, alignments, counts).
+    /// `Ok(None)` when absent; `Err` (already reported) when malformed, negative or above
+    /// `i32::MAX`, where Java's `decodeInt` would wrap to a negative value.
     fn u32_attr(&mut self, el: &Element, attr: &str) -> Result<Option<u32>, ()> {
         let Some(text) = el.attr(attr) else {
             return Ok(None);
         };
-        match xml::decode_java_int(text).and_then(|v| u32::try_from(v).ok()) {
+        match java_nonneg_int(text) {
             Some(v) => Ok(Some(v)),
             None => {
-                self.invalid(el, attr, text, "a non-negative 32-bit integer");
+                self.invalid(el, attr, text, "a non-negative Java int (0..=2147483647)");
                 Err(())
             }
         }
     }
 
+    /// A signed Java `int` field. Values outside `i32` are rejected, not wrapped.
     fn i32_attr(&mut self, el: &Element, attr: &str) -> Result<Option<i32>, ()> {
         let Some(text) = el.attr(attr) else {
             return Ok(None);
@@ -1585,7 +1881,7 @@ impl Reader {
         match xml::decode_java_int(text).and_then(|v| i32::try_from(v).ok()) {
             Some(v) => Ok(Some(v)),
             None => {
-                self.invalid(el, attr, text, "a 32-bit integer");
+                self.invalid(el, attr, text, "a 32-bit Java int");
                 Err(())
             }
         }
@@ -1614,13 +1910,16 @@ impl Reader {
         }
     }
 
-    /// `SpecXmlUtils.decodeBoolean`; an unrecognised value warns and reads as false.
+    /// `SpecXmlUtils.decodeBoolean(value)` (one-argument form): an unrecognised value
+    /// warns and reads as false. `<char_type signed>` uses the two-argument form and is
+    /// read separately.
     fn bool_attr(&mut self, el: &Element, attr: &str) -> Option<bool> {
         let text = el.attr(attr)?;
         Some(xml::decode_java_bool(text).unwrap_or_else(|| {
             let msg = format!(
-                "<{}> `{attr}=\"{text}\"` is not a boolean; Ghidra reads it as false",
-                el.name
+                "<{}> `{attr}=\"{}\"` is not a boolean; Ghidra reads it as false",
+                Q(&el.name),
+                Q(text)
             );
             self.warn(DiagnosticKind::InvalidAttribute, el.line, msg);
             false
@@ -1643,19 +1942,24 @@ impl Reader {
     fn read_properties(&mut self, el: &Element, out: &mut Vec<Property>) {
         self.unknown_attrs(el, &[]);
         for prop in &el.children {
+            if !self.step(1) {
+                return;
+            }
             if prop.name != "property" {
-                let msg = format!("ignored element <{}> in <properties>", prop.name);
+                // BasicCompilerSpec.restoreProperties discards other subtrees.
+                let msg = format!("ignored element <{}> in <properties>", Q(&prop.name));
                 self.warn(DiagnosticKind::UnknownElement, prop.line, msg);
                 continue;
             }
             self.unknown_attrs(prop, &["key", "value"]);
+            self.leaf(prop);
             let (Some(key), Some(value)) = (prop.attr("key"), prop.attr("value")) else {
                 let msg = "<property> needs `key` and `value`; ignored".into();
                 self.error(DiagnosticKind::MissingAttribute, prop.line, msg);
                 continue;
             };
-            if out.iter().any(|p| p.key == key) {
-                let msg = format!("property `{key}` repeated; the last value wins");
+            if !self.seen.properties.insert(key.to_owned()) {
+                let msg = format!("property `{}` repeated; the last value wins", Q(key));
                 self.warn(DiagnosticKind::DuplicateEntry, prop.line, msg);
             }
             out.push(Property {
@@ -1665,37 +1969,87 @@ impl Reader {
         }
     }
 
+    /// `<context_data>`, read with the `.pspec` rules (the schema is shared). Ghidra's
+    /// `ContextSetting.parseContextSet` reads every child of a `<context_set>` or
+    /// `<tracked_set>` as a leaf, so elements nested there are errors.
+    fn read_context_data(&mut self, el: &Element, path: Option<&Path>, spec: &mut CompilerSpec) {
+        for block in &el.children {
+            if !self.step(1) {
+                return;
+            }
+            for set in &block.children {
+                if !self.step(1) {
+                    return;
+                }
+                self.leaf(set);
+            }
+        }
+        let data = pspec::read_context_data_element(el, path);
+        for d in data.diagnostics {
+            self.push(d);
+        }
+        spec.context_sets.extend(data.context_sets);
+        spec.tracked_sets.extend(data.tracked_sets);
+    }
+
+    /// `<char_type signed>`. Ghidra uses `decodeBoolean(value, isSignedChar)`, so an
+    /// unrecognised value keeps the current setting: the previous `<char_type>` or the
+    /// default (signed).
+    fn read_char_type(&mut self, el: &Element, org: &mut DataOrganization) {
+        self.unknown_attrs(el, &["signed"]);
+        self.leaf(el);
+        let Some(text) = self.require(el, "signed") else {
+            return;
+        };
+        match xml::decode_java_bool(text) {
+            Some(value) => org.char_signed = Some(value),
+            None => {
+                let kept = match org.char_signed {
+                    Some(value) => format!("{value} from the previous <char_type>"),
+                    None => "the default, true".into(),
+                };
+                let msg = format!(
+                    "<char_type> `signed=\"{}\"` is not a boolean; Ghidra keeps the current value ({kept})",
+                    Q(text)
+                );
+                self.warn(DiagnosticKind::InvalidAttribute, el.line, msg);
+            }
+        }
+    }
+
     fn read_data_organization(&mut self, el: &Element, org: &mut DataOrganization) {
         self.unknown_attrs(el, &[]);
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for child in &el.children {
+            if !self.step(1) {
+                return;
+            }
             let name = child.name.as_str();
-            if seen.contains(&name) {
-                let msg = format!("<{name}> repeated in <data_organization>; the last wins");
+            if !seen.insert(name) {
+                let msg = format!(
+                    "<{}> repeated in <data_organization>; the last wins",
+                    Q(name)
+                );
                 self.warn(DiagnosticKind::DuplicateEntry, child.line, msg);
             }
-            seen.push(name);
             match name {
-                "char_type" => {
-                    self.unknown_attrs(child, &["signed"]);
-                    self.no_children(child);
-                    if self.require(child, "signed").is_some() {
-                        org.char_signed = self.bool_attr(child, "signed");
-                    }
-                }
+                "char_type" => self.read_char_type(child, org),
                 "size_alignment_map" => {
                     self.unknown_attrs(child, &[]);
                     for entry in &child.children {
+                        if !self.step(1) {
+                            return;
+                        }
                         if entry.name != "entry" {
                             let msg = format!(
                                 "unsupported <{}> in <size_alignment_map>; ignored",
-                                entry.name
+                                Q(&entry.name)
                             );
                             self.error(DiagnosticKind::UnknownElement, entry.line, msg);
                             continue;
                         }
                         self.unknown_attrs(entry, &["size", "alignment"]);
-                        self.no_children(entry);
+                        self.leaf(entry);
                         let (Some(_), Some(_)) = (
                             self.require(entry, "size"),
                             self.require(entry, "alignment"),
@@ -1708,7 +2062,7 @@ impl Reader {
                         ) else {
                             continue;
                         };
-                        if org.size_alignment_map.iter().any(|e| e.size == size) {
+                        if !self.seen.size_alignments.insert(size) {
                             let msg =
                                 format!("size {size} mapped more than once; the last mapping wins");
                             self.warn(DiagnosticKind::DuplicateEntry, entry.line, msg);
@@ -1721,10 +2075,14 @@ impl Reader {
                     self.unknown_attrs(child, &[]);
                     let packing = org.bitfield_packing.get_or_insert_with(Default::default);
                     for item in &child.children {
+                        if !self.step(1) {
+                            return;
+                        }
+                        // BitFieldPackingImpl.restoreXml reads every child as a leaf.
                         self.unknown_attrs(item, &["value"]);
-                        self.no_children(item);
                         match item.name.as_str() {
                             "use_MS_convention" | "type_alignment_enabled" => {
+                                self.leaf(item);
                                 if self.require(item, "value").is_none() {
                                     continue;
                                 }
@@ -1736,24 +2094,20 @@ impl Reader {
                                 }
                             }
                             "zero_length_boundary" => {
+                                self.leaf(item);
                                 if self.require(item, "value").is_some()
                                     && let Ok(v) = self.u32_attr(item, "value")
                                 {
                                     packing.zero_length_boundary = v;
                                 }
                             }
-                            other => {
-                                let msg = format!(
-                                    "ignored element <{other}> in <bitfield_packing> (Ghidra ignores it too)"
-                                );
-                                self.warn(DiagnosticKind::UnknownElement, item.line, msg);
-                            }
+                            _ => self.ignored_leaf(item, "bitfield_packing"),
                         }
                     }
                 }
                 value_name if DATA_ORG_VALUES.contains(&value_name) => {
                     self.unknown_attrs(child, &["value"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     if self.require(child, "value").is_none() {
                         continue;
                     }
@@ -1779,19 +2133,15 @@ impl Reader {
                     };
                     *slot = Some(v);
                 }
-                other => {
-                    let msg = format!(
-                        "ignored element <{other}> in <data_organization> (Ghidra ignores it too)"
-                    );
-                    self.warn(DiagnosticKind::UnknownElement, child.line, msg);
-                }
+                // DataOrganizationImpl.restoreXml reads any other child as a leaf.
+                _ => self.ignored_leaf(child, "data_organization"),
             }
         }
     }
 
     fn read_stack_pointer(&mut self, el: &Element) -> Option<StackPointer> {
         self.unknown_attrs(el, &["register", "space", "growth", "reversejustify"]);
-        self.no_children(el);
+        self.leaf(el);
         let (Some(register), Some(space)) =
             (self.require(el, "register"), self.require(el, "space"))
         else {
@@ -1817,7 +2167,8 @@ impl Reader {
                 let value = text == "1" || text.eq_ignore_ascii_case("true");
                 if xml::decode_java_bool(text) != Some(value) {
                     let msg = format!(
-                        "<stackpointer> `reversejustify=\"{text}\"` reads as {value}: Ghidra's stack pointer reader accepts only `1` or `true`"
+                        "<stackpointer> `reversejustify=\"{}\"` reads as {value}: Ghidra's stack pointer reader accepts only `1` or `true`",
+                        Q(text)
                     );
                     self.warn(DiagnosticKind::InvalidAttribute, el.line, msg);
                 }
@@ -1835,7 +2186,7 @@ impl Reader {
 
     fn read_space_base(&mut self, el: &Element) -> Option<SpaceBase> {
         self.unknown_attrs(el, &["name", "register", "space"]);
-        self.no_children(el);
+        self.leaf(el);
         let (Some(name), Some(register), Some(space)) = (
             self.require(el, "name"),
             self.require(el, "register"),
@@ -1855,10 +2206,13 @@ impl Reader {
         self.unknown_attrs(el, &[]);
         let mut out = Vec::new();
         for child in &el.children {
+            if !self.step(1) {
+                break;
+            }
             match child.name.as_str() {
                 "register" => {
                     self.unknown_attrs(child, &["name"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     if let Some(name) = self.require(child, "name") {
                         out.push(MemoryTag::Register {
                             name: name.to_owned(),
@@ -1871,7 +2225,7 @@ impl Reader {
                     }
                 }
                 other => {
-                    let msg = format!("unexpected <{other}> in <{}>; ignored", el.name);
+                    let msg = format!("unexpected <{}> in <{}>; ignored", Q(other), el.name);
                     self.error(DiagnosticKind::UnknownElement, child.line, msg);
                 }
             }
@@ -1881,7 +2235,7 @@ impl Reader {
 
     fn read_range(&mut self, el: &Element) -> Option<AddressRange> {
         self.unknown_attrs(el, &["space", "first", "last"]);
-        self.no_children(el);
+        self.leaf(el);
         let space = self.require(el, "space")?;
         let first = self.offset_attr(el, "first").ok()?;
         let last = self.offset_attr(el, "last").ok()?;
@@ -1896,9 +2250,10 @@ impl Reader {
         })
     }
 
-    /// One `<register>`, `<varnode>` or `<addr>` element.
+    /// One `<register>`, `<varnode>` or `<addr>` element. Ghidra reads each with
+    /// `AddressXML.restoreXml` followed by `parser.end`, so it is a leaf everywhere.
     fn read_storage(&mut self, el: &Element) -> Option<Storage> {
-        self.no_children(el);
+        self.leaf(el);
         match el.name.as_str() {
             "register" => {
                 self.unknown_attrs(el, &["name"]);
@@ -1943,7 +2298,10 @@ impl Reader {
                 }
             }
             other => {
-                let msg = format!("<{other}> is not a storage element (register, varnode, addr)");
+                let msg = format!(
+                    "<{}> is not a storage element (register, varnode, addr)",
+                    Q(other)
+                );
                 self.error(DiagnosticKind::UnsupportedForm, el.line, msg);
                 None
             }
@@ -1964,7 +2322,7 @@ impl Reader {
             match index {
                 Some(n) => numbered.push((n, value)),
                 None => {
-                    let msg = format!("ignored attribute `{key}` on join <{}>", el.name);
+                    let msg = format!("ignored attribute `{}` on join <{}>", Q(key), el.name);
                     self.warn(DiagnosticKind::UnknownAttribute, el.line, msg);
                 }
             }
@@ -2000,10 +2358,11 @@ impl Reader {
                     return None;
                 }
                 Some((space, rest)) => {
+                    // AddressXML.readJoinXML casts the decoded size to an int; sizes
+                    // that would wrap are rejected here.
                     let parsed = rest.split_once(':').and_then(|(off, size)| {
                         let offset = Self::offset_value(off)?;
-                        let size =
-                            xml::decode_java_int(size).and_then(|v| u32::try_from(v).ok())?;
+                        let size = java_nonneg_int(size)?;
                         Some((offset, size))
                     });
                     match parsed {
@@ -2036,6 +2395,9 @@ impl Reader {
         }
         let mut out = Vec::new();
         for child in &el.children {
+            if !self.step(1) {
+                break;
+            }
             if child.name == "addr" {
                 let msg = format!(
                     "<addr> in <{}>; the schema expects <register> or <varnode> (read like Ghidra)",
@@ -2056,10 +2418,18 @@ impl Reader {
         out
     }
 
-    fn read_pcode(&mut self, el: &Element, extra_attrs: &[&str]) -> Option<PcodeSnippet> {
-        let mut known = vec!["paramshift", "dynamic", "incidentalcopy"];
-        known.extend_from_slice(extra_attrs);
-        self.unknown_attrs(el, &known);
+    /// `InjectPayloadSleigh.restoreXml`: parameters, then at most one `<body>` that must be
+    /// the last child, and a non-empty body unless the payload is dynamic. Problems are
+    /// errors (Ghidra rejects them); the snippet is still returned with what was read.
+    fn read_pcode(&mut self, el: &Element) -> Option<PcodeSnippet> {
+        self.unknown_attrs(el, &["inject", "paramshift", "dynamic", "incidentalcopy"]);
+        // Prototype payloads check `inject` before calling this; on fixups Ghidra still
+        // rejects an unknown value.
+        if let Some(inject) = el.attr("inject")
+            && !matches!(inject, "uponentry" | "uponreturn")
+        {
+            self.invalid(el, "inject", inject, "`uponentry` or `uponreturn`");
+        }
         let param_shift = self.i32_attr(el, "paramshift").ok()?;
         let dynamic = self.bool_attr(el, "dynamic");
         let incidental_copy = self.bool_attr(el, "incidentalcopy");
@@ -2067,10 +2437,27 @@ impl Reader {
         let mut outputs = Vec::new();
         let mut body: Option<String> = None;
         for child in &el.children {
+            if !self.step(1) {
+                return None;
+            }
+            if body.is_some() {
+                // Ghidra stops at the first <body> and then expects </pcode>.
+                let msg = if child.name == "body" {
+                    "<pcode> has more than one <body>; Ghidra rejects anything after the first"
+                        .into()
+                } else {
+                    format!(
+                        "<{}> after <body> in <pcode>; <body> must be last and Ghidra rejects anything after it",
+                        Q(&child.name)
+                    )
+                };
+                self.error(DiagnosticKind::InconsistentSpec, child.line, msg);
+                break;
+            }
             match child.name.as_str() {
                 "input" | "output" => {
                     self.unknown_attrs(child, &["name", "size"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     let Some(name) = self.require(child, "name") else {
                         continue;
                     };
@@ -2089,22 +2476,28 @@ impl Reader {
                 }
                 "body" => {
                     self.unknown_attrs(child, &[]);
-                    self.no_children(child);
-                    if body.is_some() {
-                        let msg = "<pcode> has more than one <body>; using the last".into();
-                        self.warn(DiagnosticKind::DuplicateEntry, child.line, msg);
-                    }
+                    self.leaf(child);
                     body = Some(child.text.clone());
                 }
                 other => {
-                    let msg = format!("unexpected <{other}> in <pcode>; ignored");
+                    // Ghidra would read any other leaf as an output parameter; that form
+                    // is outside the schema and not modeled.
+                    let msg = format!(
+                        "unexpected <{}> in <pcode>; Ghidra would read it as an output parameter, which is not modeled",
+                        Q(other)
+                    );
                     self.error(DiagnosticKind::UnknownElement, child.line, msg);
                 }
             }
         }
-        if body.is_none() && dynamic != Some(true) {
-            let msg = "<pcode> has no <body> and is not dynamic".into();
-            self.warn(DiagnosticKind::MissingElement, el.line, msg);
+        let has_text = body.as_deref().is_some_and(|b| !java_trim(b).is_empty());
+        if !has_text && dynamic != Some(true) {
+            let msg = if body.is_some() {
+                "<pcode> <body> is empty after trimming and the payload is not dynamic; Ghidra rejects it"
+            } else {
+                "<pcode> has no <body> and is not dynamic; Ghidra rejects it"
+            };
+            self.error(DiagnosticKind::MissingElement, el.line, msg.into());
         }
         Some(PcodeSnippet {
             param_shift,
@@ -2119,7 +2512,7 @@ impl Reader {
 
     fn single_pcode(&mut self, el: &Element, children: &[&Element]) -> Option<PcodeSnippet> {
         match children {
-            [pcode] => self.read_pcode(pcode, &[]),
+            [pcode] => self.read_pcode(pcode),
             [] => {
                 let msg = format!("<{}> has no <pcode>", el.name);
                 self.error(DiagnosticKind::MissingElement, el.line, msg);
@@ -2139,17 +2532,20 @@ impl Reader {
         let mut targets = Vec::new();
         let mut pcodes = Vec::new();
         for child in &el.children {
+            if !self.step(1) {
+                return None;
+            }
             match child.name.as_str() {
                 "target" => {
                     self.unknown_attrs(child, &["name"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     if let Some(t) = self.require(child, "name") {
                         targets.push(t.to_owned());
                     }
                 }
                 "pcode" => pcodes.push(child),
                 other => {
-                    let msg = format!("unexpected <{other}> in <callfixup>; ignored");
+                    let msg = format!("unexpected <{}> in <callfixup>; ignored", Q(other));
                     self.error(DiagnosticKind::UnknownElement, child.line, msg);
                 }
             }
@@ -2168,10 +2564,16 @@ impl Reader {
         let target_op = self.require(el, "targetop")?;
         let mut pcodes = Vec::new();
         for child in &el.children {
+            if !self.step(1) {
+                return None;
+            }
             if child.name == "pcode" {
                 pcodes.push(child);
             } else {
-                let msg = format!("unexpected <{}> in <callotherfixup>; ignored", child.name);
+                let msg = format!(
+                    "unexpected <{}> in <callotherfixup>; ignored",
+                    Q(&child.name)
+                );
                 self.error(DiagnosticKind::UnknownElement, child.line, msg);
             }
         }
@@ -2183,25 +2585,27 @@ impl Reader {
         })
     }
 
-    fn read_alias(&mut self, el: &Element, spec: &CompilerSpec) -> Option<ModelAlias> {
+    /// `<modelalias>`; the parent must be an earlier plain prototype
+    /// (`BasicCompilerSpec.createModelAlias`).
+    fn read_alias(&mut self, el: &Element) -> Option<ModelAlias> {
         self.unknown_attrs(el, &["name", "parent"]);
-        self.no_children(el);
+        self.leaf(el);
         let (Some(name), Some(parent)) = (self.require(el, "name"), self.require(el, "parent"))
         else {
             return None;
         };
-        let problem = if spec.prototype(parent).is_some() {
-            None
-        } else if spec.merged_models.iter().any(|m| m.name == parent) {
-            Some("Ghidra cannot alias a merged model")
-        } else if spec.aliases.iter().any(|a| a.name == parent) {
-            Some("Ghidra cannot alias an alias")
-        } else {
-            Some("no earlier model has that name")
+        let problem = match self.seen.models.get(parent) {
+            Some(ModelKind::Prototype) => None,
+            Some(ModelKind::Merged) => Some("Ghidra cannot alias a merged model"),
+            Some(ModelKind::Alias) => Some("Ghidra cannot alias an alias"),
+            None => Some("no earlier model has that name"),
         };
         if let Some(problem) = problem {
-            let msg =
-                format!("<modelalias name=\"{name}\" parent=\"{parent}\">: {problem}; ignored");
+            let msg = format!(
+                "<modelalias name=\"{}\" parent=\"{}\">: {problem}; ignored",
+                Q(name),
+                Q(parent)
+            );
             self.error(DiagnosticKind::UnresolvedReference, el.line, msg);
             return None;
         }
@@ -2213,28 +2617,39 @@ impl Reader {
         })
     }
 
-    fn read_merged(&mut self, el: &Element, spec: &CompilerSpec) -> Option<MergedModel> {
+    /// `<resolveprototype>`; each `<model>` must name an earlier model of any kind
+    /// (`PrototypeModelMerged.restoreXml`).
+    fn read_merged(&mut self, el: &Element) -> Option<MergedModel> {
         self.unknown_attrs(el, &["name"]);
         let name = self.require(el, "name")?;
         let mut models = Vec::new();
         let mut ok = true;
         let mut listed = 0usize;
         for child in &el.children {
+            if !self.step(1) {
+                return None;
+            }
             if child.name != "model" {
-                let msg = format!("unexpected <{}> in <resolveprototype>; ignored", child.name);
+                let msg = format!(
+                    "unexpected <{}> in <resolveprototype>; ignored",
+                    Q(&child.name)
+                );
                 self.error(DiagnosticKind::UnknownElement, child.line, msg);
                 continue;
             }
             listed += 1;
             self.unknown_attrs(child, &["name"]);
-            self.no_children(child);
+            self.leaf(child);
             let Some(model) = self.require(child, "name") else {
                 ok = false;
                 continue;
             };
-            if spec.model(model).is_none() {
-                let msg =
-                    format!("<resolveprototype name=\"{name}\"> names missing model `{model}`");
+            if !self.seen.models.contains_key(model) {
+                let msg = format!(
+                    "<resolveprototype name=\"{}\"> names missing model `{}`",
+                    Q(name),
+                    Q(model)
+                );
                 self.error(DiagnosticKind::UnresolvedReference, child.line, msg);
                 ok = false;
                 continue;
@@ -2242,7 +2657,7 @@ impl Reader {
             models.push(model.to_owned());
         }
         if listed == 0 {
-            let msg = format!("<resolveprototype name=\"{name}\"> lists no models");
+            let msg = format!("<resolveprototype name=\"{}\"> lists no models", Q(name));
             self.error(DiagnosticKind::MissingElement, el.line, msg);
             return None;
         }
@@ -2277,7 +2692,10 @@ impl Reader {
             return None;
         };
         if !is_valid_formal_name(name) {
-            let msg = format!("prototype name `{name}` uses illegal characters; prototype ignored");
+            let msg = format!(
+                "prototype name `{}` uses illegal characters; prototype ignored",
+                Q(name)
+            );
             self.error(DiagnosticKind::InvalidAttribute, el.line, msg);
             return None;
         }
@@ -2331,8 +2749,15 @@ impl Reader {
             status: ModelStatus::Complete,
             line: el.line,
         };
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        // PrototypeModel.hasUponEntry: once an `uponentry` payload is read, every later
+        // payload is also registered under the `uponentry` name.
+        let mut has_upon_entry = false;
+        let mut inject_names: Vec<InjectionPoint> = Vec::new();
         for child in &el.children {
+            if !self.step(1) {
+                return None;
+            }
             let tag = child.name.as_str();
             let single = matches!(
                 tag,
@@ -2347,11 +2772,13 @@ impl Reader {
                     | "paramrange"
                     | "sharestack"
             );
-            if single && seen.contains(&tag) {
-                let msg = format!("<{tag}> repeated in prototype `{name}`; the last one wins");
+            if !seen.insert(tag) && single {
+                let msg = format!(
+                    "<{tag}> repeated in prototype `{}`; the last one wins",
+                    Q(name)
+                );
                 self.warn(DiagnosticKind::DuplicateEntry, child.line, msg);
             }
-            seen.push(tag);
             match tag {
                 "input" => input = Some(self.read_param_list(child)),
                 "output" => output = Some(self.read_param_list(child)),
@@ -2368,20 +2795,40 @@ impl Reader {
                         Some("uponreturn") => InjectionPoint::UponReturn,
                         other => {
                             let msg = format!(
-                                "<pcode inject={:?}> must be `uponentry` or `uponreturn`; ignored",
-                                other.unwrap_or("")
+                                "<pcode inject=\"{}\"> must be `uponentry` or `uponreturn`; ignored",
+                                Q(other.unwrap_or(""))
                             );
                             self.error(DiagnosticKind::InvalidAttribute, child.line, msg);
                             continue;
                         }
                     };
-                    if let Some(pcode) = self.read_pcode(child, &["inject"]) {
+                    has_upon_entry |= point == InjectionPoint::UponEntry;
+                    // PrototypeModel.getInjectName and PcodeInjectLibrary.registerInject.
+                    let registered = if has_upon_entry {
+                        InjectionPoint::UponEntry
+                    } else {
+                        InjectionPoint::UponReturn
+                    };
+                    if inject_names.contains(&registered) {
+                        let suffix = match registered {
+                            InjectionPoint::UponEntry => "uponentry",
+                            InjectionPoint::UponReturn => "uponreturn",
+                        };
+                        let msg = format!(
+                            "prototype `{}` registers its p-code injection `@@inject_{suffix}` twice; Ghidra rejects it (only an uponreturn payload followed by an uponentry one is accepted)",
+                            Q(name)
+                        );
+                        self.error(DiagnosticKind::DuplicateEntry, child.line, msg);
+                    } else {
+                        inject_names.push(registered);
+                    }
+                    if let Some(pcode) = self.read_pcode(child) {
                         proto.injections.push(PrototypeInjection { point, pcode });
                     }
                 }
                 "sharestack" => {
                     self.unknown_attrs(child, &["first", "align"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     if let Ok(align) = self.i32_attr(child, "align") {
                         proto.share_stack = Some(ShareStack {
                             input_first: child.attr("first") == Some("input"),
@@ -2391,7 +2838,9 @@ impl Reader {
                 }
                 other => {
                     let msg = format!(
-                        "ignored element <{other}> in prototype `{name}` (Ghidra discards it)"
+                        "ignored element <{}> in prototype `{}` (Ghidra discards it)",
+                        Q(other),
+                        Q(name)
                     );
                     self.warn(DiagnosticKind::UnknownElement, child.line, msg);
                 }
@@ -2399,7 +2848,10 @@ impl Reader {
         }
         for (list, label) in [(&input, "input"), (&output, "output")] {
             if list.is_none() {
-                let msg = format!("prototype `{name}` has no <{label}>; Ghidra uses an empty list");
+                let msg = format!(
+                    "prototype `{}` has no <{label}>; Ghidra uses an empty list",
+                    Q(name)
+                );
                 self.warn(DiagnosticKind::MissingElement, el.line, msg);
             }
         }
@@ -2441,6 +2893,9 @@ impl Reader {
         let mut last_class = StorageClass::Class4;
         let mut in_rules = false;
         for child in &el.children {
+            if !self.step(1) {
+                return list;
+            }
             match child.name.as_str() {
                 "pentry" | "group" if in_rules => {
                     let msg = format!(
@@ -2461,8 +2916,11 @@ impl Reader {
                     list.group_count += 1;
                     let start = list.entries.len();
                     for item in &child.children {
+                        if !self.step(1) {
+                            return list;
+                        }
                         if item.name != "pentry" {
-                            let msg = format!("unexpected <{}> in <group>; ignored", item.name);
+                            let msg = format!("unexpected <{}> in <group>; ignored", Q(&item.name));
                             self.error(DiagnosticKind::UnknownElement, item.line, msg);
                             continue;
                         }
@@ -2489,7 +2947,7 @@ impl Reader {
                     }
                 }
                 other => {
-                    let msg = format!("unexpected <{other}> in <{}>; ignored", el.name);
+                    let msg = format!("unexpected <{}> in <{}>; ignored", Q(other), el.name);
                     self.error(DiagnosticKind::UnknownElement, child.line, msg);
                 }
             }
@@ -2521,32 +2979,104 @@ impl Reader {
         *last_class = current;
     }
 
-    /// `ParamEntry.orderWithinGroup` over every pair in a group.
+    /// `ParamListStandard.parseGroup`: `ParamEntry.orderWithinGroup` over the pairs of a
+    /// group, in Ghidra's order, stopping at the first conflict as Ghidra does (it throws
+    /// there). So a group yields at most one error. Each pair compared costs one work
+    /// unit; a group of `n` distinct entries costs `n * (n - 1) / 2`.
     fn check_group_distinct(&mut self, group: &[ParamEntry]) {
-        for (i, first) in group.iter().enumerate() {
-            for second in &group[i + 1..] {
-                if second.min_size > first.max_size || first.min_size > second.max_size {
-                    continue;
+        let count = group.len();
+        // Ghidra walks back from the newest entry: for i in 1..count, the entry i places
+        // before the last is compared with each later one, nearest the end first.
+        for i in 1..count {
+            let first = &group[count - 1 - i];
+            for j in 0..i {
+                if !self.step(1) {
+                    return;
                 }
-                let msg = if first.storage_class != second.storage_class {
-                    if first.storage_class != StorageClass::General {
-                        continue;
-                    }
-                    "<pentry> tags with a specific type must come before the general type"
-                } else {
-                    "<pentry> tags within a group must be distinguished by size or type"
-                };
-                self.error(DiagnosticKind::InconsistentSpec, second.line, msg.into());
+                let second = &group[count - 1 - j];
+                if let Some(msg) = order_within_group(first, second) {
+                    let msg = format!(
+                        "{msg} (lines {} and {}); Ghidra rejects the group at its first conflict",
+                        first.line, second.line
+                    );
+                    self.error(DiagnosticKind::InconsistentSpec, second.line, msg);
+                    return;
+                }
             }
         }
     }
 
+    /// `ParamEntry.restoreXml`. Attributes are read in document order as Ghidra does:
+    /// with both `align` and legacy `size` (or `storage` and deprecated `metatype`) the
+    /// later one wins, and every one of them must decode.
     fn read_pentry(&mut self, el: &Element, group: Option<usize>) -> Option<ParamEntry> {
-        // ParamEntry.restoreXml rejects unknown attributes.
-        for (key, _) in &el.attrs {
-            if !PENTRY_ATTRS.contains(&key.as_str()) {
-                let msg = format!("unknown <pentry> attribute `{key}` (Ghidra rejects it)");
-                self.error(DiagnosticKind::UnknownAttribute, el.line, msg);
+        let mut ok = true;
+        let mut align: Option<u32> = None;
+        let mut align_from: Option<&str> = None;
+        let mut storage_class = StorageClass::General;
+        let mut class_from: Option<&str> = None;
+        let mut extension = Extension::None;
+        for (key, value) in &el.attrs {
+            match key.as_str() {
+                // Required; decoded below.
+                "minsize" | "maxsize" => {}
+                "align" | "size" => {
+                    if let Some(prev) = align_from {
+                        let msg = format!(
+                            "<pentry> has both `{prev}` and `{key}`; the later `{key}` wins like Ghidra"
+                        );
+                        self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+                    }
+                    align_from = Some(key);
+                    match java_nonneg_int(value) {
+                        Some(v) => align = Some(v),
+                        None => {
+                            self.invalid(
+                                el,
+                                key,
+                                value,
+                                "a non-negative Java int (0..=2147483647)",
+                            );
+                            ok = false;
+                        }
+                    }
+                }
+                "storage" | "metatype" => {
+                    if let Some(prev) = class_from {
+                        let msg = format!(
+                            "<pentry> has both `{prev}` and `{key}`; the later `{key}` wins like Ghidra"
+                        );
+                        self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+                    }
+                    class_from = Some(key);
+                    match StorageClass::parse(value) {
+                        Some(c) => storage_class = c,
+                        None => {
+                            self.invalid(el, key, value, "a storage class");
+                            ok = false;
+                        }
+                    }
+                }
+                "extension" => match value.as_str() {
+                    "none" => extension = Extension::None,
+                    "sign" => extension = Extension::Sign,
+                    "zero" => extension = Extension::Zero,
+                    "inttype" => extension = Extension::IntType,
+                    "float" => extension = Extension::Float,
+                    other => {
+                        self.invalid(el, "extension", other, "none, sign, zero, inttype or float");
+                        ok = false;
+                    }
+                },
+                // ParamEntry.restoreXml rejects unknown attributes. The entry is kept
+                // (flagged) since every value it needs could be read.
+                other => {
+                    let msg = format!(
+                        "unknown <pentry> attribute `{}` (Ghidra rejects it)",
+                        Q(other)
+                    );
+                    self.error(DiagnosticKind::UnknownAttribute, el.line, msg);
+                }
             }
         }
         let min = self.require(el, "minsize");
@@ -2566,39 +3096,12 @@ impl Reader {
             self.error(DiagnosticKind::InvalidAttribute, el.line, msg);
             return None;
         }
-        if el.attr("align").is_some() && el.attr("size").is_some() {
-            let msg = "<pentry> has both `align` and legacy `size`; using `align`".into();
-            self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+        if !ok {
+            return None;
         }
-        let align = match el.attr("align") {
-            Some(_) => self.u32_attr(el, "align").ok()?,
-            None => self.u32_attr(el, "size").ok()?,
-        };
-        if el.attr("storage").is_some() && el.attr("metatype").is_some() {
-            let msg =
-                "<pentry> has both `storage` and deprecated `metatype`; using `storage`".into();
-            self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+        if !self.step(1) {
+            return None;
         }
-        let class_attr = if el.attr("storage").is_some() {
-            "storage"
-        } else {
-            "metatype"
-        };
-        let storage_class = self
-            .storage_class_attr(el, class_attr)
-            .ok()?
-            .unwrap_or(StorageClass::General);
-        let extension = match el.attr("extension") {
-            None | Some("none") => Extension::None,
-            Some("sign") => Extension::Sign,
-            Some("zero") => Extension::Zero,
-            Some("inttype") => Extension::IntType,
-            Some("float") => Extension::Float,
-            Some(other) => {
-                self.invalid(el, "extension", other, "none, sign, zero, inttype or float");
-                return None;
-            }
-        };
         let storage = match el.children.as_slice() {
             [one] => {
                 if one.name == "varnode" {
@@ -2663,7 +3166,7 @@ impl Reader {
                 "maxelements",
             ],
         );
-        self.no_children(el);
+        self.leaf(el);
         let name = self.require(el, "name")?;
         let class = match name {
             "any" => DatatypeClass::Any,
@@ -2676,37 +3179,76 @@ impl Reader {
                 }
             },
         };
-        let min_size = self.u32_attr(el, "minsize").ok()?;
-        let max_size = self.u32_attr(el, "maxsize").ok()?;
-        let mut sizes = Vec::new();
-        if let Some(text) = el.attr("sizes") {
-            if min_size.is_some() || max_size.is_some() {
-                let msg = "<datatype> mixes `sizes` with `minsize`/`maxsize`".into();
-                self.error(DiagnosticKind::InconsistentSpec, el.line, msg);
-                return None;
-            }
-            for piece in text.split(',') {
-                match xml::decode_java_int(piece.trim()).and_then(|v| u32::try_from(v).ok()) {
-                    Some(v) => sizes.push(v),
-                    None => {
-                        self.invalid(el, "sizes", text, "a comma-separated size list");
+        // SizeRestrictedFilter.restoreAttributesXml, in document order.
+        let mut min_size: Option<u32> = None;
+        let mut max_size: Option<u32> = None;
+        let mut sizes: Vec<u32> = Vec::new();
+        for (key, value) in &el.attrs {
+            match key.as_str() {
+                "minsize" | "maxsize" => {
+                    if !sizes.is_empty() {
+                        let msg = format!(
+                            "<datatype> gives `{key}` after a `sizes` list; Ghidra rejects mixing them"
+                        );
+                        self.error(DiagnosticKind::InconsistentSpec, el.line, msg);
                         return None;
                     }
+                    let parsed = self.u32_attr(el, key).ok()?;
+                    if key == "minsize" {
+                        min_size = parsed;
+                    } else {
+                        max_size = parsed;
+                    }
                 }
+                "sizes" => {
+                    if min_size.unwrap_or(0) != 0 || max_size.unwrap_or(0) != 0 {
+                        let msg = "<datatype> gives `sizes` after a non-zero `minsize`/`maxsize`; Ghidra rejects mixing them".into();
+                        self.error(DiagnosticKind::InconsistentSpec, el.line, msg);
+                        return None;
+                    }
+                    sizes = match self.size_list(value) {
+                        Ok(list) => list,
+                        Err(SizeListError::Budget) => return None,
+                        Err(SizeListError::Piece(n)) => {
+                            let what = format!(
+                                "a size list: piece {n} is not a positive decimal Java int (pieces are separated by one comma or a run of spaces)"
+                            );
+                            self.invalid(el, "sizes", value, &what);
+                            return None;
+                        }
+                        Err(SizeListError::NonAscii(n)) => {
+                            let msg = format!(
+                                "<datatype> `sizes=\"{}\"`: piece {n} has non-ASCII characters; Java also accepts other Unicode digits, which are not decoded here",
+                                Q(value)
+                            );
+                            self.error(DiagnosticKind::UnsupportedForm, el.line, msg);
+                            return None;
+                        }
+                    };
+                    // initFromSizeList replaces both bounds (with zeros for an empty list).
+                    min_size = None;
+                    max_size = None;
+                }
+                _ => {}
             }
         }
-        let max_primitives = self.u32_attr(el, "maxprimitives").ok()?;
-        let min_elements = self.u32_attr(el, "minelements").ok()?;
-        let max_elements = self.u32_attr(el, "maxelements").ok()?;
-        if max_primitives.is_some() && class != DatatypeClass::HomogeneousFloatAggregate {
+        // Only the matching filter class reads these; Ghidra ignores them elsewhere, so
+        // they are not decoded there either.
+        let mut max_primitives = None;
+        let mut min_elements = None;
+        let mut max_elements = None;
+        if class == DatatypeClass::HomogeneousFloatAggregate {
+            max_primitives = self.u32_attr(el, "maxprimitives").ok()?;
+        } else if el.attr("maxprimitives").is_some() {
             let msg =
                 "`maxprimitives` only applies to homogeneous aggregates; Ghidra ignores it here"
                     .into();
             self.warn(DiagnosticKind::UnknownAttribute, el.line, msg);
         }
-        if (min_elements.is_some() || max_elements.is_some())
-            && class != DatatypeClass::Meta(MetaType::Array)
-        {
+        if class == DatatypeClass::Meta(MetaType::Array) {
+            min_elements = self.u32_attr(el, "minelements").ok()?;
+            max_elements = self.u32_attr(el, "maxelements").ok()?;
+        } else if el.attr("minelements").is_some() || el.attr("maxelements").is_some() {
             let msg =
                 "`minelements`/`maxelements` only apply to arrays; Ghidra ignores them here".into();
             self.warn(DiagnosticKind::UnknownAttribute, el.line, msg);
@@ -2722,8 +3264,78 @@ impl Reader {
         })
     }
 
+    /// `SizeRestrictedFilter.initFromSizeList`: `str.split(" +|,")` then
+    /// `Integer.parseInt` on each piece, rejecting values `<= 0`.
+    ///
+    /// Java's `String.split` keeps a leading empty piece (a delimiter at the start), keeps
+    /// empty pieces between delimiters (`"4,,8"`, `"4, 8"`) and drops trailing ones
+    /// (`"4,8,"`); an input with no delimiter at all is one piece, so `""` is rejected
+    /// while `","` gives no pieces (no size restriction). `Integer.parseInt` takes an
+    /// optional sign and decimal digits, leading zeros included (`"010"` is 10), so `"0"`,
+    /// `"-4"` and `"0x10"` are rejected. Each piece costs one work unit, and the list is
+    /// streamed without collecting the pieces first.
+    fn size_list(&mut self, text: &str) -> Result<Vec<u32>, SizeListError> {
+        if text.is_empty() {
+            // No delimiter, so the empty text is the one piece.
+            return Err(SizeListError::Piece(1));
+        }
+        let bytes = text.as_bytes();
+        let mut sizes = Vec::new();
+        // Empty pieces not yet known to be trailing.
+        let mut pending_empty = 0usize;
+        let mut index = 0usize;
+        let mut start = 0usize;
+        let mut i = 0usize;
+        let mut piece = |this: &mut Reader, piece: &str, sizes: &mut Vec<u32>| {
+            index += 1;
+            if !this.step(1) {
+                return Err(SizeListError::Budget);
+            }
+            if piece.is_empty() {
+                pending_empty += 1;
+                return Ok(());
+            }
+            if pending_empty > 0 {
+                // An empty piece before this one: parseInt("") fails.
+                return Err(SizeListError::Piece(index - pending_empty));
+            }
+            if !piece.is_ascii() {
+                return Err(SizeListError::NonAscii(index));
+            }
+            // For ASCII, Rust's `i32` parsing is exactly `Integer.parseInt`: optional
+            // `+`/`-`, decimal digits, overflow rejected.
+            match piece.parse::<i32>() {
+                Ok(v) if v > 0 => {
+                    sizes.push(v as u32);
+                    Ok(())
+                }
+                _ => Err(SizeListError::Piece(index)),
+            }
+        };
+        while i < bytes.len() {
+            match bytes[i] {
+                b' ' => {
+                    let end = i;
+                    while i < bytes.len() && bytes[i] == b' ' {
+                        i += 1;
+                    }
+                    piece(self, &text[start..end], &mut sizes)?;
+                    start = i;
+                }
+                b',' => {
+                    piece(self, &text[start..i], &mut sizes)?;
+                    i += 1;
+                    start = i;
+                }
+                _ => i += 1,
+            }
+        }
+        piece(self, &text[start..], &mut sizes)?;
+        Ok(sizes)
+    }
+
     fn read_side_effect(&mut self, el: &Element) -> Option<RuleSideEffect> {
-        self.no_children(el);
+        self.leaf(el);
         match el.name.as_str() {
             "consume_extra" => {
                 self.unknown_attrs(el, &["storage", "matchsize"]);
@@ -2748,7 +3360,7 @@ impl Reader {
                 Some(RuleSideEffect::ConsumeRemaining { storage })
             }
             other => {
-                let msg = format!("unknown model rule side effect <{other}>");
+                let msg = format!("unknown model rule side effect <{}>", Q(other));
                 self.error(DiagnosticKind::UnknownElement, el.line, msg);
                 None
             }
@@ -2756,7 +3368,7 @@ impl Reader {
     }
 
     fn read_action(&mut self, el: &Element) -> Option<RuleAction> {
-        self.no_children(el);
+        self.leaf(el);
         let action = match el.name.as_str() {
             "consume" => {
                 self.unknown_attrs(el, &["storage"]);
@@ -2848,7 +3460,7 @@ impl Reader {
                 }
             }
             other => {
-                let msg = format!("unknown model rule action <{other}>");
+                let msg = format!("unknown model rule action <{}>", Q(other));
                 self.error(DiagnosticKind::UnknownElement, el.line, msg);
                 return None;
             }
@@ -2869,16 +3481,22 @@ impl Reader {
             );
             return None;
         };
+        if !self.step(1) {
+            return None;
+        }
         let datatype = self.read_datatype(first);
         let mut ok = datatype.is_some();
         let mut qualifiers = Vec::new();
         while let Some(child) =
             children.next_if(|c| matches!(c.name.as_str(), "varargs" | "position" | "datatype_at"))
         {
+            if !self.step(1) {
+                return None;
+            }
             let qualifier = match child.name.as_str() {
                 "varargs" => {
                     self.unknown_attrs(child, &["first", "last"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     match (self.i32_attr(child, "first"), self.i32_attr(child, "last")) {
                         (Ok(first), Ok(last)) => Some(RuleQualifier::Varargs { first, last }),
                         _ => None,
@@ -2886,7 +3504,7 @@ impl Reader {
                 }
                 "position" => {
                     self.unknown_attrs(child, &["index"]);
-                    self.no_children(child);
+                    self.leaf(child);
                     self.require(child, "index");
                     match self.i32_attr(child, "index") {
                         Ok(Some(index)) => Some(RuleQualifier::Position { index }),
@@ -2898,7 +3516,12 @@ impl Reader {
                     self.require(child, "index");
                     let index = self.i32_attr(child, "index");
                     let inner = match child.children.as_slice() {
-                        [dt] if dt.name == "datatype" => self.read_datatype(dt),
+                        [dt] if dt.name == "datatype" => {
+                            if !self.step(1) {
+                                return None;
+                            }
+                            self.read_datatype(dt)
+                        }
                         _ => {
                             self.error(
                                 DiagnosticKind::MissingElement,
@@ -2923,6 +3546,9 @@ impl Reader {
         }
         let mut preconditions = Vec::new();
         while let Some(child) = children.next_if(|c| c.name == "consume_extra") {
+            if !self.step(1) {
+                return None;
+            }
             match self.read_side_effect(child) {
                 Some(s) => preconditions.push(s),
                 None => ok = false,
@@ -2936,10 +3562,16 @@ impl Reader {
             );
             return None;
         };
+        if !self.step(1) {
+            return None;
+        }
         let action = self.read_action(action_el);
         ok &= action.is_some();
         let mut side_effects = Vec::new();
         for child in children {
+            if !self.step(1) {
+                return None;
+            }
             match self.read_side_effect(child) {
                 Some(s) => side_effects.push(s),
                 None => ok = false,
@@ -2999,5 +3631,89 @@ mod tests {
             Some(StorageClass::HiddenRet)
         );
         assert_eq!(StorageClass::parse("Float"), None);
+    }
+
+    fn sizes(text: &str) -> Result<Vec<u32>, SizeListError> {
+        Reader::new(None, &Limits::default()).size_list(text)
+    }
+
+    #[test]
+    fn size_lists_follow_java_split_and_parse_int() {
+        use SizeListError::{NonAscii, Piece};
+        // Leading zeros are decimal for Integer.parseInt, unlike SpecXmlUtils.decodeInt.
+        assert_eq!(sizes("010"), Ok(vec![10]));
+        assert_eq!(sizes("08"), Ok(vec![8]));
+        assert_eq!(sizes("+4"), Ok(vec![4]));
+        assert_eq!(sizes("3,5,6,7"), Ok(vec![3, 5, 6, 7]));
+        // A run of spaces is one delimiter; trailing empty pieces are dropped.
+        assert_eq!(sizes("4 8"), Ok(vec![4, 8]));
+        assert_eq!(sizes("4   8"), Ok(vec![4, 8]));
+        assert_eq!(sizes("4,8,"), Ok(vec![4, 8]));
+        assert_eq!(sizes("4,8, ,"), Ok(vec![4, 8]));
+        assert_eq!(sizes("4 "), Ok(vec![4]));
+        // Only delimiters: no pieces at all, so no size restriction.
+        assert_eq!(sizes(","), Ok(vec![]));
+        assert_eq!(sizes("  "), Ok(vec![]));
+        // Duplicates are kept in written order.
+        assert_eq!(sizes("8,4,8"), Ok(vec![8, 4, 8]));
+        assert_eq!(sizes("2147483647"), Ok(vec![i32::MAX as u32]));
+
+        // No delimiter at all: the empty text is one empty piece.
+        assert_eq!(sizes(""), Err(Piece(1)));
+        // Leading and inner empty pieces reach parseInt("").
+        assert_eq!(sizes(",4"), Err(Piece(1)));
+        assert_eq!(sizes(" 4"), Err(Piece(1)));
+        assert_eq!(sizes("4,,8"), Err(Piece(2)));
+        assert_eq!(sizes("4, 8"), Err(Piece(2)));
+        assert_eq!(sizes("4 ,8"), Err(Piece(2)));
+        // Not positive, not decimal, out of range, other whitespace.
+        assert_eq!(sizes("0"), Err(Piece(1)));
+        assert_eq!(sizes("4,-0"), Err(Piece(2)));
+        assert_eq!(sizes("-4"), Err(Piece(1)));
+        assert_eq!(sizes("0x10"), Err(Piece(1)));
+        assert_eq!(sizes("2147483648"), Err(Piece(1)));
+        assert_eq!(sizes("+"), Err(Piece(1)));
+        assert_eq!(sizes("4\t8"), Err(Piece(1)));
+        assert_eq!(sizes("4,\u{0664}"), Err(NonAscii(2)));
+    }
+
+    #[test]
+    fn size_lists_charge_one_unit_per_piece() {
+        let limits = Limits {
+            max_cspec_work: 3,
+            ..Limits::default()
+        };
+        assert_eq!(
+            Reader::new(None, &limits).size_list("1,2,3"),
+            Ok(vec![1, 2, 3])
+        );
+        let mut reader = Reader::new(None, &limits);
+        assert_eq!(reader.size_list("1,2,3,4"), Err(SizeListError::Budget));
+        assert!(reader.exhausted.is_some());
+    }
+
+    #[test]
+    fn nonnegative_java_ints_reject_wrapping_values() {
+        assert_eq!(java_nonneg_int("2147483647"), Some(i32::MAX as u32));
+        assert_eq!(java_nonneg_int("0x7fffffff"), Some(i32::MAX as u32));
+        assert_eq!(java_nonneg_int("2147483648"), None);
+        assert_eq!(java_nonneg_int("0x80000000"), None);
+        assert_eq!(java_nonneg_int("4294967295"), None);
+        assert_eq!(java_nonneg_int("-1"), None);
+        // decodeInt's leading-zero octal still applies to ordinary int attributes.
+        assert_eq!(java_nonneg_int("010"), Some(8));
+        assert_eq!(java_nonneg_int("08"), None);
+    }
+
+    #[test]
+    fn quoted_text_and_java_trim() {
+        assert_eq!(Q("short").to_string(), "short");
+        let long = "é".repeat(100);
+        let quoted = Q(&long).to_string();
+        assert!(quoted.len() < QUOTE_BYTES + 32, "{quoted}");
+        assert!(quoted.ends_with("(200 bytes)"));
+        assert_eq!(java_trim(" \t\r\nx y\n "), "x y");
+        // Java's trim stops at U+0020; a no-break space is kept.
+        assert_eq!(java_trim("\u{a0}"), "\u{a0}");
     }
 }

@@ -16,6 +16,9 @@
 //! - Asset paths are resolved inside the catalog root. Absolute paths and paths that
 //!   escape the root are rejected. Symlinks and junctions are not followed.
 //! - DTDs are rejected, so no custom entity is ever expanded.
+//! - Reads are bounded by [`Limits`]: file size, element count, nesting depth and text
+//!   length for XML, plus semantic work and diagnostic count/byte budgets for `.cspec`
+//!   files. A `.cspec` budget that runs out is an [`Error::Limit`], never a partial spec.
 
 pub mod cspec;
 mod error;

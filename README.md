@@ -46,7 +46,7 @@ cargo run --release -p ghidra-desktop -- analysis.ghrs
 
 Build the executable with `cargo build --release -p ghidra-desktop`. It is written to `target/release/ghidra-rs` (`ghidra-rs.exe` on Windows). Rust is required to build it; Java is not required to build or run it. Normal operating-system graphics and native library requirements still apply.
 
-The P-code tab discovers language assets from this checkout's `Ghidra/Processors` folder. For a standalone executable, choose an assets folder in the tab or set `GHIDRA_RS_LANGUAGE_ROOT`. These source data files are required for SLEIGH lifting and are not embedded in the executable. Language selection and overrides currently last for the open binary; saving them in projects remains pending.
+The P-code tab discovers language assets from this checkout's `Ghidra/Processors` folder. For a standalone executable, choose an assets folder in the tab or set `GHIDRA_RS_LANGUAGE_ROOT`. These source data files are required for SLEIGH lifting and are not embedded in the executable. Native projects preserve the selected catalog language ID, version, and context overrides; raw source selections are session settings.
 
 ## Development
 

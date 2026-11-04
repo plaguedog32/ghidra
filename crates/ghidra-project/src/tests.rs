@@ -1,6 +1,8 @@
 use super::*;
 use std::fs;
 
+mod processor;
+
 fn put16(data: &mut [u8], offset: usize, value: u16) {
     data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -199,7 +201,7 @@ fn invalid_header_lengths_version_truncation_and_trailing_data_are_rejected() {
     fs::write(&path, unknown_version).unwrap();
     assert!(matches!(
         Project::load(&path),
-        Err(ProjectError::UnsupportedVersion(2))
+        Err(ProjectError::UnsupportedVersion(3))
     ));
     let mut large_metadata = original.clone();
     put32(&mut large_metadata, 12, (MAX_METADATA_SIZE + 1) as u32);

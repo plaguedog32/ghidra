@@ -125,9 +125,9 @@ fn background_replacement_cannot_accept_edits_to_the_old_project() {
     );
     assert!(!app.dirty);
     assert!(app.loaded.as_ref().unwrap().metadata.annotations.is_empty());
-    tx.send(Ok(WorkResult::Loaded(
+    tx.send(Ok(WorkResult::Loaded(Box::new(
         report::load_bytes("replacement".into(), demo::pe64()).unwrap(),
-    )))
+    ))))
     .unwrap();
     app.poll(&egui::Context::default());
     assert_eq!(app.loaded.as_ref().unwrap().name, "replacement");
@@ -189,7 +189,7 @@ fn reopening_restores_data_selection_instead_of_the_code_entry() {
     let mut loaded = report::load_bytes("data project".into(), bytes).unwrap();
     loaded.metadata.last_address = Some(0x1_4000_2004);
     let mut app = Workbench::empty();
-    deliver(&mut app, Ok(WorkResult::Loaded(loaded)));
+    deliver(&mut app, Ok(WorkResult::Loaded(Box::new(loaded))));
     assert_eq!(app.selected, Some(0x1_4000_2004));
     assert!(app.tab == Tab::Hex);
     assert_eq!(app.hex_offset, 0x400);
@@ -238,7 +238,7 @@ fn non_x86_programs_select_executable_addresses_without_using_the_x86_decoder() 
     assert!(loaded.analysis.is_none());
     let entry = loaded.image.entry;
     let mut app = Workbench::empty();
-    deliver(&mut app, Ok(WorkResult::Loaded(loaded)));
+    deliver(&mut app, Ok(WorkResult::Loaded(Box::new(loaded))));
     assert_eq!(app.selected, Some(entry));
     assert!(app.tab == Tab::Pcode);
     app.navigate_address(entry + 4);

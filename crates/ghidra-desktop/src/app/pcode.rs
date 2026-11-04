@@ -40,7 +40,7 @@ impl PcodeState {
         self.generation = self.generation.wrapping_add(1);
         self.invalidate();
         self.source.clear();
-        self.catalog.definition = None;
+        self.catalog.restore(None, None);
         self.context.clear();
         self.history.clear();
     }
@@ -51,6 +51,55 @@ impl PcodeState {
         self.waiting = None;
         self.view = None;
         self.error = None;
+    }
+
+    fn sync_catalog_source(&mut self) {
+        self.source = self
+            .catalog
+            .definition
+            .as_ref()
+            .and_then(|definition| definition.source.path.as_ref())
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+    }
+
+    pub(super) fn restore_configuration(
+        &mut self,
+        configuration: Option<&ghidra_project::ProcessorConfiguration>,
+    ) {
+        self.catalog.restore(
+            configuration.map(|config| config.language.clone()),
+            configuration.and_then(|config| config.compiler_id.clone()),
+        );
+        self.context = configuration
+            .map(|config| {
+                config
+                    .context
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        self.sync_catalog_source();
+        self.invalidate();
+    }
+
+    pub(super) fn configuration(
+        &self,
+    ) -> Result<Option<ghidra_project::ProcessorConfiguration>, String> {
+        let Some(language) = &self.catalog.wanted else {
+            return Ok(None);
+        };
+        let configuration = ghidra_project::ProcessorConfiguration {
+            language: language.clone(),
+            compiler_id: self.catalog.compiler_id.clone(),
+            context: parse_context(&self.context)?,
+        };
+        configuration
+            .validate()
+            .map_err(|error| error.to_string())?;
+        Ok(Some(configuration))
     }
 
     fn accept(&mut self, response: LiftResponse, selected: Option<u64>) {
@@ -80,7 +129,10 @@ impl PcodeState {
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context, selected: Option<u64>) {
-        self.catalog.poll(ctx);
+        if self.catalog.poll(ctx) {
+            self.sync_catalog_source();
+            self.invalidate();
+        }
         for _ in 0..4 {
             let response = match self.worker.as_ref().map(LiftingWorker::try_recv) {
                 Some(Ok(Some(response))) => response,
@@ -103,6 +155,9 @@ impl PcodeState {
     fn request(&mut self, image: &ghidra_core::BinaryImage, address: u64) {
         let key = self.key(address);
         let prepared = parse_context(&self.context).and_then(|context| {
+            if self.catalog.wanted.is_some() && self.catalog.definition.is_none() {
+                return Err("The saved language is unresolved. Choose matching catalog assets or explicitly replace the language selection.".into());
+            }
             if self.source.trim().is_empty() && self.catalog.definition.is_none() {
                 return Err("Choose a processor language or SLEIGH source specification".into());
             }
@@ -161,7 +216,7 @@ fn parse_context(text: &str) -> Result<std::collections::BTreeMap<String, u64>, 
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|f| !f.is_empty())
     {
-        if fields.len() == 256 {
+        if fields.len() == ghidra_project::MAX_CONTEXT_FIELDS {
             return Err("Too many processor context fields".into());
         }
         let (name, value) = field
@@ -184,6 +239,29 @@ fn parse_context(text: &str) -> Result<std::collections::BTreeMap<String, u64>, 
 }
 
 impl Workbench {
+    pub(super) fn processor_configuration_changed(&mut self) {
+        if self.pending.is_some() {
+            return;
+        }
+        let Some(loaded) = &mut self.loaded else {
+            return;
+        };
+        match self.pcode.configuration() {
+            Ok(configuration) if loaded.metadata.processor != configuration => {
+                loaded.metadata.processor = configuration;
+                self.dirty = true;
+                self.revision = self.revision.wrapping_add(1);
+            }
+            Err(_) => {
+                // An invalid draft must keep the unsaved guard active; saving
+                // validates it instead of silently storing the old settings.
+                self.dirty = true;
+                self.revision = self.revision.wrapping_add(1);
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn pcode_view(&mut self, ui: &mut egui::Ui) {
         let current = self.selected;
         let next = current
@@ -241,20 +319,13 @@ impl Workbench {
         let mut edited = false;
         let mut settings_focused = false;
         if self.pcode.catalog.ui(ui) {
-            self.pcode.source = self
-                .pcode
-                .catalog
-                .definition
-                .as_ref()
-                .and_then(|definition| definition.source.path.as_ref())
-                .map(|path| path.display().to_string())
-                .unwrap_or_default();
+            self.pcode.sync_catalog_source();
             edited = true;
         }
         ui.horizontal(|ui| {
             ui.label("SLEIGH source");
             let response = ui.add_enabled(
-                self.pcode.catalog.definition.is_none(),
+                self.pcode.catalog.wanted.is_none(),
                 egui::TextEdit::singleline(&mut self.pcode.source)
                     .desired_width(ui.available_width() - 95.0)
                     .hint_text("Processor .slaspec file"),
@@ -267,7 +338,7 @@ impl Workbench {
                     .pick_file()
             {
                 self.pcode.source = path.display().to_string();
-                self.pcode.catalog.definition = None;
+                self.pcode.catalog.use_raw_source();
                 edited = true;
             }
         });
@@ -275,15 +346,19 @@ impl Workbench {
             ui.label("Context overrides");
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.pcode.context)
-                    .char_limit(4096)
+                    .char_limit(ghidra_project::MAX_CONTEXT_TEXT_CHARS)
                     .desired_width(f32::INFINITY)
                     .hint_text("Optional overrides; catalog defaults are applied automatically"),
             );
             edited |= response.changed();
             settings_focused |= response.has_focus();
         });
+        if self.pcode.catalog.wanted.is_none() {
+            ui.label(RichText::new("Raw source settings apply to this session. Choose a catalog language to save processor settings in a project.").small().color(MUTED));
+        }
         if edited {
             self.pcode.invalidate();
+            self.processor_configuration_changed();
         }
         let mut lift = false;
         ui.horizontal(|ui| {

@@ -36,7 +36,9 @@ cargo run -p ghidra-desktop -- --lift-language \
   Ghidra/Processors x86:LE:64:default 1000 4889d8
 ```
 
-The desktop finds assets in an ancestor checkout's `Ghidra/Processors` directory, or uses `GHIDRA_RS_LANGUAGE_ROOT`. **Choose folder** selects another catalog root. No processor is guessed from ambiguous binary metadata. The source assets remain external to the executable. Language choices and overrides are not yet saved in `.ghrs` projects.
+The desktop finds assets in an ancestor checkout's `Ghidra/Processors` directory, or uses `GHIDRA_RS_LANGUAGE_ROOT`. **Choose folder** selects another catalog root. No processor is guessed from ambiguous binary metadata. The source assets remain external to the executable. Version 2 `.ghrs` projects preserve the selected catalog language ID, declared major/minor version, and context overrides. Local source paths are not saved. Missing or mismatched assets leave the saved choice intact and block lifting until matching assets are supplied or the choice is explicitly replaced. Language versions are declared identifiers, not source-content fingerprints. Raw source selections and their overrides apply only to the current session.
+
+Processor edits participate in the unsaved-project guard. Saving rejects malformed context drafts instead of storing the previous valid settings. Project loading validates bounded IDs and unique context fields, but resolving field names/widths and full processor semantics still belongs to the lifter. A project with an unsupported or unavailable processor can still retain its annotations and saved choice.
 
 The raw source command remains available:
 

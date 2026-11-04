@@ -1,6 +1,6 @@
 //! Portable, self-contained native projects. This is not Ghidra's `.gpr` format.
 //!
-//! Version 1 layout, with all integers little-endian:
+//! Versions 1 and 2 share this layout, with all integers little-endian:
 //! - 8-byte magic `GHRS\r\n\x1a\n`;
 //! - `u32` version, `u32` metadata length, `u64` image length;
 //! - 32-byte SHA-256 of the image, then 32-byte SHA-256 of the metadata;
@@ -10,6 +10,11 @@
 //! Checksums detect corruption, not malicious modification or authorship. Saving
 //! writes a sibling temporary file and atomically replaces the destination only
 //! after validation, serialization, and flushing succeed.
+//! Version 2 adds optional processor identity/context metadata. Version 1 is
+//! migrated on load; saving always writes version 2.
+
+mod processor;
+pub use processor::*;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -25,7 +30,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAGIC: &[u8; 8] = b"GHRS\r\n\x1a\n";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_SIZE: usize = 88;
 pub const MAX_METADATA_SIZE: usize = 4 * 1024 * 1024;
 pub const MAX_ANNOTATIONS: usize = 10_000;
@@ -47,6 +52,19 @@ pub struct ProjectMetadata {
     #[serde(deserialize_with = "deserialize_annotations")]
     pub annotations: BTreeMap<u64, Annotation>,
     pub last_address: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processor: Option<ProcessorConfiguration>,
+}
+
+/// Keep the old schema strict: a v2 field must not be interpreted under a v1
+/// header, and existing v1 files migrate without inventing a language choice.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetadataV1 {
+    name: String,
+    #[serde(deserialize_with = "deserialize_annotations")]
+    annotations: BTreeMap<u64, Annotation>,
+    last_address: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -63,7 +81,7 @@ pub enum ProjectError {
     Io(#[from] io::Error),
     #[error("invalid project: {0}")]
     InvalidFormat(&'static str),
-    #[error("unsupported project version {0}; expected version 1")]
+    #[error("unsupported project version {0}; supported versions are 1 and 2")]
     UnsupportedVersion(u32),
     #[error("project metadata exceeds the 4 MiB limit")]
     MetadataTooLarge,
@@ -87,6 +105,7 @@ impl Project {
                 name,
                 annotations: BTreeMap::new(),
                 last_address: None,
+                processor: None,
             },
             image,
         }
@@ -110,7 +129,7 @@ impl Project {
             ));
         }
         let version = u32::from_le_bytes(header[8..12].try_into().unwrap());
-        if version != VERSION {
+        if !matches!(version, 1 | VERSION) {
             return Err(ProjectError::UnsupportedVersion(version));
         }
         let metadata_len = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
@@ -143,7 +162,18 @@ impl Project {
         if Sha256::digest(&metadata_bytes).as_slice() != &header[56..88] {
             return Err(ProjectError::ChecksumMismatch("metadata"));
         }
-        let metadata = serde_json::from_slice(&metadata_bytes)?;
+        let metadata = match version {
+            1 => {
+                let old: MetadataV1 = serde_json::from_slice(&metadata_bytes)?;
+                ProjectMetadata {
+                    name: old.name,
+                    annotations: old.annotations,
+                    last_address: old.last_address,
+                    processor: None,
+                }
+            }
+            _ => serde_json::from_slice(&metadata_bytes)?,
+        };
         let image = Arc::new(BinaryImage::parse(image_bytes)?);
         validate_metadata(&metadata, &image)?;
         Ok(Self { metadata, image })
@@ -203,6 +233,9 @@ fn validate_metadata(metadata: &ProjectMetadata, image: &BinaryImage) -> Result<
     }
     if metadata.annotations.len() > MAX_ANNOTATIONS {
         return Err(invalid("more than 10000 annotations"));
+    }
+    if let Some(processor) = &metadata.processor {
+        processor.validate()?;
     }
     let mapped = |address: u64| {
         image.sections.iter().any(|section| {

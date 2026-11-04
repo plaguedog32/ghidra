@@ -35,7 +35,7 @@ enum Tab {
 }
 
 enum WorkResult {
-    Loaded(Loaded),
+    Loaded(Box<Loaded>),
     Disassembled(Analysis),
     Saved { path: PathBuf, revision: u64 },
 }
@@ -136,7 +136,7 @@ impl Workbench {
                 Input::Path(path) => report::load_path(&path),
                 Input::Demo => report::load_bytes("Synthetic sample · PE64".into(), demo::pe64()),
             };
-            let _ = tx.send(result.map(WorkResult::Loaded));
+            let _ = tx.send(result.map(|loaded| WorkResult::Loaded(Box::new(loaded))));
         });
     }
 
@@ -153,7 +153,10 @@ impl Workbench {
             self.saving = false;
             match result {
                 Ok(WorkResult::Loaded(loaded)) => {
+                    let loaded = *loaded;
                     self.pcode.clear_for_image();
+                    self.pcode
+                        .restore_configuration(loaded.metadata.processor.as_ref());
                     let restore = loaded.metadata.last_address;
                     self.selected = restore
                         .or_else(|| {
@@ -220,6 +223,7 @@ impl Workbench {
                     self.status = "Disassembly range updated".into();
                 }
                 Ok(WorkResult::Saved { path, revision }) => {
+                    self.error = None;
                     if let Some(loaded) = &mut self.loaded {
                         loaded.project_path = Some(path.clone());
                     }
@@ -318,6 +322,13 @@ impl Workbench {
         if self.pending.is_some() {
             return;
         }
+        let processor = match self.pcode.configuration() {
+            Ok(processor) => processor,
+            Err(error) => {
+                self.error = Some(format!("Cannot save invalid processor settings: {error}"));
+                return;
+            }
+        };
         let Some(loaded) = &mut self.loaded else {
             return;
         };
@@ -337,6 +348,7 @@ impl Workbench {
             return;
         };
         loaded.metadata.last_address = self.selected;
+        loaded.metadata.processor = processor;
         let project = Project {
             metadata: loaded.metadata.clone(),
             image: loaded.image.clone(),
@@ -366,7 +378,7 @@ impl Workbench {
                 "Finish saving project?"
             });
             ui.label(if self.dirty {
-                "Labels, comments, and bookmarks have unsaved changes."
+                "Annotations or processor settings have unsaved changes."
             } else if self.saving {
                 "The project is being saved. Closing will wait for the result."
             } else {
@@ -730,7 +742,9 @@ impl Workbench {
                 Tab::Functions => self.functions(ui),
                 Tab::Linkage => self.linkage(ui),
                 Tab::Bookmarks => self.bookmarks(ui),
-                Tab::Pcode => self.pcode_view(ui),
+                Tab::Pcode => {
+                    ui.add_enabled_ui(self.pending.is_none(), |ui| self.pcode_view(ui));
+                }
             }
         });
     }

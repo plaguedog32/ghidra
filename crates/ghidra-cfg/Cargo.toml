@@ -1,0 +1,16 @@
+[package]
+name = "ghidra-cfg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded deterministic intra-procedural control-flow graphs built from raw P-code"
+publish = false
+
+[dependencies]
+ghidra-graph = { path = "../ghidra-graph" }
+ghidra-pcode = { path = "../ghidra-pcode" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

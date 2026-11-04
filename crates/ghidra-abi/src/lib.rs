@@ -51,7 +51,7 @@ pub use native_extract::{
 };
 pub use native_predicates::{
     NativeHfa, NativeHfaRejection, NativePredicateError, NativePredicateLimits,
-    NativePredicateMatch, NativePredicateUsage,
+    NativePredicateMatch, NativePredicateUsage, NativePrototypeTypes,
 };
 pub use native_types::{
     NATIVE_INT_MAX, NativeArray, NativeBitfield, NativeConversionError, NativeDroppedField,

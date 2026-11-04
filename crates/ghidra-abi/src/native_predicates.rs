@@ -57,6 +57,16 @@ pub struct NativePredicateMatch {
     pub usage: NativePredicateUsage,
 }
 
+/// A prototype whose IDs name objects in the queried native graph, including
+/// decoder-synthesized objects with no source `TypeId`. IDs are graph-local.
+#[derive(Debug, Clone, Copy)]
+pub struct NativePrototypeTypes<'a> {
+    pub result: NativeTypeId,
+    pub parameters: &'a [NativeTypeId],
+    /// The first variable parameter slot; the end of the list is legal.
+    pub first_vararg: Option<usize>,
+}
+
 /// The first failed `HomogeneousAggregate::filter` condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeHfaRejection {
@@ -114,7 +124,7 @@ impl From<NativeTypeError> for NativePredicateError {
         match error {
             NativeTypeError::Conversion(error) => Self::Conversion(error),
             NativeTypeError::UnknownSource(ty) => Self::UnknownType(ty),
-            // Not produced by queries on IDs this graph returned.
+            // Direct native-ID queries preserve the native ID namespace.
             other => Self::Graph(other),
         }
     }
@@ -126,6 +136,26 @@ impl NativeTypeGraph {
         &self,
         filter: &DatatypeFilter,
         ty: TypeId,
+        limits: NativePredicateLimits,
+    ) -> Result<NativePredicateMatch> {
+        self.matches_filter_id(filter, ty, limits)
+    }
+
+    /// Test a filter directly against a native object, including synthesized
+    /// bitfield bases, byte arrays and union fields. No source ID is invented.
+    pub fn matches_filter_native(
+        &self,
+        filter: &DatatypeFilter,
+        ty: NativeTypeId,
+        limits: NativePredicateLimits,
+    ) -> Result<NativePredicateMatch> {
+        self.matches_filter_id(filter, ty, limits)
+    }
+
+    fn matches_filter_id<I: PredicateId>(
+        &self,
+        filter: &DatatypeFilter,
+        ty: I,
         limits: NativePredicateLimits,
     ) -> Result<NativePredicateMatch> {
         let mut budget = Budget::new(limits);
@@ -148,6 +178,52 @@ impl NativeTypeGraph {
         position: i32,
         limits: NativePredicateLimits,
     ) -> Result<NativePredicateMatch> {
+        self.matches_rule_ids(
+            rule,
+            ty,
+            PrototypeIds {
+                result: prototype.result,
+                parameters: prototype.parameters,
+                first_vararg: prototype.first_vararg,
+            },
+            position,
+            limits,
+        )
+    }
+
+    /// Filter and qualifier checks on graph-local native IDs. Prototype and
+    /// candidate IDs may include synthesized objects. As with `matches_rule`,
+    /// conversion failures are deferred until a reached filter reads a type;
+    /// actions, preconditions and side effects are not executed.
+    pub fn matches_rule_native(
+        &self,
+        rule: &ModelRule,
+        ty: NativeTypeId,
+        prototype: NativePrototypeTypes<'_>,
+        position: i32,
+        limits: NativePredicateLimits,
+    ) -> Result<NativePredicateMatch> {
+        self.matches_rule_ids(
+            rule,
+            ty,
+            PrototypeIds {
+                result: prototype.result,
+                parameters: prototype.parameters,
+                first_vararg: prototype.first_vararg,
+            },
+            position,
+            limits,
+        )
+    }
+
+    fn matches_rule_ids<I: PredicateId>(
+        &self,
+        rule: &ModelRule,
+        ty: I,
+        prototype: PrototypeIds<'_, I>,
+        position: i32,
+        limits: NativePredicateLimits,
+    ) -> Result<NativePredicateMatch> {
         if rule.qualifiers.len() > limits.max_qualifiers {
             return Err(NativePredicateError::Limit("qualifiers"));
         }
@@ -165,11 +241,11 @@ impl NativeTypeGraph {
         let mut budget = Budget::new(limits);
         budget.usage.parameters = prototype.parameters.len();
         budget.work(1)?;
-        self.known(prototype.result)?;
-        self.known(ty)?;
+        prototype.result.known(self)?;
+        ty.known(self)?;
         for parameter in prototype.parameters {
             budget.work(1)?;
-            self.known(*parameter)?;
+            parameter.known(self)?;
         }
         if !self.evaluate(&rule.datatype, ty, &mut budget)? {
             return Ok(NativePredicateMatch {
@@ -226,6 +302,25 @@ impl NativeTypeGraph {
         max_primitives: Option<u32>,
         limits: NativePredicateLimits,
     ) -> Result<NativeHfa> {
+        self.hfa_query(ty, max_primitives, limits)
+    }
+
+    /// HFA details for a native object, without requiring a source ID.
+    pub fn homogeneous_float_aggregate_native(
+        &self,
+        ty: NativeTypeId,
+        max_primitives: Option<u32>,
+        limits: NativePredicateLimits,
+    ) -> Result<NativeHfa> {
+        self.hfa_query(ty, max_primitives, limits)
+    }
+
+    fn hfa_query<I: PredicateId>(
+        &self,
+        ty: I,
+        max_primitives: Option<u32>,
+        limits: NativePredicateLimits,
+    ) -> Result<NativeHfa> {
         if max_primitives.is_some_and(|n| n > i32::MAX as u32) {
             return Err(NativePredicateError::InvalidFilter(
                 "primitive bound exceeds signed int",
@@ -233,26 +328,23 @@ impl NativeTypeGraph {
         }
         let mut budget = Budget::new(limits);
         budget.work(1)?;
-        let id = self.native(ty)?;
+        let id = ty.resolve(self)?;
         let maximum = max_primitives.filter(|n| *n != 0).unwrap_or(4);
         let mut result = self.hfa(id, maximum, &mut budget)?;
         result.usage = budget.usage;
         Ok(result)
     }
 
-    fn known(&self, ty: TypeId) -> Result<()> {
-        if ty.0 < self.source_count() {
-            Ok(())
-        } else {
-            Err(NativePredicateError::UnknownType(ty))
-        }
-    }
-
-    fn evaluate(&self, filter: &DatatypeFilter, ty: TypeId, budget: &mut Budget) -> Result<bool> {
+    fn evaluate<I: PredicateId>(
+        &self,
+        filter: &DatatypeFilter,
+        ty: I,
+        budget: &mut Budget,
+    ) -> Result<bool> {
         budget.work(1)?;
-        self.known(ty)?;
+        ty.known(self)?;
         validate_filter(filter, budget)?;
-        let id = self.native(ty)?;
+        let id = ty.resolve(self)?;
         let native = *self.get(id)?;
         match filter.class {
             DatatypeClass::HomogeneousFloatAggregate => {
@@ -365,6 +457,48 @@ impl NativeTypeGraph {
             count: primitives.len(),
             usage: budget.usage,
         })
+    }
+}
+
+struct PrototypeIds<'a, I> {
+    result: I,
+    parameters: &'a [I],
+    first_vararg: Option<usize>,
+}
+
+/// Keep the two public ID namespaces distinct while sharing evaluation and
+/// its exact work charges. Bounds checks do not force failed conversions.
+trait PredicateId: Copy {
+    fn known(self, graph: &NativeTypeGraph) -> Result<()>;
+    fn resolve(self, graph: &NativeTypeGraph) -> Result<NativeTypeId>;
+}
+
+impl PredicateId for TypeId {
+    fn known(self, graph: &NativeTypeGraph) -> Result<()> {
+        if self.0 < graph.source_count() {
+            Ok(())
+        } else {
+            Err(NativePredicateError::UnknownType(self))
+        }
+    }
+
+    fn resolve(self, graph: &NativeTypeGraph) -> Result<NativeTypeId> {
+        Ok(graph.native(self)?)
+    }
+}
+
+impl PredicateId for NativeTypeId {
+    fn known(self, graph: &NativeTypeGraph) -> Result<()> {
+        if self.0 < graph.native_count() {
+            Ok(())
+        } else {
+            Err(NativeTypeError::UnknownNative(self).into())
+        }
+    }
+
+    fn resolve(self, graph: &NativeTypeGraph) -> Result<NativeTypeId> {
+        self.known(graph)?;
+        Ok(self)
     }
 }
 

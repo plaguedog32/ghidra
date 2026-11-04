@@ -132,12 +132,13 @@ each successful child. This is a status check, not a physical-address check:
 a rejected stack candidate can change alignment waste before another pool
 succeeds. A child failure wins immediately.
 
-Full rule dispatch does not exist yet. Native predicates currently accept
-source TypeId, but extraction can return synthesized NativeTypeId objects.
-The future dispatcher must evaluate those native objects directly instead
-of inventing a source-ID translation. Class-only support can be a staged
-API, but omitted storage must remain explicitly unsupported until its actual
-dispatch contract is available.
+Full rule dispatch does not exist yet. Extraction can return synthesized
+NativeTypeId objects with no source TypeId. New direct native-ID predicate
+entry points and `NativePrototypeTypes` address that representation gap;
+their independent review is pending. The future dispatcher must use those
+native objects directly instead of inventing a source-ID translation.
+Class-only support can be a staged API, but omitted storage must remain
+explicitly unsupported until its actual dispatch contract is available.
 
 ## Transactions, bounds and evidence
 

@@ -1687,6 +1687,30 @@ Semantic rejection, including the primitive maximum, is `false`; resource
 exhaustion is a `Limit` error. A conversion failure is an error only when a
 reached filter evaluates that type.
 
+The source-ID methods above remain the Java-transport bridge. Direct native
+objects can be queried with `matches_filter_native`, `matches_rule_native`
+and `homogeneous_float_aggregate_native`. `NativePrototypeTypes` carries
+native IDs for the result and parameter list. These entry points accept
+decoder-synthesized bitfield bases, Unknown-byte arrays and opaque union
+fields; no source ID is invented for them. IDs belong to the supplied graph.
+Unknown native IDs retain the native error namespace, while failed source
+conversions remain deferred until a reached filter reads the object.
+
+Both ID paths share the same evaluator and work accounting. Prototype
+validation borrows the supplied slice and creates no translated parameter
+list. Five directed native-ID test groups cover synthetic objects in both
+byte orders, native prototype qualifiers, short-circuit/error precedence,
+HFA details and every lower work budget. An absolute 21-unit rule pin checks
+header, parameter, size-list and qualifier charges. Source/native queries
+on corresponding source slots compare complete results, errors and usage,
+including failed conversions. All ten compiling scratch mutations are caught:
+wrong ID-domain bounds/resolution, forced conversion during preflight, missing
+parameter charges or ID checks, conversion before filter validation, wrong
+datatype-at targets and source/native error-domain confusion. The scratch
+source was restored and the parent source hash stayed unchanged. This API
+extension is awaiting independent review; the earlier approval below applies
+to the preceding implementation.
+
 ## Native validation evidence
 
 The native alignment dependency was re-audited against type.cc:3805, 3821,

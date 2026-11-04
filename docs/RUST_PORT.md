@@ -109,6 +109,20 @@ cargo build --locked --release -p ghidra-desktop
 
 The executable is `target/release/ghidra-rs` on Linux/macOS and `target/release/ghidra-rs.exe` on Windows. The root `Cargo.lock` pins application dependencies and should be committed.
 
+The repository toolchain tracks stable Rust for development. To select the
+declared minimum explicitly, install Rust 1.88.0 and run:
+
+```sh
+rustup toolchain install 1.88.0 --profile minimal
+cargo +1.88.0 test --locked --workspace --all-targets
+cargo +1.88.0 test --locked --workspace --doc
+```
+
+Workspace resolver 3 prefers dependencies compatible with the declared Rust
+version; this is a preference, so the fixed-toolchain CI check remains
+necessary. See [Cargo's resolver documentation](https://doc.rust-lang.org/cargo/reference/resolver.html#rust-version).
+Keep `--locked` for reproducible application builds.
+
 Development checks:
 
 ```sh
@@ -117,7 +131,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
 ```
 
-The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produces native release executables on Windows, Linux, and macOS. It contains no Java installation or Gradle step. The old `build-ghidra.yml` remains restricted to the upstream `master` branch for reference maintenance; it is not the Rust build.
+The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produces native release executables on Windows, Linux, and macOS. A separate three-host matrix tests all workspace targets and doctests with exactly Rust 1.88.0. It contains no Java installation or Gradle step. The old `build-ghidra.yml` remains restricted to the upstream `master` branch for reference maintenance; it is not the Rust build.
 
 ## Validation of this milestone
 
@@ -158,8 +172,9 @@ its trailing-empty-member boundary finding is addressed below. The newer
 selected-pool assignment and resource-effect operations also received
 independent approval. Their budget errors now have one typed classification.
 Native primitive alignment has directed and independent oracle coverage;
-the converted native datatype graph remains to be implemented. These increments
-are committed locally and have not been pushed.
+the converted native datatype graph remains to be implemented. Source changes
+are committed on `rust-desktop`; the minimum-version validation below applies
+to this integrated checkpoint.
 
 Native visual and click-through verification was attempted again on
 2026-11-04. The computer-use helper returned `Computer Use native pipe is
@@ -168,8 +183,33 @@ application was launched or changed during that attempt. The headless egui
 checks do not establish native window, file-dialog or display-scaling
 behavior. Restore the desktop helper and verify binary opening, navigation,
 disassembly and Dataflow inspection in the real window before closing that
-milestone gate. Rust 1.88 and the latest increments on Linux/macOS also
-remain unverified.
+milestone gate. Windows Rust 1.88 validation is now recorded below;
+Linux/macOS execution of the latest increments awaits the new CI matrix.
+
+### Minimum Rust version validation
+
+Local Windows checks on 2026-11-04 now use installed Rust 1.88.0, not just API
+inspection with a newer compiler. All workspace targets compile, all 660 tests
+and 16 doctests pass, and the optimized desktop executable builds. The
+development toolchain remains unchanged. This validates the checked-in lockfile
+and default workspace features, not every optional dependency configuration.
+The Rust 1.88 release executable also runs the raw examples and recovered
+WinHelloCPP function with `JAVA_HOME` empty and `PATH` restricted to Windows
+System32. Its analysis counts and output match the newer-toolchain probes.
+
+The initial dependency audit found a real Linux gap: `rfd`'s portal dependency
+chain selected `uuid 1.29.0`, which requires Rust 1.89. Resolver 3 now selects
+`uuid 1.26.1`; that version and checksum are the only lockfile changes. A
+stable-Cargo dry run also keeps the compatible version. Selected dependency
+metadata for Windows MSVC, Linux GNU and Apple ARM now declares no Rust version
+above 1.88; metadata compatibility alone does not prove those platforms build.
+
+The workflow adds exact Rust 1.88.0 all-target and documentation tests on all
+three hosts, retaining the separate stable checks/source probes/release builds.
+The workflow passes actionlint, and an independent configuration review found
+no actionable findings. Linux/macOS execution remains pending until those
+hosted runs complete. Historical checkpoints below retain the validation limits
+that applied when they were recorded.
 
 ### Active continuation: compiler storage
 

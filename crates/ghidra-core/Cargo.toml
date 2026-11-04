@@ -1,8 +1,8 @@
 [package]
 name = "ghidra-core"
 version.workspace = true
-edition = "2024"
-rust-version = "1.88"
+edition.workspace = true
+rust-version.workspace = true
 description = "Java-free binary loading and x86 analysis for the Rust Ghidra port"
 license = "Apache-2.0"
 publish = false

@@ -29,6 +29,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: MSRV / Rust 1.88 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Initialize Windows native build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/Enter-NativeBuild.ps1
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsInstallDir', 'WindowsSdkDir')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Test all workspace targets at MSRV
+        run: cargo +1.88.0 test --locked --workspace --all-targets
+      - name: Test documentation examples at MSRV
+        run: cargo +1.88.0 test --locked --workspace --doc
+
   native:
     name: Native / ${{ matrix.os }}
     strategy:

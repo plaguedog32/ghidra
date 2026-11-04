@@ -44,3 +44,9 @@ exist, including the resolved compiler-organization bridge. A native view
 still needs converted identities, array-size validation, opaque/zero-array
 normalization, bitfield promotion/filtering and absolute field checks; changing
 only metatype filters would not meet this gate.
+
+The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
+all workspace targets, 660 tests, 16 doctests and the release executable pass.
+MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch;
+three-host locked Rust 1.88 CI tests are configured. Linux/macOS execution and
+future increments must pass their own runs before inheriting that claim.

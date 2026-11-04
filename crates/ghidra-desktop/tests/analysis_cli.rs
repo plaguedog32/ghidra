@@ -58,3 +58,42 @@ fn command_rejects_bad_arguments_or_input_without_partial_stdout() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn function_command_rejects_invalid_arguments_before_reading_files() {
+    let output = binary().arg("--analyze-function").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    for rest in [
+        vec!["bad-entry"],
+        vec!["1000", "--unknown"],
+        vec!["1000", "--havoc-unknown", "--havoc-unknown"],
+    ] {
+        let output = binary()
+            .args([
+                "--analyze-function",
+                "missing.bin",
+                ".",
+                "x86:LE:64:default",
+            ])
+            .args(rest)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+    let output = binary()
+        .args([
+            "--analyze-function",
+            "missing.bin",
+            ".",
+            "x86:LE:64:default",
+            "1000",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let output = binary().arg("--help").output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--analyze-function"));
+}

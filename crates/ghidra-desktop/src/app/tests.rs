@@ -210,6 +210,7 @@ fn every_desktop_view_renders_with_loaded_project_state() {
         Tab::Linkage,
         Tab::Bookmarks,
         Tab::Pcode,
+        Tab::Dataflow,
     ] {
         app.tab = tab;
         let input = egui::RawInput {

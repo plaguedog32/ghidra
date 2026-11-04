@@ -7,6 +7,7 @@ use ghidra_core::Analysis;
 use ghidra_project::{Annotation, Project};
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 
+mod dataflow;
 mod pcode;
 #[cfg(test)]
 mod tests;
@@ -32,6 +33,7 @@ enum Tab {
     Linkage,
     Bookmarks,
     Pcode,
+    Dataflow,
 }
 
 enum WorkResult {
@@ -60,6 +62,7 @@ pub struct Workbench {
     linkage_mode: usize,
     saving: bool,
     pcode: pcode::PcodeState,
+    dataflow: dataflow::State,
 }
 
 impl Workbench {
@@ -109,6 +112,7 @@ impl Workbench {
             linkage_mode: 0,
             saving: false,
             pcode: Default::default(),
+            dataflow: Default::default(),
         }
     }
 
@@ -155,6 +159,7 @@ impl Workbench {
                 Ok(WorkResult::Loaded(loaded)) => {
                     let loaded = *loaded;
                     self.pcode.clear_for_image();
+                    self.dataflow.clear();
                     self.pcode
                         .restore_configuration(loaded.metadata.processor.as_ref());
                     let restore = loaded.metadata.last_address;
@@ -702,6 +707,7 @@ impl Workbench {
                     (Tab::Linkage, "Linkage"),
                     (Tab::Bookmarks, "Bookmarks"),
                     (Tab::Pcode, "P-code"),
+                    (Tab::Dataflow, "Dataflow"),
                 ] {
                     ui.selectable_value(&mut self.tab, tab, label);
                 }
@@ -744,6 +750,9 @@ impl Workbench {
                 Tab::Bookmarks => self.bookmarks(ui),
                 Tab::Pcode => {
                     ui.add_enabled_ui(self.pending.is_none(), |ui| self.pcode_view(ui));
+                }
+                Tab::Dataflow => {
+                    ui.add_enabled_ui(self.pending.is_none(), |ui| self.dataflow_view(ui));
                 }
             }
         });
@@ -1013,6 +1022,7 @@ impl eframe::App for Workbench {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll(ctx);
         self.pcode.poll(ctx, self.selected);
+        self.dataflow.poll(ctx, self.pcode.fingerprint());
         if ctx.input(|i| i.viewport().close_requested()) {
             self.handle_close_request(ctx);
         }

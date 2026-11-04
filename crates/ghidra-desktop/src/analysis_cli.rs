@@ -64,7 +64,7 @@ pub(crate) fn execute(path: &Path, options: CommandOptions) -> Result<(), String
     writeln!(stdout).map_err(|e| e.to_string())
 }
 
-fn limits() -> AnalysisLimits {
+pub(crate) fn limits() -> AnalysisLimits {
     AnalysisLimits {
         max_nodes: 500_000,
         max_edges: 1_000_000,
@@ -572,6 +572,17 @@ fn write_report(analysis: &PcodeSsa, initializers: Initializers) -> Result<Vec<u
     };
     serde_json::to_writer_pretty(&mut output, &report).map_err(|e| e.to_string())?;
     Ok(output.bytes)
+}
+
+pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
+    write_report(
+        analysis,
+        Initializers {
+            regions: 0,
+            bytes: 0,
+            applied: false,
+        },
+    )
 }
 
 fn role(role: EdgeRole) -> &'static str {

@@ -80,12 +80,25 @@ pub fn lift_language(
 type LiftArguments = (u64, Vec<u8>, std::collections::BTreeMap<String, u64>);
 
 fn lift_arguments(address: &str, hex: &str, contexts: &[String]) -> Result<LiftArguments, String> {
+    Ok((
+        hex_address(address)?,
+        parse_hex(hex)?,
+        context_overrides(contexts)?,
+    ))
+}
+
+pub(crate) fn hex_address(address: &str) -> Result<u64, String> {
     let address = u64::from_str_radix(
         address.trim_start_matches("0x").trim_start_matches("0X"),
         16,
     )
     .map_err(|_| "Instruction address must be hexadecimal".to_string())?;
-    let bytes = parse_hex(hex)?;
+    Ok(address)
+}
+
+pub(crate) fn context_overrides(
+    contexts: &[String],
+) -> Result<std::collections::BTreeMap<String, u64>, String> {
     let mut context = std::collections::BTreeMap::new();
     if contexts.len() > 256 {
         return Err("Too many processor context overrides".into());
@@ -94,8 +107,8 @@ fn lift_arguments(address: &str, hex: &str, contexts: &[String]) -> Result<LiftA
         let (name, value) = argument
             .split_once('=')
             .ok_or("Context overrides use name=value")?;
-        if name.is_empty() {
-            return Err("Processor context field name is empty".into());
+        if name.is_empty() || name.len() > ghidra_project::MAX_CONTEXT_NAME_BYTES {
+            return Err("Processor context field name is empty or exceeds 256 bytes".into());
         }
         let value = if let Some(hex) = value
             .strip_prefix("0x")
@@ -110,7 +123,7 @@ fn lift_arguments(address: &str, hex: &str, contexts: &[String]) -> Result<LiftA
             return Err(format!("Duplicate context field: {name}"));
         }
     }
-    Ok((address, bytes, context))
+    Ok(context)
 }
 
 fn print_lifted(
@@ -159,6 +172,7 @@ fn write_lifted(
         length: u32,
         next_address: u64,
         delay_slots: Vec<DelaySlot<'a>>,
+        context_commits: usize,
         userops: &'a [String],
         registers: Vec<Register>,
         program: ExecutionInput,
@@ -182,6 +196,7 @@ fn write_lifted(
         disassembly: &lifted.text,
         length: lifted.length,
         next_address: lifted.next_address,
+        context_commits: lifted.context_commits,
         userops: language.userops(),
         registers,
         delay_slots: lifted

@@ -65,6 +65,9 @@ pub struct LiftedInstruction {
     /// execute the delay slots a second time on fallthrough.
     pub instruction: PcodeInstruction,
     pub delay_slots: Vec<DelaySlot>,
+    /// Number of global context commits emitted by the instruction and delay
+    /// slots. Independent function lifting must not ignore these flow effects.
+    pub context_commits: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -303,7 +306,11 @@ impl SleighLanguage {
         }
         let mut total = u64::from(length);
         let mut delay_slots = Vec::new();
+        let mut context_commits = decoded.context_effects().len();
         for slot in decoded.delay_slots() {
+            context_commits = context_commits
+                .checked_add(slot.context_effects().len())
+                .ok_or_else(|| Error::Unsupported("too many decode context commits".into()))?;
             let slot_length = u32::try_from(slot.len()).map_err(|_| Error::AddressOverflow)?;
             let slot_address = address.checked_add(total).ok_or(Error::AddressOverflow)?;
             if let Some(context) = &self.catalog_context {
@@ -401,6 +408,7 @@ impl SleighLanguage {
             next_address,
             instruction,
             delay_slots,
+            context_commits,
         })
     }
 

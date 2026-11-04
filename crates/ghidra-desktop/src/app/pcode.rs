@@ -28,6 +28,32 @@ pub(super) struct PcodeState {
 }
 
 impl PcodeState {
+    pub(super) fn fingerprint(&self) -> (u64, u64) {
+        (self.generation, self.revision)
+    }
+
+    pub(super) fn language_config(&self) -> Result<LanguageConfig, String> {
+        let context = parse_context(&self.context)?;
+        if self.catalog.wanted.is_some() && self.catalog.definition.is_none() {
+            return Err("The saved language is unresolved. Choose matching catalog assets or explicitly replace the language selection.".into());
+        }
+        if self.source.trim().is_empty() && self.catalog.definition.is_none() {
+            return Err("Choose a processor language or SLEIGH source specification".into());
+        }
+        Ok(LanguageConfig {
+            source: self
+                .catalog
+                .definition
+                .as_ref()
+                .and_then(|definition| definition.source.available_path())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(self.source.trim())),
+            definition: self.catalog.definition.clone(),
+            context,
+            revision: self.source_epoch,
+        })
+    }
+
     fn key(&self, address: u64) -> SelectionKey {
         SelectionKey {
             generation: self.generation,
@@ -159,17 +185,11 @@ impl PcodeState {
         continuation: Option<u64>,
     ) {
         let key = self.key(address);
-        let prepared = parse_context(&self.context).and_then(|context| {
-            if self.catalog.wanted.is_some() && self.catalog.definition.is_none() {
-                return Err("The saved language is unresolved. Choose matching catalog assets or explicitly replace the language selection.".into());
-            }
-            if self.source.trim().is_empty() && self.catalog.definition.is_none() {
-                return Err("Choose a processor language or SLEIGH source specification".into());
-            }
+        let prepared = self.language_config().and_then(|config| {
             let bytes = crate::lifting::instruction_window(image, address)?;
-            Ok((context, bytes))
+            Ok((config, bytes))
         });
-        let (context, bytes) = match prepared {
+        let (config, bytes) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.waiting = None;
@@ -185,18 +205,7 @@ impl PcodeState {
             id,
             continuation,
             generation: self.generation,
-            config: LanguageConfig {
-                source: self
-                    .catalog
-                    .definition
-                    .as_ref()
-                    .and_then(|definition| definition.source.available_path())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(self.source.trim())),
-                definition: self.catalog.definition.clone(),
-                context,
-                revision: self.source_epoch,
-            },
+            config,
             address,
             bytes,
             defaults: Default::default(),

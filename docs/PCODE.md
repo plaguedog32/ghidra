@@ -78,6 +78,61 @@ serialization-limit errors leave stdout empty. Status 1 reports those failures;
 status 2 reports missing or invalid command arguments. The command uses no Java
 runtime, JNI, external decompiler process or native target execution.
 
+## Recovered binary functions
+
+Choose a matching x86 catalog language in **P-code**, select an instruction in a
+recovered function, then open **Dataflow** and choose **Analyze selected function**.
+The background worker reuses source compilation and keeps only the newest queued
+request. Image, processor and effect-policy changes invalidate stale results.
+The view shows CFG nodes, terminal exits, phi values, SSA operations and storage
+variables; **Copy analysis JSON** exports the result. Analysis does not modify
+project metadata or annotations.
+
+The same pipeline is available without a window:
+
+```sh
+cargo run -p ghidra-desktop -- --analyze-function \
+  GhidraDocs/GhidraClass/ExerciseFiles/WinhelloCPP/WinHelloCPP.exe \
+  Ghidra/Processors x86:LE:32:default 401E46 --havoc-unknown
+```
+
+The address is a hexadecimal entry of a function found by current binary
+recovery. Optional `context=value` arguments override processor defaults. The
+explicit command language/context is used for this analysis; no project settings
+are changed. Raw source mode is not accepted for function analysis. The catalog
+processor, data/instruction byte order, language bitness and compiled code-space
+width must match the x86/x64 image. Source bytes and instruction boundaries are
+checked against recovery. A mismatch fails the analysis.
+
+This initial function path decodes with independent processor defaults.
+Instructions emitting global context commits and delay-slot bundles are rejected
+because they need flow-aware decoding. Single-instruction lifting and checked
+**Next instruction** retain their existing multi-processor support. Lift exports
+now include `context_commits` so emitted decode effects are visible.
+
+Calls and userops require **Conservative unknown effects** in the UI or
+`--havoc-unknown` in the command. This preserves marked opaque full-domain effects
+rather than guessing a calling convention. Incomplete function recovery remains
+explicit, including branches outside the supplied domain. Output uses
+`ghidra-rs.function-analysis`, version 1: `function` records native bytes,
+disassembly, recovery status, declared language version, context and boundary
+policy; `analysis` contains the P-code analysis schema described above.
+
+Each function is limited to 5,000 native instructions, 100,000 lifted operations,
+4,096 bytes of display text per instruction and 4 MiB total display text, plus
+the native analysis budgets and a 64 MiB JSON cap. SSA is currently unpruned.
+There is no ABI/type recovery, indirect-target resolution, expression
+simplification or structured decompiled output yet. Instruction-boundary checks
+and SSA verification do not establish complete instruction-semantic parity.
+
+An opt-in probe compiles the real x86-64 source, lifts a recovered loop function
+from the synthetic PE sample, checks its SSA/loop structure and executes its
+P-code to produce 3:
+
+```sh
+cargo test -p ghidra-desktop upstream_x86_function -- --ignored
+```
+
 ## Source-based instruction lifting
 
 The desktop P-code tab can inspect any selected file-backed executable address. Choose a language ID from the catalog and select **Lift selected instruction**. Its `.pspec` decode defaults are applied automatically; optional context overrides take precedence. A raw `.slaspec` source can also be selected with caller-supplied defaults. **Follow selection** updates the view when the selected address changes; **Next instruction** advances by the lifter's semantic extent, including delay slots. Compilation runs in a persistent background worker and is reused until the language settings change or **Reload source** is selected. Queued requests are coalesced, and results from old programs or selections are discarded. Failed compilations are also cached until settings change or an explicit reload.

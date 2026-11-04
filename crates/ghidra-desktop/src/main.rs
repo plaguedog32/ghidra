@@ -1,6 +1,7 @@
 mod analysis_cli;
 mod app;
 mod demo;
+mod function_analysis;
 mod lifting;
 mod pcode_cli;
 mod report;
@@ -13,7 +14,7 @@ fn main() -> eframe::Result {
     match first.as_deref().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --analyze-pcode PROGRAM.json [--instruction-uniques] [--havoc-unknown]\n  ghidra-rs --languages ROOT\n  ghidra-rs --compiler-spec ROOT LANGUAGE_ID COMPILER_ID\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
+                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --analyze-pcode PROGRAM.json [--instruction-uniques] [--havoc-unknown]\n  ghidra-rs --analyze-function BINARY ROOT LANGUAGE_ID HEX_ENTRY [--havoc-unknown] [context=value ...]\n  ghidra-rs --languages ROOT\n  ghidra-rs --compiler-spec ROOT LANGUAGE_ID COMPILER_ID\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(());
@@ -68,6 +69,35 @@ fn main() -> eframe::Result {
                 std::process::exit(1);
             }
             println!("Project saved");
+            return Ok(());
+        }
+        Some("--analyze-function") => {
+            let (Some(binary), Some(root), Some(language), Some(entry)) =
+                (args.next(), args.next(), args.next(), args.next())
+            else {
+                eprintln!(
+                    "--analyze-function requires BINARY ROOT LANGUAGE_ID HEX_ENTRY [--havoc-unknown] [context=value ...]"
+                );
+                std::process::exit(2);
+            };
+            let rest: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+            let arguments =
+                match function_analysis::CommandArguments::parse(&entry.to_string_lossy(), &rest) {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    }
+                };
+            if let Err(error) = function_analysis::execute(
+                &PathBuf::from(binary),
+                &PathBuf::from(root),
+                &language.to_string_lossy(),
+                arguments,
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
             return Ok(());
         }
         Some("--analyze-pcode") => {

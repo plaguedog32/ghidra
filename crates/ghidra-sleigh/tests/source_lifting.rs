@@ -59,7 +59,7 @@ fn address_defaults_do_not_leak_or_overwrite_committed_context() {
         "mode"
     );
     assert_eq!(language.decode(0x1000, &[6]).unwrap().text, "base");
-    language.decode(0x1000, &[5]).unwrap();
+    assert_eq!(language.decode(0x1000, &[5]).unwrap().context_commits, 1);
     let phase_zero = BTreeMap::from([("phase".into(), 0)]);
     assert_eq!(
         language

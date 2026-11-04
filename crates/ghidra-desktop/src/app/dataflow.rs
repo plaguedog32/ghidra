@@ -265,7 +265,7 @@ impl Workbench {
         };
         ui.label(RichText::new(format!("Instruction lengths and bytes checked; instruction-local temporaries start undefined. Memory dependencies use whole address spaces. {placement}")).small().color(MUTED));
         ui.separator();
-        let pane_height = (viewport_height - ui.min_rect().height()).max(180.0);
+        let pane_height = (viewport_height - (ui.cursor().top() - ui.min_rect().top())).max(180.0);
         if self.dataflow.inspect == Inspect::Expressions {
             let Some((_, view)) = &self.dataflow.view else {
                 return;
@@ -856,12 +856,17 @@ mod tests {
 
     #[test]
     fn full_workbench_inspection_panes_remain_scrollable_at_small_sizes_and_large_fonts() {
-        fn text_rect(output: &egui::FullOutput, prefix: &str) -> Option<egui::Rect> {
+        fn text_rect(output: &egui::FullOutput, needle: &str, exact: bool) -> Option<egui::Rect> {
             output.shapes.iter().find_map(|shape| {
                 let egui::epaint::Shape::Text(text) = &shape.shape else {
                     return None;
                 };
-                if !text.galley.text().starts_with(prefix) {
+                let matches = if exact {
+                    text.galley.text() == needle
+                } else {
+                    text.galley.text().starts_with(needle)
+                };
+                if !matches {
                     return None;
                 }
                 let visible = egui::Rect::from_min_size(text.pos, text.galley.size())
@@ -926,6 +931,14 @@ mod tests {
             output
         }
         let fixture = crate::function_analysis::tests::fixture();
+        let source =
+            std::fs::read_to_string(fixture.directory.path().join("test.slaspec")).unwrap();
+        assert!(source.contains("return [rip];"));
+        std::fs::write(
+            fixture.directory.path().join("test.slaspec"),
+            source.replace("return [rip];", "rax = rax / 0; return [rip];"),
+        )
+        .unwrap();
         for font_size in [14.0, 28.0] {
             for rows in [
                 constants::Rows::Values,
@@ -940,6 +953,37 @@ mod tests {
                 app.dataflow.constant.rows = rows;
                 app.dataflow.constant.value =
                     app.dataflow.view.as_ref().unwrap().1.constant_values[0].0;
+                let view = &app.dataflow.view.as_ref().unwrap().1;
+                let c = view.constants.as_ref();
+                assert!(!c.faults().is_empty());
+                let spaces = c.analysis().cfg().spaces();
+                let expected_row = match rows {
+                    constants::Rows::Values => constants::value_row(c, spaces, 0).1,
+                    constants::Rows::Known => {
+                        constants::value_row(c, spaces, view.constant_values[0].0).1
+                    }
+                    constants::Rows::Edges => constants::edge_row(c, 0).1,
+                    constants::Rows::Faults => constants::fault_row(c, 0).1,
+                };
+                let expected_address = match rows {
+                    constants::Rows::Values => expressions::source_address(
+                        &view.expressions,
+                        ghidra_ssa::ValueId(app.dataflow.constant.value),
+                    )
+                    .unwrap(),
+                    constants::Rows::Known => {
+                        expressions::source_address(&view.expressions, view.constant_values[0])
+                            .unwrap()
+                    }
+                    constants::Rows::Edges => c.analysis().cfg().edges()[0].source.address,
+                    constants::Rows::Faults => {
+                        view.expressions
+                            .operation(c.faults()[0].statement)
+                            .unwrap()
+                            .point
+                            .address
+                    }
+                };
                 let context = egui::Context::default();
                 context.style_mut(|style| {
                     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
@@ -967,23 +1011,18 @@ mod tests {
                 // Scroll on a header control so the page, rather than a nested
                 // fact/detail list, receives the input. Its full production
                 // toolbar and both 260-point side panels are present.
-                let header =
-                    text_rect(&output, "Analyze selected function").expect("visible page header");
+                let header = text_rect(&output, "Analyze selected function", false)
+                    .expect("visible page header");
                 output = scroll(&mut app, &context, &mut time, header.center());
-                let prefix = match rows {
-                    constants::Rows::Values | constants::Rows::Known => "v",
-                    constants::Rows::Edges => "e0",
-                    constants::Rows::Faults => "No evaluation faults at the fixpoint.",
-                };
                 assert!(
-                    text_rect(&output, prefix).is_some(),
+                    text_rect(&output, &expected_row, true).is_some(),
                     "{font_size}, {rows:?}: no visible facts after page scroll"
                 );
-                if rows != constants::Rows::Faults {
+                {
                     // A long narrow detail panel must also allow its source
                     // navigation control to be reached by scrolling locally.
                     output = scroll(&mut app, &context, &mut time, egui::pos2(620.0, 600.0));
-                    let button = text_rect(&output, "Go to ").unwrap_or_else(|| {
+                    let button = text_rect(&output, "Go to ", false).unwrap_or_else(|| {
                         panic!("{font_size}, {rows:?}: source navigation inaccessible")
                     });
                     let at = button.center();
@@ -1006,6 +1045,11 @@ mod tests {
                     assert!(
                         matches!(app.tab, Tab::Listing),
                         "{font_size}, {rows:?}: source navigation did not run"
+                    );
+                    assert_eq!(
+                        app.selected,
+                        Some(expected_address),
+                        "{font_size}, {rows:?}: wrong source address"
                     );
                 }
                 assert!(!app.dirty);

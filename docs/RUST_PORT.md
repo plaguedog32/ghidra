@@ -162,8 +162,9 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI tree passes 660 default workspace tests and
-16 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
+The current analysis/ABI tree passes 700 default workspace tests and
+17 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
+Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
 storage, compiler datatype predicates and primitive/union extraction are
@@ -171,8 +172,10 @@ integrated. Independent review approved the extraction and bitfield fixes;
 its trailing-empty-member boundary finding is addressed below. The newer
 selected-pool assignment and resource-effect operations also received
 independent approval. Their budget errors now have one typed classification.
-Native primitive alignment has directed and independent oracle coverage;
-the converted native datatype graph remains to be implemented. Source changes
+Native primitive alignment has directed and independent oracle coverage.
+The converted native datatype graph, native primitive extraction and native
+filter/qualifier/HFA evaluation are integrated as separate APIs, with
+independent review approval. Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
 
@@ -518,10 +521,51 @@ Source audits show the full native datatype view also needs graph conversion:
 distinct alias identity, native scalar/composite geometry, array decode-size
 checks, opaque/zero-array normalization, bitfield filtering/promotion and
 absolute field alignment/hole checks. The ABI README records this contract.
-The existing Java predicate/extraction APIs are unchanged; native graph
-conversion, native rule predicates/extraction and complete signature recovery
-remain required. This alignment component does not imply C output or inferred
+The existing Java predicate/extraction APIs are unchanged. Native graph
+conversion and native predicates/extraction are now implemented separately,
+as described below; complete signature recovery remains required.
+This alignment component does not imply C output or inferred
 types, native GUI verification, MSRV validation or cross-platform parity.
+
+### Converted native datatype graph and rule predicates
+
+`ghidra-abi` now converts declared layouts into an immutable native datatype
+view. It models the retained Java transport and C++ decoder rather than
+changing the existing Java layout/predicate APIs. Source IDs keep their
+identity, typedefs retain distinct objects with shared field storage, and
+decoder-created bitfield bases follow the source objects. Native scalar and
+composite geometry, zero-array and opaque transport, array-size validation,
+and byte/non-byte/union bitfield handling are explicit. Conversion failures
+are typed per object and propagate through by-value dependencies; pointer
+queries and whole-graph load blockers remain distinct.
+
+Native primitive extraction and datatype filters/qualifiers/HFA checks use
+that graph. In particular, native array aliases match array filters and HFA
+compares exact float-object identity. Extraction checks absolute field
+alignment and holes, and keeps native union refinement and flag behavior.
+Traversal is iterative, arrays expand lazily, and work, live records, depth,
+fields, references and synthetic objects have checked bounds.
+
+The author added 40 tests and one doctest, including source-derived directed
+cases, a separate recursive/dense-map oracle, all 107 referenced compiler
+organizations and 23 compiling mutations. Local integrated checks pass on
+Windows: 700 workspace tests and 17 doctests on both stable and Rust 1.88.0,
+formatting, workspace Clippy with warnings denied, Rust 1.88 rustdoc with
+warnings denied, and the Rust 1.88 release build. Java-free sample runs retain
+their previous results. Independent review approved `4d8c4ebd88` with no
+required changes: 290,784 extraction queries matched a harness compiled from
+the retained C++ method bodies; deep-union, cleanup, failure-rollback and
+loadability probes also passed. Conversion was source-inspected and
+target-probed rather than tested by a full Java/TypeFactory round trip. These
+checks do not establish cross-platform behavior for this increment.
+
+No rule dispatcher, allocation action, CLI or desktop path consumes the new
+APIs yet. Native factory names/IDs/core caches and interning, pointer typedef
+settings, string transports, function prototype decoding, signature recovery
+and call effects remain unfinished. Distinct source IDs deliberately stay
+distinct even where a real factory could intern equivalent builtin/array
+objects; callers must not treat this identity policy as full TypeFactory
+parity. See [the ABI contract](../crates/ghidra-abi/README.md#native-datatype-graph).
 
 ### Saved pause: expression inspection milestone
 

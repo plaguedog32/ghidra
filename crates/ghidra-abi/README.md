@@ -1102,8 +1102,18 @@ refinement sizes, float preference, the inert skip, bitfield base selection,
 the basetype boundary, array mismatch, the opaque threshold, composite
 rounding, alias identity, code geometry, zero arrays, HFA holes, native sizes,
 array bounds and loadability. These are source-derived Rust
-references; no C++ or Java process was run, and this increment has not been
-independently reviewed.
+references; the author ran no C++ or Java process.
+
+Independent review approved the integrated code at `4d8c4ebd88` with no required
+changes. A separate harness compiled the retained C++ extractor/refinement
+method bodies with minimal datatype scaffolding and compared 290,784 queries
+across 120 converted graphs against Rust 1.88 release results. Validity, flags,
+primitive identity/order and offsets agreed. Further probes covered a
+100,000-level union chain and its exact depth boundary, cleanup without stack
+overflow, synthetic-array failure rollback, and pointer/function loadability
+cycles. Conversion also received independent source inspection and targeted
+probes; this was not a full Java/TypeFactory transport round trip. These
+external test harnesses add no Java or C++ runtime dependency to the library.
 
 ## Native gaps and remaining work
 

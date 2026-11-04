@@ -25,7 +25,7 @@ The processor gate is per-language: compile this checkout's source, load `.ldefs
 
 The decompiler gate requires a genuine P-code-to-structured-output pipeline: P-code CFG construction, SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. Native P-code CFGs, an alias-aware pruned SSA adapter, owned def-use indexing and typed expression reconstruction now exist, with abstract whole-space memory dependencies and explicit unknown effects. Recovered x86/x64 function lifting is connected to a desktop Dataflow view and JSON command. Typed expression inspection/export is available in desktop Dataflow, optional `--analyze-pcode --expressions` output, and every `--analyze-function` report. Sparse conditional constant-propagation facts have independent library approval and desktop/JSON integration, with its compact-window layout fix independently approved; undefined/reset/memory/opaque state stays unknown.
 
-ABI storage inspection has an independently reviewed resource-group planner, per-pool placement engine and explicit-request fallback allocator. Native datatype-filter and qualifier evaluation has independent approval. General primitive extraction and union refinement have independent approval; a trailing-empty-member address-boundary finding is fixed. Explicit selected-pentry assignments and ordered extra-register/stack consumption effects now operate on allocation state, with separate Java/native threshold-index policies and bounded rollback. Full datatype-driven signature allocation, model-rule dispatch and compound actions, pointer/hidden-return/shared-stack handling, and call-effect integration remain. The Java compiler-spec and C++ decompiler datatype views differ, including named Go array matching and float-alias identity; a decompiler-specific view is required before signature recovery integration.
+ABI storage inspection has an independently reviewed resource-group planner, per-pool placement engine and explicit-request fallback allocator. Java-view datatype-filter and qualifier evaluation has independent approval. General primitive extraction and union refinement have independent approval; a trailing-empty-member address-boundary finding is fixed. Explicit selected-pentry assignments and ordered extra-register/stack consumption effects now operate on allocation state, with separate Java/native threshold-index policies and bounded rollback. Full datatype-driven signature allocation, model-rule dispatch and compound actions, pointer/hidden-return/shared-stack handling, and call-effect integration remain. The Java compiler-spec and C++ decompiler datatype views differ, including named Go array matching and float-alias identity; a separate converted native graph and native predicates/extraction now have independent review approval, with no allocation callers yet.
 
 Compiler-spec stack load-order and frame-namespace checks have independent approval and follow-up fixes; wide-register metadata enumeration includes SH-2A. Historical stack-geometry changes, virtual-frame ranges and remaining source/address-space gaps still need follow-up. Native declared datatype geometry covers scalars, pointers, aliases, arrays and ordinary automatic aggregates, with independent review approval. GCC/MS bitfield layout is implemented; a review's raised-cap comparison-overflow finding is fixed with widened arithmetic and targeted regressions. Bitfield wrapper extraction is connected to the primitive layer. Manual layouts, explicit mutable datatype setters, archives, mutable datatype managers, member pragmas, bitfield value access and type inference remain. Other processor function flows, pointer disambiguation, algebraic expression simplification, type propagation and structured output remain. A disassembly listing or an operation dump does not satisfy the decompiler gate.
 
@@ -38,15 +38,19 @@ was launched or changed. Headless layout tests remain separate evidence;
 binary opening, native dialogs, navigation and inspection still need a real
 window check when that helper is available.
 
-Native datatype conversion has a source-derived contract in the ABI crate
-README. Bounded native alignment-map decoding and primitive geometry now
-exist, including the resolved compiler-organization bridge. A native view
-still needs converted identities, array-size validation, opaque/zero-array
-normalization, bitfield promotion/filtering and absolute field checks; changing
-only metatype filters would not meet this gate.
+Native datatype conversion follows a source-derived contract in the ABI crate
+README. Bounded native alignment-map decoding and primitive geometry include
+the resolved compiler-organization bridge. A separate native graph now adds
+converted identities, array-size validation, opaque/zero-array normalization,
+bitfield promotion/filtering and absolute field checks, with native extraction
+and predicates. Factory names/IDs/core caches and interning, pointer typedef
+settings, string transports and function prototype decoding remain unmodeled.
+The APIs have independent review approval and still need integration into
+signature allocation and call effects; graph conversion alone does not meet
+the decompiler gate.
 
 The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
-all workspace targets, 660 tests, 16 doctests and the release executable pass.
+all workspace targets, 700 tests, 17 doctests and the release executable pass.
 MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
 CI run 41833473619 passed the locked Rust 1.88 tests/doc examples and stable
 checks/source probes/release builds on Windows, Linux and macOS at source

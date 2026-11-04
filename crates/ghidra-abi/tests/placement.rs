@@ -801,3 +801,145 @@ fn many_piece_join_scaling_depends_on_piece_count_and_not_payload_bytes() {
     assert!(big.work < 12_000);
     assert_eq!(placed(&big).size, 1_000_000);
 }
+
+#[test]
+fn signed_stack_placement_includes_the_negative_domain_edge() {
+    let file = file(false, false, 1, 1);
+    let spec = source(
+        r#"<pentry minsize="1" maxsize="500" align="1"><addr space="stack" offset="-128"/></pentry>"#,
+        "",
+        "",
+    );
+    let storage = common::storage(spec, &file, Default::default()).unwrap();
+    for (cursor, expected) in [(0, -128), (1, -127), (255, 127)] {
+        let result = query(
+            &storage,
+            INPUT,
+            PlacementRequest {
+                used_slots: cursor,
+                ..PlacementRequest::new(1)
+            },
+        );
+        assert_eq!(
+            pieces(&result)[0].storage.address.signed_stack_offset(),
+            Some(expected)
+        );
+    }
+    no_fit(
+        &query(
+            &storage,
+            INPUT,
+            PlacementRequest {
+                used_slots: 256,
+                ..PlacementRequest::new(1)
+            },
+        ),
+        NoFit::AddressDomain,
+        256,
+    );
+}
+
+#[test]
+fn big_endian_stack_reverse_justification_does_not_change_register_pools() {
+    let storage = overlay(
+        r#"<pentry minsize="1" maxsize="4"><register name="r0"/></pentry>
+<pentry minsize="1" maxsize="16" align="4"><addr space="stack" offset="8"/></pentry>"#,
+        r#"reversejustify="true""#,
+        true,
+        true,
+    );
+    assert_eq!(
+        pieces(&query(&storage, INPUT, PlacementRequest::new(1)))[0]
+            .storage
+            .address
+            .offset,
+        3
+    );
+    assert_eq!(
+        pieces(&query(
+            &storage,
+            BindingSite::Input { model: 0, entry: 1 },
+            PlacementRequest::new(1)
+        ))[0]
+            .storage
+            .address
+            .signed_stack_offset(),
+        Some(8)
+    );
+}
+
+#[test]
+fn little_endian_reverse_stack_attribute_does_not_reject_register_placement() {
+    let storage = overlay(
+        r#"<pentry minsize="1" maxsize="4"><register name="r0"/></pentry>"#,
+        r#"reversejustify="true""#,
+        false,
+        false,
+    );
+    assert_eq!(
+        pieces(&query(&storage, INPUT, PlacementRequest::new(1)))[0]
+            .storage
+            .address
+            .offset,
+        0
+    );
+}
+
+#[test]
+fn aligned_float_entries_place_bytes_without_a_format_conversion() {
+    for big in [false, true] {
+        let storage = overlay(
+            r#"<pentry minsize="1" maxsize="8" align="4" extension="float"><register name="f0d"/></pentry>"#,
+            "",
+            big,
+            big,
+        );
+        for (size, cursor, offset, next) in [
+            (3, 0, if big { 0x101 } else { 0x100 }, 1),
+            (5, 0, if big { 0x103 } else { 0x100 }, 2),
+            (1, 1, if big { 0x107 } else { 0x104 }, 2),
+        ] {
+            let result = query(
+                &storage,
+                INPUT,
+                PlacementRequest {
+                    used_slots: cursor,
+                    ..PlacementRequest::new(size)
+                },
+            );
+            assert_eq!(placed(&result).extension, Extension::Float);
+            assert_eq!(result.next_slot, next);
+            assert_eq!(pieces(&result)[0].storage.address.offset, offset);
+            assert_eq!(pieces(&result)[0].storage.size, Some(size));
+        }
+    }
+}
+
+#[test]
+fn upward_growth_reserves_every_slot_in_a_multislot_value() {
+    for big in [false, true] {
+        let storage = overlay(
+            r#"<pentry minsize="1" maxsize="16" align="4"><addr space="stack" offset="-16"/></pentry>
+<pentry minsize="1" maxsize="16" align="4"><addr space="register" offset="0"/></pentry>"#,
+            r#"growth="positive""#,
+            big,
+            big,
+        );
+        let stack = query(&storage, INPUT, PlacementRequest::new(5));
+        assert_eq!(stack.next_slot, 2);
+        assert_eq!(
+            pieces(&stack)[0].storage.address.signed_stack_offset(),
+            Some(if big { -5 } else { -8 })
+        );
+        let register = query(
+            &storage,
+            BindingSite::Input { model: 0, entry: 1 },
+            PlacementRequest::new(5),
+        );
+        assert_eq!(register.next_slot, 2);
+        assert_eq!(
+            pieces(&register)[0].storage.address.offset,
+            if big { 11 } else { 8 }
+        );
+    }
+}

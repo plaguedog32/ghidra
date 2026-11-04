@@ -257,6 +257,20 @@ impl CompilerStorage {
         let mut space_bases = Vec::with_capacity(source.space_bases.len());
         for (index, base) in source.space_bases.iter().enumerate() {
             let resolved = (|| {
+                resolver.budget.name(&base.name)?;
+                resolver
+                    .budget
+                    .lookup(file.spaces().len(), base.name.len())?;
+                if file.space_named(&base.name).is_some() {
+                    return Err(AbiError::InvalidStorage(
+                        "compiler spacebase name duplicates a language address space",
+                    ));
+                }
+                if matches!(base.name.as_str(), "stack" | "join" | "OTHER") {
+                    return Err(AbiError::InvalidStorage(
+                        "compiler frames shadowing synthetic spaces are not modeled",
+                    ));
+                }
                 let register = file.find_register(&base.register, &mut resolver.budget)?;
                 let space = resolver.space(&base.space)?.space;
                 Ok(ResolvedSpaceBase {

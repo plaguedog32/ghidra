@@ -592,7 +592,7 @@ fn repeated_names_follow_ghidra() {
 fn nonnegative_int_fields_reject_values_java_would_wrap() {
     let entry = |max: &str| {
         parse(&input(&format!(
-            r#"<pentry minsize="1" maxsize="{max}"><addr space="stack" offset="0"/></pentry>"#
+            r#"<pentry minsize="1" maxsize="{max}"><addr space="ram" offset="0"/></pentry>"#
         )))
     };
     let spec = entry("2147483647");

@@ -585,7 +585,8 @@ fn construction_budgets_hold_at_exact_size_and_fail_one_below() {
 }
 
 fn many_models(models: usize) -> CompilerSpec {
-    let mut text = String::from("<compiler_spec><default_proto>");
+    let mut text =
+        String::from(r#"<compiler_spec><stackpointer register="sp" space="ram"/><default_proto>"#);
     for index in 0..models {
         text.push_str(&format!(
             r#"<prototype name="m{index}" extrapop="0" stackshift="0"><input>
@@ -616,4 +617,69 @@ fn overlay_work_scales_without_amplification() {
     assert!(work < 6.0, "{work}");
     // Lookup of the last model's return addresses neither scans nor allocates.
     assert!(large.return_addresses(799).unwrap().is_empty());
+}
+
+#[test]
+fn compiler_spacebase_names_cannot_duplicate_language_spaces() {
+    let file = small_file();
+    for name in ["ram", "register", "const"] {
+        let text = format!(
+            r#"<compiler_spec><spacebase name="{name}" register="r0" space="ram"/>
+<default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/></prototype></default_proto></compiler_spec>"#
+        );
+        let spec = parse(&text);
+        assert!(spec.is_fully_modeled()); // collision needs the processor layout
+        let error = at(
+            storage(spec, &file, Default::default()).unwrap_err(),
+            BindingSite::SpaceBase(0),
+        );
+        assert!(matches!(
+            error,
+            AbiError::InvalidStorage("compiler spacebase name duplicates a language address space")
+        ));
+    }
+}
+
+#[test]
+fn distinct_case_sensitive_compiler_frames_keep_backing_storage() {
+    let file = small_file();
+    let spec = parse(
+        r#"<compiler_spec><spacebase name="RAM" register="r0" space="ram"/>
+<spacebase name="gp" register="r1" space="ram"/>
+<default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/></prototype></default_proto></compiler_spec>"#,
+    );
+    let result = storage(spec, &file, Default::default()).unwrap();
+    assert_eq!(result.space_bases().len(), 2);
+    assert_eq!(
+        result.space_bases()[0].register,
+        file.register_id("r0").unwrap()
+    );
+    assert_eq!(
+        result.space_bases()[1].register,
+        file.register_id("r1").unwrap()
+    );
+    assert!(
+        result
+            .space_bases()
+            .iter()
+            .all(|base| base.space == AbiSpace::Language(RAM))
+    );
+}
+
+#[test]
+fn compiler_frames_cannot_silently_shadow_synthetic_space_variants() {
+    for name in ["stack", "join", "OTHER"] {
+        let spec = parse(&format!(
+            r#"<compiler_spec><spacebase name="{name}" register="r0" space="ram"/>
+<default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/></prototype></default_proto></compiler_spec>"#
+        ));
+        let error = at(
+            storage(spec, &small_file(), Default::default()).unwrap_err(),
+            BindingSite::SpaceBase(0),
+        );
+        assert!(matches!(
+            error,
+            AbiError::InvalidStorage("compiler frames shadowing synthetic spaces are not modeled")
+        ));
+    }
 }

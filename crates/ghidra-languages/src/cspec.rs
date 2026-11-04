@@ -23,6 +23,11 @@
 //!   values Ghidra silently defaults). They do not stop a spec from being fully modeled.
 //!   Input Ghidra rejects (for example an element nested inside a leaf tag such as
 //!   `<consume>`) is an error.
+//! - Explicit `stack` space references need an earlier `<stackpointer>` declaration.
+//!   Ghidra creates the no-pointer fallback stack only after XML loading. Captured
+//!   premature references stay present with errors; the enclosing prototype is
+//!   incomplete. Earlier compiler-frame ranges in global-style tags follow
+//!   `readExtraRange` instead of ordinary address-space lookup.
 //! - Reading is bounded. Besides the XML limits, [`Limits::max_cspec_work`],
 //!   [`Limits::max_cspec_diagnostics`] and [`Limits::max_cspec_diagnostic_bytes`] cap the
 //!   semantic work and the diagnostics one file may cause. When a budget runs out the
@@ -1097,6 +1102,7 @@ impl CompilerSpec {
                             );
                         }
                         reader.stack_growth = sp.growth;
+                        reader.stack_available = true;
                         spec.stack_pointer = Some(sp);
                     }
                 }
@@ -1297,6 +1303,7 @@ impl CompilerSpec {
                         reader.require(child, "space"),
                         reader.require(child, "delay"),
                     ) && let Ok(Some(delay)) = reader.i32_attr(child, "delay")
+                        && reader.space_reference(space, child.line)
                     {
                         spec.dead_code_delays.push(DeadCodeDelay {
                             space: space.to_owned(),
@@ -1643,6 +1650,8 @@ struct Reader {
     /// Growth from the last `<stackpointer>` seen. Ghidra reads sequentially, so entries
     /// before the stack pointer use the default (negative).
     stack_growth: StackGrowth,
+    /// Fallback stack creation happens after XML loading, not before it.
+    stack_available: bool,
 }
 
 const DATA_ORG_VALUES: &[&str] = &[
@@ -1719,6 +1728,7 @@ impl Reader {
             exhausted: None,
             seen: Seen::default(),
             stack_growth: StackGrowth::Negative,
+            stack_available: false,
         }
     }
 
@@ -1794,6 +1804,19 @@ impl Reader {
 
     fn warn(&mut self, kind: DiagnosticKind, line: u32, message: String) {
         self.diag(Severity::Warning, kind, line, message);
+    }
+
+    /// Preserve the declaration with an error when Ghidra's load-time stack
+    /// does not yet exist. False means the diagnostic budget ran out.
+    fn space_reference(&mut self, space: &str, line: u32) -> bool {
+        if space == STACK_SPACE && !self.stack_available {
+            self.error(
+                DiagnosticKind::UnresolvedReference,
+                line,
+                "stack address space requires an earlier <stackpointer>; Ghidra creates its fallback stack only after reading the compiler spec".into(),
+            );
+        }
+        self.exhausted.is_none()
     }
 
     /// Unknown attributes, which Ghidra ignores: one warning each (at most
@@ -1976,6 +1999,12 @@ impl Reader {
             if !self.step(1) {
                 return;
             }
+            if matches!(block.name.as_str(), "context_set" | "tracked_set")
+                && let Some(space) = block.attr("space")
+                && !self.space_reference(space, block.line)
+            {
+                return;
+            }
             for set in &block.children {
                 if !self.step(1) {
                     return;
@@ -2149,6 +2178,9 @@ impl Reader {
         else {
             return None;
         };
+        if !self.space_reference(space, el.line) {
+            return None;
+        }
         let growth = match el.attr("growth") {
             None | Some("negative") => StackGrowth::Negative,
             Some("positive") => StackGrowth::Positive,
@@ -2196,6 +2228,9 @@ impl Reader {
         ) else {
             return None;
         };
+        if !self.space_reference(space, el.line) {
+            return None;
+        }
         Some(SpaceBase {
             name: name.to_owned(),
             register: register.to_owned(),
@@ -2222,7 +2257,10 @@ impl Reader {
                     }
                 }
                 "range" => {
-                    if let Some(range) = self.read_range(child) {
+                    if let Some(range) = self.read_range(
+                        child,
+                        matches!(el.name.as_str(), "global" | "nohighptr" | "readonly"),
+                    ) {
                         out.push(MemoryTag::Range(range));
                     }
                 }
@@ -2235,10 +2273,17 @@ impl Reader {
         out
     }
 
-    fn read_range(&mut self, el: &Element) -> Option<AddressRange> {
+    fn read_range(&mut self, el: &Element, allow_frame: bool) -> Option<AddressRange> {
         self.unknown_attrs(el, &["space", "first", "last"]);
         self.leaf(el);
         let space = self.require(el, "space")?;
+        // restoreMemoryTags routes earlier compiler-frame names through
+        // readExtraRange rather than getAddressSpace. Other ranges do not.
+        if !(allow_frame && space == STACK_SPACE && self.seen.space_bases.contains(STACK_SPACE))
+            && !self.space_reference(space, el.line)
+        {
+            return None;
+        }
         let first = self.offset_attr(el, "first").ok()?;
         let last = self.offset_attr(el, "last").ok()?;
         if first.is_some() != last.is_some() {
@@ -2266,6 +2311,9 @@ impl Reader {
             }
             "varnode" | "addr" => {
                 let space = self.require(el, "space")?;
+                if !self.space_reference(space, el.line) {
+                    return None;
+                }
                 if space == JOIN_SPACE {
                     return self.read_join(el);
                 }
@@ -2368,11 +2416,16 @@ impl Reader {
                         Some((offset, size))
                     });
                     match parsed {
-                        Some((offset, size)) if !space.is_empty() => JoinPiece::Varnode {
-                            space: space.to_owned(),
-                            offset,
-                            size,
-                        },
+                        Some((offset, size)) if !space.is_empty() => {
+                            if !self.space_reference(space, el.line) {
+                                return None;
+                            }
+                            JoinPiece::Varnode {
+                                space: space.to_owned(),
+                                offset,
+                                size,
+                            }
+                        }
                         _ => {
                             self.invalid(el, &format!("piece{n}"), text, "space:offset:size");
                             return None;

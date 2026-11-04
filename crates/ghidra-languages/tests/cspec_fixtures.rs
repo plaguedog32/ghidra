@@ -16,9 +16,15 @@ fn parse(text: &str) -> CompilerSpec {
 
 /// A `<compiler_spec>` with `body` inside and a valid default prototype appended.
 fn with_default(body: &str) -> String {
+    let stack = if body.contains("<stackpointer") {
+        ""
+    } else {
+        r#"<stackpointer register="SP" space="ram"/>"#
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <compiler_spec>
+{stack}
 {body}
   <default_proto>
     <prototype name="__stdcall" extrapop="4" stackshift="4">
@@ -38,6 +44,7 @@ fn proto(name: &str, input: &str, output: &str) -> String {
     format!(
         r#"<?xml version="1.0"?>
 <compiler_spec>
+  <stackpointer register="SP" space="ram"/>
   <default_proto>
     <prototype name="{name}" extrapop="0" stackshift="0">
       <input>{input}</input>
@@ -632,6 +639,7 @@ fn malformed_rules_are_dropped_with_errors() {
 fn prototype_attributes() {
     let spec = parse(
         r#"<compiler_spec>
+  <stackpointer register="SP" space="ram"/>
   <default_proto>
     <prototype name="__stdcall" extrapop="unknown" stackshift="0x4" strategy="register"
                constructor="true">
@@ -848,7 +856,7 @@ fn positive_growth_alignment_follows_document_order() {
     let body = |sp_first: bool| {
         let sp = r#"<stackpointer register="SP" space="ram" growth="positive"/>"#;
         let p = r#"<default_proto><prototype name="p" extrapop="0" stackshift="0">
-      <input><pentry minsize="1" maxsize="6" align="4"><addr offset="0" space="stack"/></pentry></input>
+      <input><pentry minsize="1" maxsize="6" align="4"><addr offset="0" space="register"/></pentry></input>
       <output/></prototype></default_proto>"#;
         if sp_first {
             format!("<compiler_spec>{sp}{p}</compiler_spec>")
@@ -858,7 +866,8 @@ fn positive_growth_alignment_follows_document_order() {
     };
     let spec = parse(&body(true));
     assert_eq!(errors(&spec), [DiagnosticKind::InconsistentSpec]);
-    // Ghidra reads sequentially; a later stack pointer does not apply.
+    // Ghidra reads sequentially; a later stack pointer does not apply to this
+    // register pool. Stack-space references would independently need it first.
     assert!(parse(&body(false)).is_fully_modeled());
 }
 
@@ -893,6 +902,7 @@ fn bad_spec_level_forms() {
             DiagnosticKind::InvalidAttribute,
             DiagnosticKind::UnknownElement,
             DiagnosticKind::MissingElement,
+            DiagnosticKind::UnresolvedReference, // invalid pointer leaves appended stack pool unresolved
         ]
     );
     // The appended second <default_proto> is reported, not adopted.

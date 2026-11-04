@@ -180,6 +180,16 @@ inferptrbounds ranges are swapped as Java's `AddressRangeImpl` does; local and
 parameter ranges are rejected. Ranges naming a compiler `<spacebase>` virtual
 frame are not modeled and fail with an unknown-space error; resolving the base
 register/backing space alone does not implement those relative ranges.
+Compiler-frame names that duplicate a processor address space are rejected
+against the immutable language layout, as Ghidra's `restoreSpaceBase` requires.
+Names are case-sensitive. Frames named `stack`, `join` or `OTHER` are also
+explicitly unsupported here: these names would shadow the overlay's synthetic
+spaces, and silently interpreting frame-relative offsets as synthetic-space
+addresses would be wrong. This last restriction can reject forms Java accepts.
+The compiler-spec reader now diagnoses explicit stack references made before
+an earlier `<stackpointer>`; Ghidra's no-pointer fallback appears only after
+XML loading. Standalone `resolve_storage(..., None, ...)` still describes
+post-load fallback geometry and does not replay XML load order.
 Parameter size bounds are checked
 after the storage resolves, so a declaration with both problems reports the
 storage error first.
@@ -279,6 +289,20 @@ declared container, not an exact alias name for the selected slice. Constant
 join components stay marked padding with their original offset; they never
 become writable storage or invented zero/known bytes.
 
+This intentionally follows native rather than Java's partial-join construction.
+For a big-endian six-byte value in a `D0:D1` join of two four-byte registers,
+native/Rust selects `D0+2` (two bytes) followed by all of `D1`; retained Java
+selects all of `D0` followed by two bytes of `D1`. The independent review found
+this distinction in 19 of its 196 real compiler/language pairs. The per-space
+byte-order policy also has a real mixed-endian effect: in
+`ARM:LEBE:32:v7LEInstruction`, a one-byte value in `r0` uses offset `0x20`,
+while Java's uniformly big-endian register model gives `0x23`. Stack pools
+remain big-endian/right-justified. The Rust result agrees with its retained
+source-order register layout, not with Java's space-order override.
+Constant-first joins likewise use the adapter's declared constant-space byte
+order, which can differ from native's always-little-endian constant space;
+no shipped compiler spec in that review had constant join pieces.
+
 Floating extensions keep a full physical container plus the requested logical
 width under `PlacedStorage::FloatConversion`. No integer slicing or conversion
 is executed. Partial/aligned floating joins and floating conversion of a
@@ -293,14 +317,20 @@ count plus bounded integer gcd work; a single-pool query does not scan other
 entries. Source/output piece counts and work have independent per-query caps,
 checked before protected growth (defaults: 1,024/1,024 pieces, 100,000 work).
 
-Fourteen default placement tests cover these policies, exact and one-below
+Nineteen default placement tests cover these policies, exact and one-below
 limits, every smaller work budget, 1,000-piece scaling and a million-byte value
 without a byte buffer. An expanded byte-address oracle checks over 12,000
 partial join selections across both default/physical byte orders. Eight
 compiling mutations were caught in an isolated package. The five opt-in real
 source probes now also check 827 concrete pool placements across x86-64 Windows,
 GCC and Go, ARMv7 AAPCS, MIPS32 BE, AArch64 Go and SH-2A, including aligned-pool tail
-rejections. This new placement pass still requires independent review.
+rejections. Independent review of `679f2671d8` at `f6b57e116a` approved the pass:
+1,574,316 synthetic and 3,472,470 real-catalog comparisons matched a separate
+native-source oracle, across all 196 pairs that compiled at that checkpoint.
+These are bounded source-derived comparisons, not execution of Ghidra's native
+decompiler or proof of complete calling-convention behavior. Five additional
+review-suggested tests pin negative stack minima, register isolation from stack
+justification, aligned float bytes and multi-slot upward growth.
 
 This primitive does not select a model or pool from a datatype, consume shared
 resources, allocate a complete signature, execute model rules, infer ABI return

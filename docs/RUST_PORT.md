@@ -184,7 +184,7 @@ Independent re-review at `fdb61172e6` approved the fixes and resource pass.
 Optional `--resources` reports now derive declaration-ordered resource groups,
 containing aliases, join sharing and pool slot capacities. The independent
 review's source-derived oracle matched input/output resource plans for all 196
-compiler/language pairs that currently compile, out of 296 pairs swept; the
+compiler/language pairs that compiled at `fdb61172e6`, out of 296 pairs swept; the
 remaining 100 fail explicitly in source compilation/address-space support.
 This validates group planning, not complete processor semantics. The
 work-budgeted pair scan can be quadratic. A review follow-up now also checks
@@ -194,12 +194,14 @@ capacity metadata and does not allocate value extents.
 `ghidra-abi` now also places an explicitly sized value in a selected input/output
 pool. The bounded immutable query implements relative slot alignment, endian
 justification, upward growth, joined-register slices, physical address checks
-and explicit floating-conversion metadata. Fourteen placement tests and 791
-real pool placements across the six checked-in probe pairs pass; expanded
+and explicit floating-conversion metadata. Nineteen placement tests and 827
+real pool placements across seven checked-in probe pairs pass; expanded
 byte-address and compiling-mutation tests add evidence. Independent placement
-review remains pending. This increment passes 491 default workspace tests and
-ten doctests, formatting, workspace Clippy and rustdoc with warnings denied on
-Windows/Rust 1.99.1. Whole-signature resource consumption, datatype/model
+review at `f6b57e116a` approved the engine with no blocking findings: 1,574,316
+synthetic and 3,472,470 real-catalog comparisons matched a separate native-source
+oracle over 196 compiling pairs. Five suggested regressions and explicit README
+examples now pin/document the noted edge cases and Java/native disagreements.
+All 13 compiling placement mutations are caught. Whole-signature resource consumption, datatype/model
 selection, output-part inference, rule/merged-model evaluation,
 injection compilation, type recovery and SSA call-effect integration remain.
 Sparse conditional constant-propagation facts are integrated as a library at
@@ -219,9 +221,11 @@ found one P2 layout bug: headers pushed the Constants panes outside the clip
 in a 1000×650 workbench with both side panels. The parent fix adds page scrolling
 with finite, nonzero nested inspection panes. A full-workbench test now scrolls
 all four row kinds into view at 14/28-point fonts and clicks source navigation
-without dirtying the project. CLI/schema/provenance checks passed the review.
-Independent verification of this layout fix remains pending. No IR rewrite,
-type recovery or structured output is claimed.
+without dirtying the project. Independent re-review approved `354cce2dbf`,
+including fault/phi navigation, all inspection modes, and bounded virtualization
+on an 18,003-value function. The small spacing note and exact-row/address/fault
+test hardening were addressed at `505c792a87`. CLI/schema/provenance checks also
+passed the earlier review. No IR rewrite, type recovery or structured output is claimed.
 
 The combined tree before the layout/metadata follow-ups passed 501 default
 workspace tests and ten doctests on
@@ -253,8 +257,30 @@ or complete instruction semantics. The source compiler still has an overflow
 when a declaration ends at the final 64-bit byte address; adapter extent tests
 cover that boundary directly, without claiming that the compiler can parse it.
 
-With the metadata and layout follow-ups, 504 default workspace tests and ten
-doctests pass on Windows/Rust 1.99.1.
+The metadata/layout checkpoint passed 504 default workspace tests and ten
+doctests on Windows/Rust 1.99.1.
+
+### Compiler-spec loading semantics
+
+Explicit stack-space references now require an earlier parsed `<stackpointer>`.
+The reader retains premature declarations with bounded error diagnostics and
+marks affected prototypes incomplete, rather than treating the end-of-file
+fallback stack as already available. Storage, joins, ranges, context blocks,
+stack backing spaces and dead-code delays follow this check. Global-style
+compiler-frame ranges keep Java's `readExtraRange` exception. Six new tests
+cover load order on the same XML line, ignored subtrees, that frame exception
+and exact diagnostic count/byte budgets. Synthetic valid fixtures now declare
+their stack before referring to it.
+
+Language-aware resolution also rejects compiler space-base names that collide
+with processor spaces. Names stay case-sensitive. Frames shadowing `stack`,
+`join` or `OTHER` fail explicitly as unsupported, because their relative ranges
+must not be misinterpreted as the overlay's synthetic spaces; that can be
+stricter than Java. Three namespace tests pin these behaviors. All 107 referenced
+compiler specs still parse with zero diagnostics. The combined tree passes 518
+default workspace tests and ten doctests, workspace Clippy and rustdoc with
+warnings denied. Independent review of these loading/namespace checks remains
+pending; standalone storage resolution still supports post-load fallback geometry.
 
 ### Saved pause: expression inspection milestone
 

@@ -191,8 +191,16 @@ work-budgeted pair scan can be quadratic. A review follow-up now also checks
 upward-growth alignment on caller-built specs. Resource planning preserves
 capacity metadata and does not allocate value extents.
 
-Resolution/resource planning are not argument allocation or executable ABI behavior:
-justification, output-part inference, rule/merged-model evaluation,
+`ghidra-abi` now also places an explicitly sized value in a selected input/output
+pool. The bounded immutable query implements relative slot alignment, endian
+justification, upward growth, joined-register slices, physical address checks
+and explicit floating-conversion metadata. Fourteen placement tests and 791
+real pool placements across the six checked-in probe pairs pass; expanded
+byte-address and compiling-mutation tests add evidence. Independent placement
+review remains pending. This increment passes 491 default workspace tests and
+ten doctests, formatting, workspace Clippy and rustdoc with warnings denied on
+Windows/Rust 1.99.1. Whole-signature resource consumption, datatype/model
+selection, output-part inference, rule/merged-model evaluation,
 injection compilation, type recovery and SSA call-effect integration remain.
 Sparse conditional constant-propagation facts are integrated as a library at
 `596c39a505`: `PcodeConstants` uses def-use scheduling, exact-width values and

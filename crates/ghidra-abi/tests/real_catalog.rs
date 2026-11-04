@@ -11,8 +11,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use common::single;
 use ghidra_abi::{
-    AbiAddress, AbiLimits, AbiSpace, BindingSite, CompilerStorage, JoinKind, RegisterDefinition,
-    RegisterFile, ResolvedStorage,
+    AbiAddress, AbiLimits, AbiSpace, BindingSite, CompilerStorage, JoinKind, NoFit, PieceRole,
+    PlacedStorage, PlacementOutcome, PlacementRequest, RegisterDefinition, RegisterFile,
+    ResolvedStorage, place_parameter,
 };
 use ghidra_languages::{CompilerSpec, MemoryTag, Storage};
 use ghidra_pcode::{Endianness, SpaceKind};
@@ -70,6 +71,7 @@ impl Language {
         let storage =
             CompilerStorage::new(Arc::new(spec), self.file.clone(), AbiLimits::default()).unwrap();
         check_counts(&storage);
+        check_value_placements(&storage);
         eprintln!(
             "{} {compiler}: {} registers, {} bindings, {} ranges, {} pieces, {} name bytes, {} work",
             self.definition.id,
@@ -102,6 +104,83 @@ impl Language {
         let id = |n| self.file.register_id(n).unwrap();
         self.file.registers_overlap(id(a), id(b)).unwrap()
     }
+}
+
+/// Exercise concrete value widths in every resolved input/output pool. The
+/// model/entry choice is explicit here; this does not claim rule evaluation or
+/// whole-signature allocation. Generic byte mapping has its own expanded oracle.
+fn check_value_placements(storage: &CompilerStorage) {
+    let mut checked = 0;
+    for binding in storage.bindings() {
+        let Some(parameter) = &binding.parameter else {
+            continue;
+        };
+        let sizes = [
+            parameter.min_size,
+            parameter.min_size + (parameter.max_size - parameter.min_size) / 2,
+            parameter.max_size,
+        ];
+        for size in sizes {
+            let result = place_parameter(
+                storage,
+                binding.site,
+                PlacementRequest::new(size),
+                Default::default(),
+            )
+            .unwrap_or_else(|e| panic!("{:?}, size {size}: {e}", binding.site));
+            let usable = match parameter.alignment {
+                0 => parameter.max_size,
+                align => parameter.max_size / align * align,
+            };
+            if size > usable {
+                assert_eq!(
+                    result.outcome,
+                    PlacementOutcome::NoFit(NoFit::SlotsExhausted)
+                );
+                continue;
+            }
+            let PlacementOutcome::Placed(value) = result.outcome else {
+                panic!("{:?}, size {size}: {:?}", binding.site, result.outcome);
+            };
+            assert_eq!(value.size, size);
+            match value.storage {
+                PlacedStorage::Bits { pieces } => {
+                    let mut remaining = size;
+                    for piece in pieces {
+                        let length = piece.storage.size.unwrap();
+                        assert!(length > 0);
+                        remaining -= length;
+                        assert_eq!(piece.lsb_byte, remaining);
+                        if piece.role == PieceRole::Storage
+                            && let Some(register) = piece.storage.register
+                        {
+                            let declared = storage.register_file().register(register).unwrap();
+                            assert_eq!(
+                                piece.storage.address.space,
+                                AbiSpace::Language(declared.space)
+                            );
+                            assert!(piece.storage.address.offset >= declared.offset);
+                            assert!(
+                                u128::from(piece.storage.address.offset) + u128::from(length)
+                                    <= u128::from(declared.offset) + u128::from(declared.size)
+                            );
+                        }
+                    }
+                    assert_eq!(remaining, 0);
+                }
+                PlacedStorage::FloatConversion {
+                    container,
+                    logical_size,
+                } => {
+                    assert_eq!(logical_size, size);
+                    assert!(container.size.is_some_and(|n| n > 0));
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 10);
+    eprintln!("{checked} concrete parameter-pool value placements checked");
 }
 
 fn pieces(storage: &Storage) -> usize {

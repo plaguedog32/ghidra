@@ -5,9 +5,9 @@ registers and address spaces. It keeps signed stack addresses, register aliases
 and join significance explicit. It is a native Rust layer and uses no Java or
 Ghidra C++ process.
 
-Argument allocation, prototype-rule evaluation, injection compilation and type
-recovery remain separate stages. A separate resource-group pass is described
-below. Successful
+Whole-signature allocation, prototype-rule evaluation, injection compilation and
+type recovery remain separate stages. Resource-group planning and placement in
+an explicitly selected pool are described below. Successful
 storage resolution does not mean that a calling convention is executable.
 
 ## API and ownership
@@ -182,9 +182,9 @@ Parameter size bounds are checked
 after the storage resolves, so a declaration with both problems reports the
 storage error first.
 
-Not yet validated: the MSRV toolchain, the other catalog compiler specs,
-big-endian AArch64/ARM probe layouts, and any behavior that depends on
-argument allocation or prototype-rule execution.
+Not yet validated: the MSRV toolchain, pairs still blocked by source/compiler
+support, complete ISA semantics in the resolved layouts, and behavior that
+depends on whole-signature allocation or prototype-rule execution.
 
 Address spaces with word sizes outside 1..=8 or byte domains larger than 2^64
 are now rejected during registry construction, matching Ghidra's constructor.
@@ -225,7 +225,7 @@ entries/pieces and can be quadratic; large otherwise-valid lists can exhaust
 work before count limits. Group-reference output and sorting are charged too.
 It has no recursion or allocation proportional to an address-space span.
 
-Eleven default resource tests include exact limits, a byte-set oracle over
+Thirteen default resource tests include exact limits, a byte-set oracle over
 1,000 generated lists, explicit/overlapping groups, joins/padding and a bounded
 2,000-entry stress case. An opt-in test covers six real compiler/language pairs.
 The CLI exposes this pass with `--compiler-storage ... --resources`; default
@@ -236,3 +236,71 @@ or a complete calling-convention implementation. Independent review at
 growth pool sizes that are not a multiple of alignment, even when a caller
 manually marks an invalid prototype complete. Review evidence and remaining
 processor-loader limitations are recorded in `docs/RUST_PORT.md`.
+
+## Placement in an explicit parameter pool
+
+`place_parameter(&CompilerStorage, BindingSite, PlacementRequest, PlacementLimits)`
+places one value in a selected input or output pool. `PlacementRequest::new(size)`
+starts at slot zero with relative alignment one and default justification;
+requests can override `used_slots`, `type_alignment` and `justification`.
+The owned result records its site, next cursor, source piece count, work, and
+either `PlacedValue` or a typed `NoFit` reason. Invalid requests, unsupported
+format combinations and exhausted budgets are errors, without a partial result.
+The query leaves its source and all resource state unchanged.
+
+An exclusion pool accepts only slot zero and a width in its declared bounds;
+its successful cursor remains zero, matching `ParamEntry::getAddrBySlot`.
+The future allocator must separately reserve every shared exclusion resource.
+Aligned pools round the value width to slots and skip alignment holes relative
+to the pool origin. A failed fit retains the cursor after those holes. Positive
+stack growth allocates aligned pools backwards, including aligned register
+pools, as the retained implementation does. Actual selected extents must fit
+their signed/unsigned byte domain without wrapping, even if the pool's metadata
+capacity extends beyond it. No payload bytes are allocated or evaluated.
+
+Default justification uses each physical space's byte order: little-endian
+values start at the slot's beginning and big-endian values at its end. It uses
+the pool maximum rather than a named register alias's wider physical width.
+Big-endian stack `reversejustify` changes the default to left; explicit left
+or right overrides are supported. Native C++ rejects little-endian reverse
+stack justification, so this query reports it as unsupported rather than
+silently applying Java's ignored attribute. The final resolved stack geometry
+applies to every query; historical XML load-order quirks are not replayed.
+
+Join slices follow native `JoinRecord::getEquivalentAddress` and
+`renormalizeJoinAddress`: the synthetic pool uses the language default byte
+order, physical byte traversal uses the first piece's byte order, and output
+pieces stay most-significant-first with explicit selected-value significance.
+Mixed-space pieces and partial selections retain original piece indices, byte
+displacements and register provenance. Register provenance identifies the
+declared container, not an exact alias name for the selected slice. Constant
+join components stay marked padding with their original offset; they never
+become writable storage or invented zero/known bytes.
+
+Floating extensions keep a full physical container plus the requested logical
+width under `PlacedStorage::FloatConversion`. No integer slicing or conversion
+is executed. Partial/aligned floating joins and floating conversion of a
+concatenated join are explicitly unsupported. Sign/zero/inttype policies remain
+metadata and do not assert any value for the container's unused bytes.
+
+Relative alignment uses an exact gcd/congruence calculation, including
+nondividing alignments. This deliberately avoids the retained floor-division
+quirk that can return misaligned locations. Divisible/power-of-two alignments
+give the same placements. A join query takes linear work in physical piece
+count plus bounded integer gcd work; a single-pool query does not scan other
+entries. Source/output piece counts and work have independent per-query caps,
+checked before protected growth (defaults: 1,024/1,024 pieces, 100,000 work).
+
+Fourteen default placement tests cover these policies, exact and one-below
+limits, every smaller work budget, 1,000-piece scaling and a million-byte value
+without a byte buffer. An expanded byte-address oracle checks over 12,000
+partial join selections across both default/physical byte orders. Eight
+compiling mutations were caught in an isolated package. The four opt-in real
+source probes now also check 791 concrete pool placements across x86-64 Windows,
+GCC and Go, ARMv7 AAPCS, MIPS32 BE and AArch64 Go, including aligned-pool tail
+rejections. This new placement pass still requires independent review.
+
+This primitive does not select a model or pool from a datatype, consume shared
+resources, allocate a complete signature, execute model rules, infer ABI return
+values from P-code RETURN, or integrate call effects. Those remain required
+work toward a complete native calling-convention implementation.

@@ -6,6 +6,7 @@
 
 mod compiler;
 mod error;
+mod placement;
 mod registry;
 mod resources;
 mod storage;
@@ -15,6 +16,10 @@ pub use compiler::{
     ResolvedMemoryRange, ResolvedSpaceBase,
 };
 pub use error::{AbiError, AbiLimits, AbiResult};
+pub use placement::{
+    Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,
+    PlacementError, PlacementLimits, PlacementOutcome, PlacementRequest, place_parameter,
+};
 pub use registry::{RegisterDefinition, RegisterFile, RegisterId};
 pub use resources::{
     CompilerResources, EntryResources, ListResources, ModelResources, ParameterDirection,

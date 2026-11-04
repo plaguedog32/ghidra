@@ -1119,11 +1119,15 @@ name = "ghidra-desktop"
 version = "0.3.0"
 dependencies = [
  "eframe",
+ "ghidra-analysis",
+ "ghidra-cfg",
  "ghidra-core",
+ "ghidra-graph",
  "ghidra-languages",
  "ghidra-pcode",
  "ghidra-project",
  "ghidra-sleigh",
+ "ghidra-ssa",
  "rfd",
  "serde",
  "serde_json",

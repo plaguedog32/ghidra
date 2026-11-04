@@ -1,0 +1,41 @@
+{
+  "spaces": [
+    { "id": 0, "name": "const", "kind": "Constant", "address_size": 8, "word_size": 1, "endianness": "Little" },
+    { "id": 1, "name": "ram", "kind": "Ram", "address_size": 8, "word_size": 1, "endianness": "Little" },
+    { "id": 2, "name": "register", "kind": "Register", "address_size": 8, "word_size": 1, "endianness": "Little" },
+    { "id": 3, "name": "unique", "kind": "Unique", "address_size": 8, "word_size": 1, "endianness": "Little" }
+  ],
+  "code_space": 1,
+  "entry": 4096,
+  "max_operations": 100,
+  "memory": [{ "space": 2, "offset": 16, "bytes": [1] }],
+  "instructions": [
+    {
+      "address": 4096, "length": 4,
+      "ops": [
+        { "opcode": "COPY", "output": { "space": 2, "offset": 0, "size": 8 }, "inputs": [{ "space": 0, "offset": 1234605616436508552, "size": 8 }] },
+        { "opcode": "CBRANCH", "output": null, "inputs": [{ "space": 1, "offset": 4108, "size": 8 }, { "space": 2, "offset": 16, "size": 1 }] }
+      ]
+    },
+    {
+      "address": 4100, "length": 4,
+      "ops": [
+        { "opcode": "COPY", "output": { "space": 2, "offset": 0, "size": 1 }, "inputs": [{ "space": 0, "offset": 170, "size": 1 }] },
+        { "opcode": "BRANCH", "output": null, "inputs": [{ "space": 1, "offset": 4112, "size": 8 }] }
+      ]
+    },
+    {
+      "address": 4108, "length": 4,
+      "ops": [
+        { "opcode": "COPY", "output": { "space": 2, "offset": 0, "size": 1 }, "inputs": [{ "space": 0, "offset": 187, "size": 1 }] }
+      ]
+    },
+    {
+      "address": 4112, "length": 4,
+      "ops": [
+        { "opcode": "COPY", "output": { "space": 2, "offset": 8, "size": 8 }, "inputs": [{ "space": 2, "offset": 0, "size": 8 }] },
+        { "opcode": "RETURN", "output": null, "inputs": [{ "space": 0, "offset": 8192, "size": 8 }] }
+      ]
+    }
+  ]
+}

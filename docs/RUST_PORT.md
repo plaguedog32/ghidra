@@ -39,7 +39,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | Native P-code CFGs and alias-aware SSA with abstract memory dependencies; no decompiled output yet | Desktop/function integration, dataflow simplification, ABI/type recovery and structured output |
+| Decompilation | Native P-code CFGs and alias-aware SSA with abstract memory dependencies; headless `--analyze-pcode` report | Desktop/function integration, liveness pruning, dataflow simplification, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |

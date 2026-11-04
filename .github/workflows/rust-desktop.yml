@@ -61,8 +61,12 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked --workspace --all-targets
+      - name: Test library documentation examples
+        run: cargo test --locked --workspace --doc
       - name: Execute P-code example without a desktop
         run: cargo run --locked -p ghidra-desktop -- --run-pcode examples/pcode/sum-loop.json
+      - name: Analyze P-code aliases and SSA without a desktop
+        run: cargo run --locked -p ghidra-desktop -- --analyze-pcode examples/pcode/alias-branch.json --instruction-uniques
       - name: Compile and lift retained processor sources
         run: cargo test --locked -p ghidra-sleigh --test upstream_specs -- --ignored --test-threads=1
       - name: Verify Thumb IT context during desktop stepping

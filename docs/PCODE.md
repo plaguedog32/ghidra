@@ -20,6 +20,64 @@ It computes `3 + 2 + 1` in a register using an instruction-local conditional loo
 
 This is an intermediate representation and execution foundation, not a completed decompiler or a claim that arbitrary native programs can be emulated. Userops, architecture state initialization, operating-system models, and higher-level analysis remain separate work.
 
+## Native control flow and SSA
+
+Analyze a supplied P-code program without opening a window:
+
+```sh
+cargo run -p ghidra-desktop -- --analyze-pcode examples/pcode/sum-loop.json
+cargo run -p ghidra-desktop -- --analyze-pcode \
+  examples/pcode/alias-branch.json --instruction-uniques
+```
+
+Input uses the same `ExecutionInput` JSON format as `--run-pcode`. The analysis is
+symbolic: it does not execute instructions or apply the `memory` initializers.
+The output reports that choice and the number of ignored initialization regions
+and bytes. Both branches in `alias-branch.json` therefore remain in the CFG,
+although concrete execution with its supplied condition takes only one. Its
+one-byte register writes merge through a phi while the other seven bytes retain
+their preceding definition.
+
+Output uses `ghidra-rs.pcode-analysis`, version 1. It contains the original
+spaces/instructions, partitioned storage variables, semantic CFG edges, typed
+terminal outcomes, calls/userops, SSA graph nodes, phi operands, source statement
+mappings, renamed values, natural loops, and immediate dominators and
+post-dominators. The SSA verifier runs before output. Phi operand order follows
+that node's `incoming` list; a virtual `entry` predecessor remains distinct from
+real backedges. Raw statement `uses`/`definitions` contain storage variable IDs;
+their `renamed` fields contain SSA value IDs. Unreachable statements retain source
+metadata with `renamed: null`. A value's origin maps back to its entry declaration,
+phi or definition slot.
+
+By default unique-space state is program-scoped, matching explicit concrete
+P-code execution. `--instruction-uniques` instead creates fresh undefined
+temporaries on native instruction entry and re-entry. Internal relative branches,
+including branches to op 0, retain the frame. Synthetic reset graph nodes are
+linked from CFG edges through `reset_node`; resets inside merged blocks remain
+explicit statements. Undefined reset definitions are not zero-valued assignments.
+
+Unknown call, userop and runtime effects are rejected by default. `--havoc-unknown`
+retains them as marked opaque operations that read and redefine every observed
+storage variable. This is conservative within the analyzed domain; it does not
+recover an ABI or additional hidden machine state. Calls have a possible return
+edge and a separate no-return exit; callees are not intra-procedural successors.
+Post-dominance considers finite paths to all reported terminal exits, including
+call-no-return outcomes. Indirect targets remain unresolved, and userop traps or
+nonreturning behavior remain unmodeled.
+
+Memory uses abstract whole-space dependency tokens. Aliased registers use
+disjoint scalar cells with the byte order of their own space. Neither is pointer
+disambiguation or type recovery. SSA is currently unpruned and may contain dead
+phis; resource limits bound their growth. This output is an analysis format,
+not structured decompiled code or an execution-input format.
+
+Input is limited to a regular JSON file of 16 MiB. Native analysis phases have
+separate instruction, operation, operand, graph, storage, phi and work limits.
+Output is buffered under a 64 MiB cap before writing to stdout, so analysis or
+serialization-limit errors leave stdout empty. Status 1 reports those failures;
+status 2 reports missing or invalid command arguments. The command uses no Java
+runtime, JNI, external decompiler process or native target execution.
+
 ## Source-based instruction lifting
 
 The desktop P-code tab can inspect any selected file-backed executable address. Choose a language ID from the catalog and select **Lift selected instruction**. Its `.pspec` decode defaults are applied automatically; optional context overrides take precedence. A raw `.slaspec` source can also be selected with caller-supplied defaults. **Follow selection** updates the view when the selected address changes; **Next instruction** advances by the lifter's semantic extent, including delay slots. Compilation runs in a persistent background worker and is reused until the language settings change or **Reload source** is selected. Queued requests are coalesced, and results from old programs or selections are discarded. Failed compilations are also cached until settings change or an explicit reload.

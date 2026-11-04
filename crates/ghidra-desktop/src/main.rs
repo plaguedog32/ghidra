@@ -1,3 +1,4 @@
+mod analysis_cli;
 mod app;
 mod demo;
 mod lifting;
@@ -12,7 +13,7 @@ fn main() -> eframe::Result {
     match first.as_deref().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --languages ROOT\n  ghidra-rs --compiler-spec ROOT LANGUAGE_ID COMPILER_ID\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
+                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --analyze-pcode PROGRAM.json [--instruction-uniques] [--havoc-unknown]\n  ghidra-rs --languages ROOT\n  ghidra-rs --compiler-spec ROOT LANGUAGE_ID COMPILER_ID\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(());
@@ -67,6 +68,24 @@ fn main() -> eframe::Result {
                 std::process::exit(1);
             }
             println!("Project saved");
+            return Ok(());
+        }
+        Some("--analyze-pcode") => {
+            let Some(path) = args.next() else {
+                eprintln!("--analyze-pcode requires a JSON program");
+                std::process::exit(2);
+            };
+            let options = match analysis_cli::CommandOptions::parse(args) {
+                Ok(options) => options,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            };
+            if let Err(error) = analysis_cli::execute(&PathBuf::from(path), options) {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
             return Ok(());
         }
         Some("--run-pcode") => {

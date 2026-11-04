@@ -231,6 +231,11 @@ fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn execute(path: &Path) -> Result<bool, String> {
+    let input = read_program(path)?;
+    execute_program(input)
+}
+
+pub(crate) fn read_program(path: &Path) -> Result<ExecutionInput, String> {
     const MAX_INPUT: u64 = 16 * 1024 * 1024;
     let file = File::open(path).map_err(|e| format!("Cannot open P-code input: {e}"))?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -249,7 +254,11 @@ pub fn execute(path: &Path) -> Result<bool, String> {
     if input.memory.len() > 100_000 {
         return Err("Too many initial memory regions".into());
     }
-    let mut machine = Machine::new(input.spaces, MAX_INPUT as usize).map_err(|e| e.to_string())?;
+    Ok(input)
+}
+
+fn execute_program(input: ExecutionInput) -> Result<bool, String> {
+    let mut machine = Machine::new(input.spaces, 16 * 1024 * 1024).map_err(|e| e.to_string())?;
     for memory in input.memory {
         machine
             .map_bytes(memory.space, memory.offset, &memory.bytes)

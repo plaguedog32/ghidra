@@ -215,9 +215,16 @@ unknown and unreached facts, conservative edge feasibility and final-fixpoint
 faults. `--analyze-pcode --constants` also includes expressions; every function
 report now includes both. Reports borrow the same immutable snapshots and
 include the final newline in the 64 MiB command cap. Independent frontend review
-remains pending. No IR rewrite, type recovery or structured output is claimed.
+found one P2 layout bug: headers pushed the Constants panes outside the clip
+in a 1000×650 workbench with both side panels. The parent fix adds page scrolling
+with finite, nonzero nested inspection panes. A full-workbench test now scrolls
+all four row kinds into view at 14/28-point fonts and clicks source navigation
+without dirtying the project. CLI/schema/provenance checks passed the review.
+Independent verification of this layout fix remains pending. No IR rewrite,
+type recovery or structured output is claimed.
 
-The combined tree passes 501 default workspace tests and ten doctests on
+The combined tree before the layout/metadata follow-ups passed 501 default
+workspace tests and ten doctests on
 Windows/Rust 1.99.1. Java-free release runs succeed for both raw examples and
 WinHelloCPP `401E46`; the latter reports 113 known constants, 10,840 unknown
 values, all 102 supplied CFG edges feasible and no evaluation faults. Binary
@@ -245,6 +252,9 @@ This is additional SH-2A metadata evidence, not a fresh sweep of all 296 pairs
 or complete instruction semantics. The source compiler still has an overflow
 when a declaration ends at the final 64-bit byte address; adapter extent tests
 cover that boundary directly, without claiming that the compiler can parse it.
+
+With the metadata and layout follow-ups, 504 default workspace tests and ten
+doctests pass on Windows/Rust 1.99.1.
 
 ### Saved pause: expression inspection milestone
 

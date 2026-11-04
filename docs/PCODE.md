@@ -320,6 +320,8 @@ Rows show literals with at most 16 hexadecimal digits; details list at most
 Selections are clamped when the view changes and reset for each new result.
 The **CFG & SSA** node detail also shows conservative node feasibility.
 Constant inspection does not modify project metadata or annotations.
+In compact windows, scroll the Dataflow page to reach the inspection panes;
+each pane scrolls separately for additional rows or details.
 
 ### `ghidra-rs.constants` version 1
 

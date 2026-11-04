@@ -479,7 +479,9 @@ pub(super) fn panel(
     ui: &mut egui::Ui,
     selection: &mut Selection,
     view: &FunctionView,
+    pane_height: f32,
 ) -> Option<u64> {
+    let top = ui.cursor().top();
     let c = view.constants.as_ref();
     debug_assert!(Arc::ptr_eq(c.expressions(), &view.expressions));
     let analysis = c.analysis();
@@ -543,79 +545,81 @@ pub(super) fn panel(
         .color(MUTED),
     );
     let mut jump = None;
-    ui.columns(2, |columns| match selection.rows {
-        Rows::Values => {
-            let count = analysis.ssa().values().len();
-            rows(
-                &mut columns[0],
-                "constant_values",
-                &mut selection.value,
-                count,
-                |id| value_row(c, spaces, id),
-            );
-            if count > 0 {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("constant_value_detail")
-                    .show(&mut columns[1], |ui| {
-                        value_detail(ui, c, spaces, selection.value)
-                    })
-                    .inner;
+    super::inspection_panes(ui, pane_height - (ui.cursor().top() - top), |ui| {
+        ui.columns(2, |columns| match selection.rows {
+            Rows::Values => {
+                let count = analysis.ssa().values().len();
+                rows(
+                    &mut columns[0],
+                    "constant_values",
+                    &mut selection.value,
+                    count,
+                    |id| value_row(c, spaces, id),
+                );
+                if count > 0 {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("constant_value_detail")
+                        .show(&mut columns[1], |ui| {
+                            value_detail(ui, c, spaces, selection.value)
+                        })
+                        .inner;
+                }
             }
-        }
-        Rows::Known => {
-            let known = &view.constant_values;
-            rows(
-                &mut columns[0],
-                "constant_known",
-                &mut selection.known,
-                known.len(),
-                |index| value_row(c, spaces, known[index].0),
-            );
-            if let Some(value) = known.get(selection.known) {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("constant_known_detail")
-                    .show(&mut columns[1], |ui| value_detail(ui, c, spaces, value.0))
-                    .inner;
-            } else {
-                columns[1].label("No SSA value is a known constant.");
+            Rows::Known => {
+                let known = &view.constant_values;
+                rows(
+                    &mut columns[0],
+                    "constant_known",
+                    &mut selection.known,
+                    known.len(),
+                    |index| value_row(c, spaces, known[index].0),
+                );
+                if let Some(value) = known.get(selection.known) {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("constant_known_detail")
+                        .show(&mut columns[1], |ui| value_detail(ui, c, spaces, value.0))
+                        .inner;
+                } else {
+                    columns[1].label("No SSA value is a known constant.");
+                }
             }
-        }
-        Rows::Edges => {
-            let count = analysis.cfg().edges().len();
-            rows(
-                &mut columns[0],
-                "constant_edges",
-                &mut selection.edge,
-                count,
-                |id| edge_row(c, id),
-            );
-            if count > 0 {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("constant_edge_detail")
-                    .show(&mut columns[1], |ui| edge_detail(ui, c, selection.edge))
-                    .inner;
+            Rows::Edges => {
+                let count = analysis.cfg().edges().len();
+                rows(
+                    &mut columns[0],
+                    "constant_edges",
+                    &mut selection.edge,
+                    count,
+                    |id| edge_row(c, id),
+                );
+                if count > 0 {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("constant_edge_detail")
+                        .show(&mut columns[1], |ui| edge_detail(ui, c, selection.edge))
+                        .inner;
+                }
             }
-        }
-        Rows::Faults => {
-            let count = c.faults().len();
-            rows(
-                &mut columns[0],
-                "constant_faults",
-                &mut selection.fault,
-                count,
-                |index| fault_row(c, index),
-            );
-            if count > 0 {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("constant_fault_detail")
-                    .show(&mut columns[1], |ui| {
-                        fault_detail(ui, c, spaces, selection.fault)
-                    })
-                    .inner;
-            } else {
-                columns[1].label("No evaluation faults at the fixpoint.");
+            Rows::Faults => {
+                let count = c.faults().len();
+                rows(
+                    &mut columns[0],
+                    "constant_faults",
+                    &mut selection.fault,
+                    count,
+                    |index| fault_row(c, index),
+                );
+                if count > 0 {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("constant_fault_detail")
+                        .show(&mut columns[1], |ui| {
+                            fault_detail(ui, c, spaces, selection.fault)
+                        })
+                        .inner;
+                } else {
+                    columns[1].label("No evaluation faults at the fixpoint.");
+                }
             }
-        }
+        });
     });
     jump
 }

@@ -9,6 +9,25 @@ use std::sync::Arc;
 mod constants;
 mod expressions;
 
+/// Keep nested virtual lists finite inside the enclosing page scroll. A small
+/// window may scroll the page to reach this area, but cannot squeeze it to zero.
+fn inspection_panes<R>(
+    ui: &mut egui::Ui,
+    height: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let height = height.max(180.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), height),
+        egui::Layout::top_down(egui::Align::LEFT),
+        |ui| {
+            ui.set_min_height(height);
+            contents(ui)
+        },
+    )
+    .inner
+}
+
 /// Dataflow inspection modes over one completed function analysis.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Inspect {
@@ -162,6 +181,14 @@ impl Workbench {
     }
 
     pub(super) fn dataflow_view(&mut self, ui: &mut egui::Ui) {
+        let viewport_height = ui.available_height();
+        egui::ScrollArea::vertical()
+            .id_salt("dataflow_page")
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.dataflow_page(ui, viewport_height));
+    }
+
+    fn dataflow_page(&mut self, ui: &mut egui::Ui, viewport_height: f32) {
         let entry = self.selected_function();
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -238,11 +265,14 @@ impl Workbench {
         };
         ui.label(RichText::new(format!("Instruction lengths and bytes checked; instruction-local temporaries start undefined. Memory dependencies use whole address spaces. {placement}")).small().color(MUTED));
         ui.separator();
+        let pane_height = (viewport_height - ui.min_rect().height()).max(180.0);
         if self.dataflow.inspect == Inspect::Expressions {
             let Some((_, view)) = &self.dataflow.view else {
                 return;
             };
-            if let Some(address) = expressions::panel(ui, &mut self.dataflow.expression, view) {
+            if let Some(address) =
+                expressions::panel(ui, &mut self.dataflow.expression, view, pane_height)
+            {
                 self.navigate_address(address);
             }
             return;
@@ -251,164 +281,168 @@ impl Workbench {
             let Some((_, view)) = &self.dataflow.view else {
                 return;
             };
-            if let Some(address) = constants::panel(ui, &mut self.dataflow.constant, view) {
+            if let Some(address) =
+                constants::panel(ui, &mut self.dataflow.constant, view, pane_height)
+            {
                 self.navigate_address(address);
             }
             return;
         }
-        if self.dataflow.inspect == Inspect::Storage {
-            let variables = analysis.layout().variables();
-            egui::ScrollArea::both()
-                .id_salt("dataflow_storage")
-                .show_rows(ui, 22.0, variables.len(), |ui, rows| {
-                    for i in rows {
-                        ui.monospace(format!(
-                            "s{}  {:?}",
-                            variables[i].id.0, variables[i].location
-                        ));
-                    }
-                });
-            return;
-        }
-        let mut jump = None;
-        ui.columns(2, |columns| {
-            egui::ScrollArea::both()
-                .id_salt("dataflow_nodes")
-                .show_rows(
-                    &mut columns[0],
-                    23.0,
-                    analysis.ssa().graph().node_count(),
-                    |ui, rows| {
-                        for node in rows {
-                            let label = match analysis.cfg().node(node) {
-                                Some(NodeKind::Block(points)) => format!(
-                                    "{node:>5}  {:X}:{}",
-                                    points[0].address, points[0].operation_index
-                                ),
-                                Some(NodeKind::Exit(exit)) => {
-                                    format!("{node:>5}  exit {:?}", exit.kind)
-                                }
-                                None => format!("{node:>5}  fresh temporaries"),
-                            };
-                            ui.selectable_value(
-                                &mut self.dataflow.selected_node,
-                                node,
-                                RichText::new(label).monospace(),
-                            );
+        inspection_panes(ui, pane_height, |ui| {
+            if self.dataflow.inspect == Inspect::Storage {
+                let variables = analysis.layout().variables();
+                egui::ScrollArea::both()
+                    .id_salt("dataflow_storage")
+                    .show_rows(ui, 22.0, variables.len(), |ui, rows| {
+                        for i in rows {
+                            ui.monospace(format!(
+                                "s{}  {:?}",
+                                variables[i].id.0, variables[i].location
+                            ));
                         }
-                    },
-                );
-            let node = self.dataflow.selected_node;
-            let ui = &mut columns[1];
-            let Ok(block) = analysis.ssa().block(node) else {
+                    });
                 return;
-            };
-            ui.label(format!(
-                "Node {node} · {} · constant propagation: {}",
-                if block.is_reachable() {
-                    "reachable"
-                } else {
-                    "unreachable"
-                },
-                match facts.is_node_executable(node) {
-                    Ok(true) => constants::FEASIBLE,
-                    Ok(false) => constants::NOT_FEASIBLE,
-                    Err(_) => "unavailable",
-                }
-            ));
-            ui.label(format!(
-                "Successors: {:?}",
-                analysis.ssa().graph().successors(node).unwrap_or(&[])
-            ));
-            if let Some(NodeKind::Block(points)) = analysis.cfg().node(node)
-                && ui
-                    .button(format!("Go to {:X}", points[0].address))
-                    .clicked()
-            {
-                jump = Some(points[0].address);
             }
-            if let Some(renamed) = block.renamed() {
-                let mut incoming: Vec<_> = renamed
-                    .incoming()
-                    .iter()
-                    .take(12)
-                    .map(|p| match p {
-                        ghidra_ssa::Predecessor::Entry => "entry".into(),
-                        ghidra_ssa::Predecessor::Node(node) => format!("n{node}"),
-                    })
-                    .collect();
-                if renamed.incoming().len() > 12 {
-                    incoming.push("…".into());
-                }
-                ui.label(format!("Incoming: {}", incoming.join(", ")));
-                let phis = renamed.phis();
-                if !phis.is_empty() {
-                    ui.label("Phi values");
-                    egui::ScrollArea::both()
-                        .id_salt("dataflow_phis")
-                        .max_height(180.0)
-                        .show_rows(ui, 22.0, phis.len(), |ui, rows| {
-                            for i in rows {
-                                let phi = &phis[i];
-                                ui.monospace(format!(
-                                    "v{} = phi(s{}, {})",
-                                    phi.value().0,
-                                    phi.variable().0,
-                                    ids(phi.operands().iter().map(|v| v.0))
-                                ));
-                            }
-                        });
-                }
-            }
-            ui.label("Operations");
-            let raw = &analysis.raw().blocks[node];
-            egui::ScrollArea::both()
-                .id_salt("dataflow_statements")
-                .show_rows(ui, 22.0, raw.len(), |ui, rows| {
-                    for index in rows {
-                        let id = ghidra_ssa::StatementId { node, index };
-                        let label = match analysis.statement(id).expect("analysis statement") {
-                            AdaptedStatement::Operation { point, effects, .. } => {
-                                let mnemonic = match analysis.cfg().statement(*point) {
-                                    Some(ghidra_cfg::Statement::Operation(op)) => {
-                                        op.opcode.mnemonic()
+            let mut jump = None;
+            ui.columns(2, |columns| {
+                egui::ScrollArea::both()
+                    .id_salt("dataflow_nodes")
+                    .show_rows(
+                        &mut columns[0],
+                        23.0,
+                        analysis.ssa().graph().node_count(),
+                        |ui, rows| {
+                            for node in rows {
+                                let label = match analysis.cfg().node(node) {
+                                    Some(NodeKind::Block(points)) => format!(
+                                        "{node:>5}  {:X}:{}",
+                                        points[0].address, points[0].operation_index
+                                    ),
+                                    Some(NodeKind::Exit(exit)) => {
+                                        format!("{node:>5}  exit {:?}", exit.kind)
                                     }
-                                    _ => "?",
+                                    None => format!("{node:>5}  fresh temporaries"),
                                 };
-                                format!(
-                                    "{:X}:{} {}{}",
-                                    point.address,
-                                    point.operation_index,
-                                    mnemonic,
-                                    if matches!(effects, AppliedEffects::Conservative(_)) {
-                                        " [opaque]"
-                                    } else {
-                                        ""
-                                    }
-                                )
+                                ui.selectable_value(
+                                    &mut self.dataflow.selected_node,
+                                    node,
+                                    RichText::new(label).monospace(),
+                                );
                             }
-                            AdaptedStatement::NoOp { point } => {
-                                format!("{:X} no-op", point.address)
-                            }
-                            AdaptedStatement::UndefinedTemporaries { address, .. } => {
-                                format!("{address:X} fresh undefined temporaries")
-                            }
-                        };
-                        let values = match analysis.ssa().statement(id) {
-                            Ok(s) => format!(
-                                "defs [{}]  uses [{}]",
-                                ids(s.defs().iter().map(|v| v.0)),
-                                ids(s.uses().iter().map(|v| v.0))
-                            ),
-                            Err(_) => "unreachable".into(),
-                        };
-                        ui.monospace(format!("{label}   {values}"));
+                        },
+                    );
+                let node = self.dataflow.selected_node;
+                let ui = &mut columns[1];
+                let Ok(block) = analysis.ssa().block(node) else {
+                    return;
+                };
+                ui.label(format!(
+                    "Node {node} · {} · constant propagation: {}",
+                    if block.is_reachable() {
+                        "reachable"
+                    } else {
+                        "unreachable"
+                    },
+                    match facts.is_node_executable(node) {
+                        Ok(true) => constants::FEASIBLE,
+                        Ok(false) => constants::NOT_FEASIBLE,
+                        Err(_) => "unavailable",
                     }
-                });
+                ));
+                ui.label(format!(
+                    "Successors: {:?}",
+                    analysis.ssa().graph().successors(node).unwrap_or(&[])
+                ));
+                if let Some(NodeKind::Block(points)) = analysis.cfg().node(node)
+                    && ui
+                        .button(format!("Go to {:X}", points[0].address))
+                        .clicked()
+                {
+                    jump = Some(points[0].address);
+                }
+                if let Some(renamed) = block.renamed() {
+                    let mut incoming: Vec<_> = renamed
+                        .incoming()
+                        .iter()
+                        .take(12)
+                        .map(|p| match p {
+                            ghidra_ssa::Predecessor::Entry => "entry".into(),
+                            ghidra_ssa::Predecessor::Node(node) => format!("n{node}"),
+                        })
+                        .collect();
+                    if renamed.incoming().len() > 12 {
+                        incoming.push("…".into());
+                    }
+                    ui.label(format!("Incoming: {}", incoming.join(", ")));
+                    let phis = renamed.phis();
+                    if !phis.is_empty() {
+                        ui.label("Phi values");
+                        egui::ScrollArea::both()
+                            .id_salt("dataflow_phis")
+                            .max_height(180.0)
+                            .show_rows(ui, 22.0, phis.len(), |ui, rows| {
+                                for i in rows {
+                                    let phi = &phis[i];
+                                    ui.monospace(format!(
+                                        "v{} = phi(s{}, {})",
+                                        phi.value().0,
+                                        phi.variable().0,
+                                        ids(phi.operands().iter().map(|v| v.0))
+                                    ));
+                                }
+                            });
+                    }
+                }
+                ui.label("Operations");
+                let raw = &analysis.raw().blocks[node];
+                egui::ScrollArea::both()
+                    .id_salt("dataflow_statements")
+                    .show_rows(ui, 22.0, raw.len(), |ui, rows| {
+                        for index in rows {
+                            let id = ghidra_ssa::StatementId { node, index };
+                            let label = match analysis.statement(id).expect("analysis statement") {
+                                AdaptedStatement::Operation { point, effects, .. } => {
+                                    let mnemonic = match analysis.cfg().statement(*point) {
+                                        Some(ghidra_cfg::Statement::Operation(op)) => {
+                                            op.opcode.mnemonic()
+                                        }
+                                        _ => "?",
+                                    };
+                                    format!(
+                                        "{:X}:{} {}{}",
+                                        point.address,
+                                        point.operation_index,
+                                        mnemonic,
+                                        if matches!(effects, AppliedEffects::Conservative(_)) {
+                                            " [opaque]"
+                                        } else {
+                                            ""
+                                        }
+                                    )
+                                }
+                                AdaptedStatement::NoOp { point } => {
+                                    format!("{:X} no-op", point.address)
+                                }
+                                AdaptedStatement::UndefinedTemporaries { address, .. } => {
+                                    format!("{address:X} fresh undefined temporaries")
+                                }
+                            };
+                            let values = match analysis.ssa().statement(id) {
+                                Ok(s) => format!(
+                                    "defs [{}]  uses [{}]",
+                                    ids(s.defs().iter().map(|v| v.0)),
+                                    ids(s.uses().iter().map(|v| v.0))
+                                ),
+                                Err(_) => "unreachable".into(),
+                            };
+                            ui.monospace(format!("{label}   {values}"));
+                        }
+                    });
+            });
+            if let Some(address) = jump {
+                self.navigate_address(address);
+            }
         });
-        if let Some(address) = jump {
-            self.navigate_address(address);
-        }
     }
 }
 
@@ -818,5 +852,166 @@ mod tests {
         app.request_function_analysis(fixture.request.key.entry);
         assert!(app.dataflow.worker.is_none());
         assert!(app.dataflow.waiting.is_none());
+    }
+
+    #[test]
+    fn full_workbench_inspection_panes_remain_scrollable_at_small_sizes_and_large_fonts() {
+        fn text_rect(output: &egui::FullOutput, prefix: &str) -> Option<egui::Rect> {
+            output.shapes.iter().find_map(|shape| {
+                let egui::epaint::Shape::Text(text) = &shape.shape else {
+                    return None;
+                };
+                if !text.galley.text().starts_with(prefix) {
+                    return None;
+                }
+                let visible = egui::Rect::from_min_size(text.pos, text.galley.size())
+                    .intersect(shape.clip_rect)
+                    .intersect(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 650.0),
+                    ));
+                (visible.width() > 1.0 && visible.height() > 1.0).then_some(visible)
+            })
+        }
+        fn frame(
+            app: &mut Workbench,
+            context: &egui::Context,
+            time: &mut f64,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            *time += 1.0 / 30.0;
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 650.0),
+                    )),
+                    time: Some(*time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.toolbar(ctx);
+                    egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+                        ui.label(RichText::new(&app.status).small());
+                    });
+                    app.sidebar(ctx);
+                    app.inspector(ctx);
+                    app.center(ctx);
+                },
+            )
+        }
+        fn scroll(
+            app: &mut Workbench,
+            context: &egui::Context,
+            time: &mut f64,
+            at: egui::Pos2,
+        ) -> egui::FullOutput {
+            let mut output = frame(
+                app,
+                context,
+                time,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -10000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            for _ in 0..12 {
+                output = frame(app, context, time, vec![]);
+            }
+            output
+        }
+        let fixture = crate::function_analysis::tests::fixture();
+        for font_size in [14.0, 28.0] {
+            for rows in [
+                constants::Rows::Values,
+                constants::Rows::Known,
+                constants::Rows::Edges,
+                constants::Rows::Faults,
+            ] {
+                let view = crate::function_analysis::tests::analyze(&fixture.request).unwrap();
+                let (mut app, _) = completed(view);
+                app.tab = Tab::Dataflow;
+                app.dataflow.inspect = Inspect::Constants;
+                app.dataflow.constant.rows = rows;
+                app.dataflow.constant.value =
+                    app.dataflow.view.as_ref().unwrap().1.constant_values[0].0;
+                let context = egui::Context::default();
+                context.style_mut(|style| {
+                    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+                    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+                    style.animation_time = 0.0;
+                    for (kind, font) in [
+                        (
+                            egui::TextStyle::Monospace,
+                            egui::FontId::monospace(font_size),
+                        ),
+                        (egui::TextStyle::Body, egui::FontId::proportional(font_size)),
+                        (
+                            egui::TextStyle::Button,
+                            egui::FontId::proportional(font_size),
+                        ),
+                    ] {
+                        style.text_styles.insert(kind, font);
+                    }
+                });
+                let mut time = 0.0;
+                let mut output = frame(&mut app, &context, &mut time, vec![]);
+                for _ in 0..3 {
+                    output = frame(&mut app, &context, &mut time, vec![]);
+                }
+                // Scroll on a header control so the page, rather than a nested
+                // fact/detail list, receives the input. Its full production
+                // toolbar and both 260-point side panels are present.
+                let header =
+                    text_rect(&output, "Analyze selected function").expect("visible page header");
+                output = scroll(&mut app, &context, &mut time, header.center());
+                let prefix = match rows {
+                    constants::Rows::Values | constants::Rows::Known => "v",
+                    constants::Rows::Edges => "e0",
+                    constants::Rows::Faults => "No evaluation faults at the fixpoint.",
+                };
+                assert!(
+                    text_rect(&output, prefix).is_some(),
+                    "{font_size}, {rows:?}: no visible facts after page scroll"
+                );
+                if rows != constants::Rows::Faults {
+                    // A long narrow detail panel must also allow its source
+                    // navigation control to be reached by scrolling locally.
+                    output = scroll(&mut app, &context, &mut time, egui::pos2(620.0, 600.0));
+                    let button = text_rect(&output, "Go to ").unwrap_or_else(|| {
+                        panic!("{font_size}, {rows:?}: source navigation inaccessible")
+                    });
+                    let at = button.center();
+                    for pressed in [true, false] {
+                        frame(
+                            &mut app,
+                            &context,
+                            &mut time,
+                            vec![
+                                egui::Event::PointerMoved(at),
+                                egui::Event::PointerButton {
+                                    pos: at,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ],
+                        );
+                    }
+                    assert!(
+                        matches!(app.tab, Tab::Listing),
+                        "{font_size}, {rows:?}: source navigation did not run"
+                    );
+                }
+                assert!(!app.dirty);
+                assert_eq!(app.revision, 0);
+                assert!(app.loaded.as_ref().unwrap().metadata.annotations.is_empty());
+            }
+        }
     }
 }

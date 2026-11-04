@@ -622,7 +622,9 @@ pub(super) fn panel(
     ui: &mut egui::Ui,
     selection: &mut Selection,
     view: &FunctionView,
+    pane_height: f32,
 ) -> Option<u64> {
+    let top = ui.cursor().top();
     let e = view.expressions.as_ref();
     let spaces = e.analysis().cfg().spaces();
     ui.horizontal(|ui| {
@@ -638,49 +640,51 @@ pub(super) fn panel(
         e.constant_bytes()
     ));
     let mut jump = None;
-    ui.columns(2, |columns| match selection.rows {
-        Rows::Values => {
-            let count = e.analysis().ssa().values().len();
-            selection.value = selection.value.min(count.saturating_sub(1));
-            let height = row_height(&columns[0]);
-            egui::ScrollArea::both()
-                .id_salt("expression_values")
-                .show_rows(&mut columns[0], height, count, |ui, rows| {
-                    for id in rows {
-                        let (tone, text) = value_row(e, spaces, id);
-                        selectable_row(ui, &mut selection.value, id, tone.color(), text);
-                    }
-                });
-            if count > 0 {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("expression_value_detail")
-                    .show(&mut columns[1], |ui| {
-                        value_detail(ui, e, spaces, selection.value)
-                    })
-                    .inner;
+    super::inspection_panes(ui, pane_height - (ui.cursor().top() - top), |ui| {
+        ui.columns(2, |columns| match selection.rows {
+            Rows::Values => {
+                let count = e.analysis().ssa().values().len();
+                selection.value = selection.value.min(count.saturating_sub(1));
+                let height = row_height(&columns[0]);
+                egui::ScrollArea::both()
+                    .id_salt("expression_values")
+                    .show_rows(&mut columns[0], height, count, |ui, rows| {
+                        for id in rows {
+                            let (tone, text) = value_row(e, spaces, id);
+                            selectable_row(ui, &mut selection.value, id, tone.color(), text);
+                        }
+                    });
+                if count > 0 {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("expression_value_detail")
+                        .show(&mut columns[1], |ui| {
+                            value_detail(ui, e, spaces, selection.value)
+                        })
+                        .inner;
+                }
             }
-        }
-        Rows::Operations => {
-            let statements = &view.expression_operations;
-            selection.operation = selection.operation.min(statements.len().saturating_sub(1));
-            let height = row_height(&columns[0]);
-            egui::ScrollArea::both()
-                .id_salt("expression_operations")
-                .show_rows(&mut columns[0], height, statements.len(), |ui, rows| {
-                    for index in rows {
-                        let (tone, text) = operation_row(e, spaces, statements[index]);
-                        selectable_row(ui, &mut selection.operation, index, tone.color(), text);
-                    }
-                });
-            if let Some(&statement) = statements.get(selection.operation) {
-                jump = egui::ScrollArea::vertical()
-                    .id_salt("expression_operation_detail")
-                    .show(&mut columns[1], |ui| {
-                        operation_detail(ui, e, spaces, statement)
-                    })
-                    .inner;
+            Rows::Operations => {
+                let statements = &view.expression_operations;
+                selection.operation = selection.operation.min(statements.len().saturating_sub(1));
+                let height = row_height(&columns[0]);
+                egui::ScrollArea::both()
+                    .id_salt("expression_operations")
+                    .show_rows(&mut columns[0], height, statements.len(), |ui, rows| {
+                        for index in rows {
+                            let (tone, text) = operation_row(e, spaces, statements[index]);
+                            selectable_row(ui, &mut selection.operation, index, tone.color(), text);
+                        }
+                    });
+                if let Some(&statement) = statements.get(selection.operation) {
+                    jump = egui::ScrollArea::vertical()
+                        .id_salt("expression_operation_detail")
+                        .show(&mut columns[1], |ui| {
+                            operation_detail(ui, e, spaces, statement)
+                        })
+                        .inner;
+                }
             }
-        }
+        });
     });
     jump
 }

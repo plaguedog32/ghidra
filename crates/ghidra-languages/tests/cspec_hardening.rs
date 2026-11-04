@@ -257,6 +257,65 @@ fn diagnostic_byte_budget_has_an_exact_boundary() {
 }
 
 #[test]
+fn shared_context_diagnostics_obey_count_and_path_byte_budgets() {
+    let text = top(&format!(
+        "<context_data><context_set space=\"ram\">{}</context_set></context_data>",
+        "<set name=\"mode\" val=\"bad\"/>".repeat(8)
+    ));
+    let path_text = "p".repeat(32_768);
+    let path = Some(Path::new(&path_text));
+    let spec = CompilerSpec::parse_str(&text, path, &Limits::default()).unwrap();
+    assert_eq!(spec.diagnostics.len(), 8);
+    assert_eq!(spec.context_sets[0].values.len(), 8);
+    assert!(spec.context_sets[0].values.iter().all(|v| v.value == 0));
+    let bytes = diagnostic_bytes(&spec);
+    let exact = Limits {
+        max_cspec_diagnostics: 8,
+        max_cspec_diagnostic_bytes: bytes,
+        ..Limits::default()
+    };
+    assert_eq!(CompilerSpec::parse_str(&text, path, &exact).unwrap(), spec);
+    for limits in [
+        Limits {
+            max_cspec_diagnostics: 7,
+            ..exact
+        },
+        Limits {
+            max_cspec_diagnostics: 0,
+            ..exact
+        },
+        Limits {
+            max_cspec_diagnostic_bytes: bytes - 1,
+            ..exact
+        },
+        Limits {
+            max_cspec_diagnostic_bytes: 0,
+            ..exact
+        },
+    ] {
+        assert!(matches!(
+            CompilerSpec::parse_str(&text, path, &limits),
+            Err(Error::Limit { .. })
+        ));
+    }
+}
+
+#[test]
+fn context_diagnostic_quotes_are_bounded_without_changing_stored_values() {
+    let name = "界".repeat(30_000);
+    let raw = "x".repeat(100_000);
+    let text = top(&format!(
+        "<context_data><context_set space=\"ram\"><set name=\"{name}\" val=\"{raw}\"/></context_set></context_data>"
+    ));
+    let spec = parse(&text);
+    assert_eq!(spec.diagnostics.len(), 1);
+    assert!(spec.diagnostics[0].message.len() < 256);
+    assert_eq!(spec.context_sets[0].values[0].name, name);
+    assert_eq!(spec.context_sets[0].values[0].raw, raw);
+    assert_eq!(spec.context_sets[0].values[0].value, 0);
+}
+
+#[test]
 fn diagnostic_floods_fail_under_default_limits() {
     // 12,000 flagged entries exceed the default 10,000-diagnostic budget: the parse is a
     // resource error instead of a spec with diagnostics silently missing.

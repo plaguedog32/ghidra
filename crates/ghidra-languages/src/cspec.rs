@@ -28,7 +28,8 @@
 //!   semantic work and the diagnostics one file may cause. When a budget runs out the
 //!   parse fails with [`Error::Limit`]; no partial spec is returned. Repeated names and
 //!   keys are found through sets, not by rescanning, and quoted spec text in diagnostics
-//!   is clipped.
+//!   is clipped. Shared context parsing emits each diagnostic through these budgets;
+//!   diagnostic paths are copied only after the count and byte checks succeed.
 //!
 //! Ghidra checks that need the language and are therefore *not* made here: that named
 //! registers and address spaces exist, that a `<pentry>` maxsize fits its register, that
@@ -1081,7 +1082,7 @@ impl CompilerSpec {
                         }
                     }
                 }
-                "context_data" => reader.read_context_data(child, path, &mut spec),
+                "context_data" => reader.read_context_data(child, &mut spec),
                 "stackpointer" => {
                     if let Some(sp) = reader.read_stack_pointer(child) {
                         if let Some(old) = &spec.stack_pointer {
@@ -1745,14 +1746,14 @@ impl Reader {
         true
     }
 
-    fn push(&mut self, mut d: Diagnostic) {
+    fn diag(&mut self, severity: Severity, kind: DiagnosticKind, line: u32, mut message: String) {
         if self.exhausted.is_some() {
             return;
         }
-        if d.message.len() > MAX_MESSAGE_BYTES {
-            let cut = floor_char_boundary(&d.message, MAX_MESSAGE_BYTES);
-            d.message.truncate(cut);
-            d.message.push('…');
+        if message.len() > MAX_MESSAGE_BYTES {
+            let cut = floor_char_boundary(&message, MAX_MESSAGE_BYTES);
+            message.truncate(cut);
+            message.push('…');
         }
         if self.diagnostics.len() >= self.max_diagnostics {
             let msg = format!(
@@ -1762,7 +1763,9 @@ impl Reader {
             self.exhaust(msg);
             return;
         }
-        let bytes = d.message.len() + d.path.as_ref().map_or(0, |p| p.as_os_str().len());
+        let bytes = message
+            .len()
+            .saturating_add(self.path.as_ref().map_or(0, |p| p.as_os_str().len()));
         if self.diagnostic_bytes.saturating_add(bytes) > self.max_diagnostic_bytes {
             let msg = format!(
                 "compiler spec diagnostics exceed {} bytes (Limits::max_cspec_diagnostic_bytes)",
@@ -1772,14 +1775,10 @@ impl Reader {
             return;
         }
         self.diagnostic_bytes += bytes;
-        if d.severity == Severity::Error {
+        if severity == Severity::Error {
             self.errors += 1;
         }
-        self.diagnostics.push(d);
-    }
-
-    fn diag(&mut self, severity: Severity, kind: DiagnosticKind, line: u32, message: String) {
-        self.push(Diagnostic {
+        self.diagnostics.push(Diagnostic {
             severity,
             kind,
             path: self.path.clone(),
@@ -1972,7 +1971,7 @@ impl Reader {
     /// `<context_data>`, read with the `.pspec` rules (the schema is shared). Ghidra's
     /// `ContextSetting.parseContextSet` reads every child of a `<context_set>` or
     /// `<tracked_set>` as a leaf, so elements nested there are errors.
-    fn read_context_data(&mut self, el: &Element, path: Option<&Path>, spec: &mut CompilerSpec) {
+    fn read_context_data(&mut self, el: &Element, spec: &mut CompilerSpec) {
         for block in &el.children {
             if !self.step(1) {
                 return;
@@ -1984,10 +1983,13 @@ impl Reader {
                 self.leaf(set);
             }
         }
-        let data = pspec::read_context_data_element(el, path);
-        for d in data.diagnostics {
-            self.push(d);
+        if self.exhausted.is_some() {
+            return;
         }
+        let data = pspec::read_context_data_element(el, |severity, kind, line, message| {
+            self.diag(severity, kind, line, message);
+            self.exhausted.is_none()
+        });
         spec.context_sets.extend(data.context_sets);
         spec.tracked_sets.extend(data.tracked_sets);
     }

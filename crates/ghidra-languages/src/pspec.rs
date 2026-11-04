@@ -276,13 +276,63 @@ impl ProcessorSpec {
     }
 
     fn read_context_data(&mut self, el: &Element) {
+        let data = read_context_data_element(el, |severity, kind, line, message| {
+            self.diag(severity, kind, line, message);
+            true
+        });
+        self.context_sets.extend(data.context_sets);
+        self.tracked_sets.extend(data.tracked_sets);
+    }
+}
+
+/// The shared reader emits diagnostics immediately. A caller can stop parsing at
+/// its budget boundary, before another diagnostic or path copy is retained.
+struct ContextReader<F> {
+    emit: F,
+    stopped: bool,
+    context_sets: Vec<ContextSet>,
+    tracked_sets: Vec<TrackedSet>,
+}
+
+impl<F: FnMut(Severity, DiagnosticKind, u32, String) -> bool> ContextReader<F> {
+    fn diag(&mut self, severity: Severity, kind: DiagnosticKind, line: u32, message: String) {
+        if !self.stopped && !(self.emit)(severity, kind, line, message) {
+            self.stopped = true;
+        }
+    }
+
+    fn unknown_attrs(&mut self, el: &Element, known: &[&str]) {
+        for (key, _) in &el.attrs {
+            if self.stopped {
+                break;
+            }
+            if !known.contains(&key.as_str()) {
+                self.diag(
+                    Severity::Warning,
+                    DiagnosticKind::UnknownAttribute,
+                    el.line,
+                    format!(
+                        "ignored attribute `{}` on <{}>",
+                        Quote(key),
+                        Quote(&el.name)
+                    ),
+                );
+            }
+        }
+    }
+
+    fn read_context_data(&mut self, el: &Element) {
         for block in &el.children {
+            if self.stopped {
+                break;
+            }
             let is_context = match block.name.as_str() {
                 "context_set" => true,
                 "tracked_set" => false,
                 other => {
                     let msg = format!(
-                        "unsupported <{other}> in <context_data> (only context_set and tracked_set are defined); ignored"
+                        "unsupported <{}> in <context_data> (only context_set and tracked_set are defined); ignored",
+                        Quote(other)
                     );
                     self.diag(
                         Severity::Error,
@@ -305,8 +355,11 @@ impl ProcessorSpec {
 
     fn read_block(&mut self, el: &Element) -> Option<SetBlock> {
         self.unknown_attrs(el, &["space", "first", "last"]);
+        if self.stopped {
+            return None;
+        }
         let Some(space) = el.attr("space") else {
-            let msg = format!("<{}> has no `space`; block ignored", el.name);
+            let msg = format!("<{}> has no `space`; block ignored", Quote(&el.name));
             self.diag(
                 Severity::Error,
                 DiagnosticKind::MissingAttribute,
@@ -322,8 +375,9 @@ impl ProcessorSpec {
                     Some(v) => Ok(Some(v)),
                     None => {
                         let msg = format!(
-                            "<{}> `{attr}=\"{text}\"` is not an address offset; block ignored",
-                            el.name
+                            "<{}> `{attr}=\"{}\"` is not an address offset; block ignored",
+                            Quote(&el.name),
+                            Quote(text)
                         );
                         self.diag(
                             Severity::Error,
@@ -341,7 +395,7 @@ impl ProcessorSpec {
         if first.is_some() != last.is_some() {
             let msg = format!(
                 "<{}> gives only one of `first`/`last`; the other bound is open",
-                el.name
+                Quote(&el.name)
             );
             self.diag(
                 Severity::Warning,
@@ -355,7 +409,7 @@ impl ProcessorSpec {
         {
             let msg = format!(
                 "<{}> range first {f:#x} > last {l:#x}; block ignored",
-                el.name
+                Quote(&el.name)
             );
             self.diag(
                 Severity::Error,
@@ -367,8 +421,15 @@ impl ProcessorSpec {
         }
         let mut values = Vec::new();
         for set in &el.children {
+            if self.stopped {
+                return None;
+            }
             if set.name != "set" {
-                let msg = format!("unsupported <{}> in <{}>; ignored", set.name, el.name);
+                let msg = format!(
+                    "unsupported <{}> in <{}>; ignored",
+                    Quote(&set.name),
+                    Quote(&el.name)
+                );
                 self.diag(
                     Severity::Error,
                     DiagnosticKind::UnsupportedForm,
@@ -378,6 +439,9 @@ impl ProcessorSpec {
                 continue;
             }
             self.unknown_attrs(set, &["name", "val", "description"]);
+            if self.stopped {
+                return None;
+            }
             let (Some(name), Some(raw)) = (set.attr("name"), set.attr("val")) else {
                 let msg = "<set> needs `name` and `val`; ignored".into();
                 self.diag(
@@ -392,7 +456,9 @@ impl ProcessorSpec {
                 SetValueParse::Value(v) => v,
                 SetValueParse::Negative => {
                     let msg = format!(
-                        "<set name=\"{name}\"> negative value `{raw}` is unsupported; ignored"
+                        "<set name=\"{}\"> negative value `{}` is unsupported; ignored",
+                        Quote(name),
+                        Quote(raw)
                     );
                     self.diag(
                         Severity::Error,
@@ -403,8 +469,11 @@ impl ProcessorSpec {
                     continue;
                 }
                 SetValueParse::TooWide => {
-                    let msg =
-                        format!("<set name=\"{name}\"> value `{raw}` exceeds 128 bits; ignored");
+                    let msg = format!(
+                        "<set name=\"{}\"> value `{}` exceeds 128 bits; ignored",
+                        Quote(name),
+                        Quote(raw)
+                    );
                     self.diag(
                         Severity::Error,
                         DiagnosticKind::UnsupportedForm,
@@ -416,7 +485,9 @@ impl ProcessorSpec {
                 SetValueParse::Invalid => {
                     // Ghidra substitutes zero for unparseable values.
                     let msg = format!(
-                        "<set name=\"{name}\"> value `{raw}` is not a number; using 0 like Ghidra"
+                        "<set name=\"{}\"> value `{}` is not a number; using 0 like Ghidra",
+                        Quote(name),
+                        Quote(raw)
                     );
                     self.diag(
                         Severity::Warning,
@@ -427,6 +498,9 @@ impl ProcessorSpec {
                     0
                 }
             };
+            if self.stopped {
+                return None;
+            }
             values.push(SetValue {
                 name: name.to_owned(),
                 value,
@@ -435,13 +509,16 @@ impl ProcessorSpec {
             });
         }
         if values.is_empty() {
-            let msg = format!("<{}> contains no <set> entries", el.name);
+            let msg = format!("<{}> contains no <set> entries", Quote(&el.name));
             self.diag(
                 Severity::Warning,
                 DiagnosticKind::UnsupportedForm,
                 el.line,
                 msg,
             );
+        }
+        if self.stopped {
+            return None;
         }
         Some(SetBlock {
             space: space.to_owned(),
@@ -451,7 +528,9 @@ impl ProcessorSpec {
             line: el.line,
         })
     }
+}
 
+impl ProcessorSpec {
     /// Value of property `key`; when repeated, the last one (Ghidra map semantics).
     pub fn property(&self, key: &str) -> Option<&str> {
         self.properties
@@ -513,27 +592,43 @@ impl ProcessorSpec {
 pub(crate) struct ContextData {
     pub context_sets: Vec<ContextSet>,
     pub tracked_sets: Vec<TrackedSet>,
-    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Read a `<context_data>` element with the `.pspec` rules. `.cspec` files use the same
 /// `context_data_type` schema.
-pub(crate) fn read_context_data_element(el: &Element, path: Option<&Path>) -> ContextData {
-    let mut spec = ProcessorSpec {
-        path: path.map(Path::to_path_buf),
-        program_counter: None,
-        properties: Vec::new(),
+pub(crate) fn read_context_data_element(
+    el: &Element,
+    emit: impl FnMut(Severity, DiagnosticKind, u32, String) -> bool,
+) -> ContextData {
+    let mut spec = ContextReader {
+        emit,
+        stopped: false,
         context_sets: Vec::new(),
         tracked_sets: Vec::new(),
-        unmodeled_elements: Vec::new(),
-        diagnostics: Vec::new(),
     };
     spec.unknown_attrs(el, &[]);
     spec.read_context_data(el);
     ContextData {
         context_sets: spec.context_sets,
         tracked_sets: spec.tracked_sets,
-        diagnostics: spec.diagnostics,
+    }
+}
+
+/// Bound text before formatting a diagnostic, including very long XML names and
+/// attributes. The parsed values themselves remain unchanged.
+struct Quote<'a>(&'a str);
+
+impl std::fmt::Display for Quote<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut end = self.0.len().min(64);
+        while !self.0.is_char_boundary(end) {
+            end -= 1;
+        }
+        f.write_str(&self.0[..end])?;
+        if end < self.0.len() {
+            f.write_str("…")?;
+        }
+        Ok(())
     }
 }
 
@@ -605,6 +700,44 @@ fn decode_set_value(raw: &str) -> SetValueParse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_diagnostics_stop_at_the_callers_budget() {
+        let text = format!(
+            "<context_data><context_set space=\"ram\">{}</context_set></context_data>",
+            "<set name=\"mode\" val=\"bad\"/>".repeat(2000)
+        );
+        let doc = xml::parse_text(&text, Path::new(""), &Limits::default()).unwrap();
+        let mut emitted = 0;
+        let data = read_context_data_element(&doc, |_, _, _, _| {
+            emitted += 1;
+            emitted < 3
+        });
+        assert_eq!(emitted, 3);
+        assert!(
+            data.context_sets.is_empty(),
+            "the interrupted block is dropped"
+        );
+    }
+
+    #[test]
+    fn rejecting_context_attributes_stops_before_later_diagnostics() {
+        for text in [
+            "<context_data unexpected=\"1\"><bad/></context_data>",
+            "<context_data><context_set unexpected=\"1\"><bad/></context_set></context_data>",
+            "<context_data><context_set space=\"ram\"><set unexpected=\"1\"/></context_set></context_data>",
+        ] {
+            let doc = xml::parse_text(text, Path::new(""), &Limits::default()).unwrap();
+            let mut emitted = 0;
+            let data = read_context_data_element(&doc, |_, _, _, _| {
+                emitted += 1;
+                false
+            });
+            assert_eq!(emitted, 1, "{text}");
+            assert!(data.context_sets.is_empty());
+            assert!(data.tracked_sets.is_empty());
+        }
+    }
 
     #[test]
     fn set_value_decoding_matches_sleigh_language() {

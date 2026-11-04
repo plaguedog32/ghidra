@@ -89,7 +89,9 @@ For a bitfield, `FieldLayout::bitfield` reports `BitfieldLayout` separately:
 whose storage is still one byte and whose bit offset is 0 for little-endian and
 7 for big-endian. `FieldLayout::alignment` is the declared base's alignment
 capped by packing; compiler placement need not put a bitfield at a multiple of
-it.
+it. Its value can be read from minimal component bytes with
+`BitfieldLayout::read_value`, or from a containing aggregate's bytes with
+`FieldLayout::read_bitfield_value`, as described below.
 
 ```rust
 use std::sync::Arc;
@@ -228,7 +230,7 @@ Still required for the full port: manual/disabled composite layout, including
 explicitly placed bitfields; bitfield pragmas such as `bit_field_size`,
 `bit_field_align` and `bit_packing`, and other member-specific alignment
 attributes; dynamic/factory datatypes; mutable datatype managers and their
-repack history; bitfield value extraction and display; archive/import/export
+repack history; datatype-aware enum/character display and editing; archive/import/export
 formats; enumerator semantics; source parsing; rule classification; ABI use of
 bitfield-bearing types; type inference and propagation. There is no C output or
 inferred function signature. Tested toolchain and validation are recorded with
@@ -270,3 +272,78 @@ remain checked `u64`. Regressions cover allocation-end, end-plus-alignment and
 previous-group comparisons near `u64::MAX` in both byte orders. The default byte
 cap did not expose this issue. Bit-offset docs also now state the selected byte
 order explicitly; a little-endian multi-byte field cannot be read directly as BE.
+
+## Bitfield values
+
+`BitfieldLayout::read_value(component, byte_order, signed)` reads minimal
+component storage unsigned in the buffer's byte order, shifts right by
+`bit_offset` and masks `effective_bits`. `FieldLayout::read_bitfield_value`
+instead takes bytes beginning at the containing aggregate and checks the
+component's byte offset before indexing. Unaligned packed members work too.
+Both methods are read-only and validate caller-built layout records; a short
+buffer is an error, never a fabricated zero. A zero-width field reads no bytes
+even at the end of a buffer or beyond it, matching the retained zero-value path.
+
+The caller supplies primitive-base signedness. As in
+`BitFieldDataType.getPrimitiveBaseDataType`, enum bitfields use an unsigned
+primitive even when the enum is marked signed, bool is unsigned, and plain char
+follows the data organization. Aliases do not change their base's interpretation.
+This API does not walk or infer a base datatype. Zero width uses signed metadata
+like the retained `Scalar(0, 0)` path and has no sign bit.
+
+```rust
+use ghidra_types::{BitfieldLayout, Endianness, IntegerFormat};
+
+let component = BitfieldLayout {
+    declared_bits: 9, effective_bits: 9, base_bytes: 2,
+    storage_bytes: 2, bit_offset: 5,
+};
+let value = component.read_value(&[0xA0, 0x35], Endianness::Little, true)?;
+assert_eq!(value.unsigned_bytes_le(), &[0xAD, 1]);
+assert_eq!(value.to_u64(), Some(429)); // selected pattern
+assert_eq!(value.to_i64(), Some(-83)); // signed nine-bit interpretation
+assert_eq!(value.to_string(), "-83");
+assert_eq!(value.representation(IntegerFormat::Hexadecimal, true), "1ADh");
+# Ok::<(), ghidra_types::BitfieldValueError>(())
+```
+
+`BitfieldValue` stores up to 255 bits in a fixed 32-byte array, with canonical
+little-endian bytes and zero unused high bits. Reading performs at most 255 bit
+selections and allocates no heap memory. A field at width 255 and offset seven
+needs **33 input bytes**, despite its 32-byte result. The base allocation unit's
+size never determines a read allocation. `to_u64` checks whether the raw pattern
+fits; `to_i64` checks the interpreted integer, including wide negative values
+such as a signed 255-bit -1. `Display` is signed/unsigned decimal, with zero
+displayed as `0` even at width zero.
+
+Numeric `representation` follows `AbstractIntegerDataType.getRepresentation`:
+uppercase hex with `h`, binary with `b`, octal with `o`, or decimal without a
+suffix. Decimal honors signedness and ignores padding. Other formats show raw
+bits; padding uses the field width, not whole storage bytes. Zero-width
+representations are empty. `boolean_representation` applies the retained
+nonzero test and returns `TRUE`/`FALSE` (empty at width zero), without inferring
+that the datatype is bool. Formatting returns at most 256 ASCII bytes and uses
+fixed scratch storage. Padding works through 255 bits instead of inheriting
+`StringFormat.padIt`'s fixed 64-zero-string exception on large deficits.
+
+Value access adds no dependencies and does not change layout construction or
+work charges. Directed tests cover endian/sign interpretation, cross-byte
+fields, truncation to the declared base, 33-byte reads, signed integer
+boundaries, all numeric formats, zero/short buffers and checked aggregate
+offsets. A native-integer reference checks 11,616 reads against independent
+`u128` shifts and standard integer formatting. GCC/MS automatic-layout members
+are read in both byte orders. An external Python-bigint oracle checks 58,944
+component reads, 58,944 aggregate reads, 117,440 short-buffer failures and
+471,552 numeric representations with no mismatches. It includes every declared
+width/offset/endian/signed combination, wide integer edges, 576 components of
+33 bytes and 21,408 base-truncated cases. This is separate test evidence, not a
+Python runtime dependency. Sixteen compiling semantic mutations are caught by
+the value tests, including byte order, offset/sign handling, wide storage,
+integer boundaries, invalid public layouts, wrapped aggregate extents and
+formatting. Independent cross-lab review of this value-access increment is
+still pending.
+
+Enum names and masks, character encodings, settings persistence, program-memory
+providers and datatype editing/encoding are not implemented here. The retained
+bitfield datatype itself does not implement integer encoding; this API does not
+add a write operation or claim complete datatype display parity.

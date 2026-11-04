@@ -7,8 +7,9 @@ commands addressed to the intended instance and document.
 
 These are required architecture and acceptance gates. The current desktop has
 background workers but still has UI-thread work to migrate. It has no native
-MCP server or instance discovery service yet. This requirements change leaves
-the broader port paused.
+MCP server or instance discovery service yet. The full replacement goal has
+resumed with the shared application/job boundary and native MCP integration
+prioritized. The contract's requirements remain acceptance gates.
 
 ## Shared application operations
 

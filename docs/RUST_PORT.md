@@ -39,8 +39,9 @@ native work and the migration of existing paths.
 
 Existing workers offload import, lifting and Dataflow analysis, but report
 export, some copying/disposal and frame-wide scans still need migration.
-There is no native MCP server/discovery implementation yet. The requirements
-update does not resume the paused full-port goal or claim runtime support.
+There is no native MCP server/discovery implementation yet. The full-port goal
+has resumed with this foundation prioritized; the requirements are not a
+claim of runtime support.
 
 The root Cargo workspace builds the Rust crates and their native platform helpers. It does not compile the retained Java/C++ application or invoke Gradle. Tests read the upstream opcode table as text, and source-lifting probes use retained processor language data. No Java runtime, JNI bridge, Ghidra C++ decompiler process, or Java-backed extension is used.
 
@@ -175,6 +176,16 @@ Local validation on Windows with Rust 1.99.1:
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.
 
 ## Development checkpoint
+
+### Active continuation with UI and MCP requirements
+
+The full replacement goal has resumed after the saved checkpoint below.
+Prioritize extraction of the shared application/document/job service and
+migration of the existing UI operations, then build native MCP control and
+protected multi-instance discovery on that API. Independent review is still
+required for the integrated compiler provenance repair (`da2b34ea83`) and
+native one-value fallback allocator (`48c91d72ac`). Their passing tests do not
+establish approval. Structuring and ELF RELR work remain separate open gates.
 
 ### Paused checkpoint: 2026-11-04
 

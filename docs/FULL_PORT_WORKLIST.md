@@ -1,6 +1,6 @@
 # Full Rust replacement worklist
 
-The unfinished objective is to replace Ghidra's functionality without a Java build or runtime requirement. Work is paused at the user's requested stopping point; the current native milestones do not complete that objective. The retained source has 114 module manifests and 150 SLEIGH specifications under `Ghidra/`; neither those counts nor a successful source compilation establish functional parity. The current handoff is recorded in [RUST_PORT.md](RUST_PORT.md#paused-checkpoint-2026-11-04).
+The active, unfinished objective is to replace Ghidra's functionality without a Java build or runtime requirement. Work has resumed with UI/work separation and native multi-instance MCP control prioritized; the current native milestones do not complete that objective. The retained source has 114 module manifests and 150 SLEIGH specifications under `Ghidra/`; neither those counts nor a successful source compilation establish functional parity. The preceding saved handoff is recorded in [RUST_PORT.md](RUST_PORT.md#paused-checkpoint-2026-11-04).
 
 Two user requirements govern every native subsystem: UI callbacks must remain
 responsive while work runs, and the full application must be controllable

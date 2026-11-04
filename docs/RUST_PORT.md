@@ -209,8 +209,21 @@ faults do not prune paths. Independent review at `fdb61172e6` approved the engin
 with no actionable findings. It added 7,200 solver comparisons, 310,306 concrete
 observations and 14,213,072 observations from a separate byte interpreter across
 both temporary scopes and phi placements. These are bounded tests, not a proof
-or an independent check of every arithmetic opcode. CLI/desktop integration is
-next. No IR rewrite, type recovery or structured output is claimed.
+or an independent check of every arithmetic opcode. Desktop/JSON integration
+is now implemented at `4497eab30e`: Dataflow has a Constants mode with known,
+unknown and unreached facts, conservative edge feasibility and final-fixpoint
+faults. `--analyze-pcode --constants` also includes expressions; every function
+report now includes both. Reports borrow the same immutable snapshots and
+include the final newline in the 64 MiB command cap. Independent frontend review
+remains pending. No IR rewrite, type recovery or structured output is claimed.
+
+The combined tree passes 501 default workspace tests and ten doctests on
+Windows/Rust 1.99.1. Java-free release runs succeed for both raw examples and
+WinHelloCPP `401E46`; the latter reports 113 known constants, 10,840 unknown
+values, all 102 supplied CFG edges feasible and no evaluation faults. Binary
+recovery stays incomplete (135 native instructions). The opt-in real x86-64
+probe also passes with two known and 67 unknown values. These observations do
+not establish runtime reachability, complete processor behavior or a decompiler.
 
 The combined continuation passes 474 default workspace tests and ten doctests
 on Windows/Rust 1.99.1 at `fdb61172e6`. The SCCP engine, resource pass and ABI

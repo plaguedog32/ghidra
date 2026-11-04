@@ -254,6 +254,12 @@ impl OperationBindings {
         if self.effects != EffectClass::Explicit {
             return Err(StorageError::UnknownEffects(self.effects));
         }
+        self.declared_def_use()
+    }
+
+    // Only the operands written in the operation. For opaque operations the
+    // adapter must add a complete summary before these can become SSA inputs.
+    pub(crate) fn declared_def_use(&self) -> Result<DefUse> {
         let mut uses = Vec::new();
         let mut definitions = Vec::new();
         for input in &self.inputs {

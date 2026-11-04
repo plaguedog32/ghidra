@@ -11,7 +11,7 @@ The main framework areas still require these coverage gates:
 | Emulation | Bounded concrete P-code machine | Complete processor/userop models, OS models, tracing, breakpoints, symbolic/taint workflows |
 | FileSystem | Direct binary/project reads | Archives, nested containers, file-system providers, caching and access controls |
 | Generic | Selected behavior supplied by Rust crates | Audit utility APIs required by every migrated subsystem |
-| Graph | Local reachable CFG blocks; independent bounded SCC, dominance/frontier, natural-loop and finite-path post-dominance algorithms | Connect graph analyses to P-code/SSA, graph display/layout, graph matching and diff workflows |
+| Graph | Native P-code CFGs; bounded SCC, dominance/frontier, natural-loop and finite-path post-dominance algorithms connected to SSA | Desktop graph display/layout, graph matching and diff workflows |
 | Gui | Core workbench views | Data/type editing, search, navigation history, tool options and full workflow coverage |
 | Help | Repository documentation and CLI help | In-app contextual help and migrated training/workflow documentation |
 | Project | Single self-contained program project | Project collections, versioning, repository workflows and upstream project import |
@@ -23,6 +23,6 @@ Feature families also remain: full decompiler, assembler/patching, debugger and 
 
 The processor gate is per-language: compile this checkout's source, load `.ldefs`/`.pspec` context defaults and ABI configuration, decode/lift reference instructions, validate register aliases and endian/memory behavior, then test control flow, delay slots, userops and unusual widths. All 202 shipped language definitions and their processor specs are read natively. All 107 distinct referenced compiler specs have typed data models, with register resolution and argument allocation still pending. Seven source probes plus the desktop worker's Thumb IT continuation probe pass. Full flow-aware context analysis, address-space truncation (including AArch64 ILP32), the remaining specs and complete ISA semantics remain unverified.
 
-The decompiler gate requires a genuine P-code-to-structured-output pipeline: P-code CFG construction, SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. Native graph foundations now exist, but they still need connection to P-code analysis. A disassembly listing or an operation dump does not satisfy the decompiler gate.
+The decompiler gate requires a genuine P-code-to-structured-output pipeline: P-code CFG construction, SSA, alias/memory modeling, dataflow, simplification, type propagation, function signatures, control-flow structuring and readable output. Native P-code CFGs and an alias-aware SSA adapter now exist, with abstract whole-space memory dependencies and explicit unknown effects. Liveness pruning, pointer disambiguation, ABI resolution, expression simplification, type propagation, structured output and desktop/function integration remain. A disassembly listing or an operation dump does not satisfy the decompiler gate.
 
 Each increment must preserve a working Java-free build, add behavioral regression evidence, update these boundaries, and leave the overarching goal active until all coverage gates are satisfied.

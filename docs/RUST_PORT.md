@@ -12,6 +12,9 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
 | `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
 | `crates/ghidra-graph` | Bounded traversal, SCCs, dominators/frontiers, natural loops, and finite-exit-path post-dominators |
+| `crates/ghidra-cfg` | Raw P-code control flow, operation identities, instruction-entry provenance, calls and explicit terminal outcomes |
+| `crates/ghidra-ssa` | Bounded generic unpruned SSA construction and independent reaching-definition verification |
+| `crates/ghidra-analysis` | Alias-aware scalar storage, abstract memory dependencies, temporary lifetimes, opaque effects and P-code-to-SSA adaptation |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
@@ -36,7 +39,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
-| Decompilation | P-code and independent graph-analysis foundations available; no decompiled output yet | Connect P-code CFGs to SSA/dataflow, type recovery, simplification and structured output |
+| Decompilation | Native P-code CFGs and alias-aware SSA with abstract memory dependencies; no decompiled output yet | Desktop/function integration, dataflow simplification, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |
 | Debugger | Not implemented | Native debugger backends, memory/register views and trace support |
 | Extensions and scripting | Not implemented | Native plugin boundary and a Java-free scripting strategy |
@@ -118,8 +121,9 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 210 default workspace tests pass. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, language/processor/compiler XML data, context precedence, per-token byte order, mixed-endian source lifting, compiled-source reuse, checked continuation and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window. Eight opt-in processor probes cover seven source configurations and the desktop worker's Thumb IT continuation.
-- The graph crate contributes 12 integration tests and one separately run doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. The crate is not yet connected to the P-code or desktop function graphs.
+- Workspace tests cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, language/processor/compiler XML data, context precedence, per-token byte order, mixed-endian source lifting, compiled-source reuse, checked continuation and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window. Eight opt-in processor probes cover seven source configurations and the desktop worker's Thumb IT continuation.
+- The graph crate contributes 12 integration tests and a doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. P-code CFG/SSA now uses the graph crate; desktop function-graph integration remains pending.
+- P-code CFG tests cover relative/native control flow, calls, explicit terminal exits, no-ops, delay extents and instruction-frame provenance. SSA tests include path-execution oracles, undefined entry values, entry loops, irreducible graphs, exact limits and 100,000-node inputs. The adapter adds register-alias joins, memory versions, opaque effects, frame resets, concrete-machine trace comparisons, and bounded large-loop behavior. SSA is unpruned; whole-space memory tokens are conservative dependencies, not pointer disambiguation or decompiled output.
 - Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Register/space resolution, argument allocation, rule execution and injection compilation remain pending; parser coverage is not executable ABI support.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
@@ -130,6 +134,7 @@ Local validation on Windows with Rust 1.99.1:
 - The same environment lifts and executes AArch64 BE64 `mov x0, #1`, and inspects the Windows x64 compiler specification with zero diagnostics.
 - Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
 - Independent review of the graph/project increment returned "Verdict: approve." It added 21,200 graph-oracle comparisons, including irreducible/nested cycles and larger random graphs.
+- Independent CFG and SSA reviews at `89cd38c6a6` both approved their changes. Separate probes checked 13,650 CFG cases and 3,000 concrete traces, and 17,288 SSA oracle cases plus deliberately corrupted operands/phis. The later storage/adapter increment requires its own review.
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.

@@ -8,7 +8,10 @@ description = "Native P-code storage and dataflow analysis foundations"
 publish = false
 
 [dependencies]
+ghidra-cfg = { path = "../ghidra-cfg" }
+ghidra-graph = { path = "../ghidra-graph" }
 ghidra-pcode = { path = "../ghidra-pcode" }
+ghidra-ssa = { path = "../ghidra-ssa" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

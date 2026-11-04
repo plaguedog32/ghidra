@@ -1085,7 +1085,10 @@ dependencies = [
 name = "ghidra-analysis"
 version = "0.3.0"
 dependencies = [
+ "ghidra-cfg",
+ "ghidra-graph",
  "ghidra-pcode",
+ "ghidra-ssa",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

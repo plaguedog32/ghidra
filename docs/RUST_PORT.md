@@ -27,6 +27,21 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 
 The executable does not launch the imported program. It reads binary data for inspection. Input parsing and decoding are bounded; malformed and unsupported inputs should produce errors rather than launch another tool.
 
+### Required UI and automation architecture
+
+The user requires strict separation between UI execution and application work,
+plus native MCP control of every available feature and reliable discovery and
+targeting of multiple concurrent instances. The
+[architecture contract](UI_AND_MCP_ARCHITECTURE.md) defines the shared
+application API, bounded background jobs, immutable views, revision checks,
+instance/document identities and acceptance gates. It applies to future
+native work and the migration of existing paths.
+
+Existing workers offload import, lifting and Dataflow analysis, but report
+export, some copying/disposal and frame-wide scans still need migration.
+There is no native MCP server/discovery implementation yet. The requirements
+update does not resume the paused full-port goal or claim runtime support.
+
 The root Cargo workspace builds the Rust crates and their native platform helpers. It does not compile the retained Java/C++ application or invoke Gradle. Tests read the upstream opcode table as text, and source-lifting probes use retained processor language data. No Java runtime, JNI bridge, Ghidra C++ decompiler process, or Java-backed extension is used.
 
 ## Feature status
@@ -40,6 +55,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | Code analysis | Linear listing and bounded recursive discovery from entry points, symbols and direct calls; reachable basic blocks | Indirect targets, jump tables, exception paths, speculative discovery, data/code separation |
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
 | Headless analysis | JSON output from the same Rust core | Stable automation API and batch processing |
+| Native MCP control | Architecture and acceptance contract; runtime not implemented | Shared application commands, MCP tools/resources/jobs, instance discovery/identity, GUI controls and multi-instance routing |
 | P-code | 74-opcode model, 59 pure integer/software-float operations, bounded concrete memory/control execution, source lifting | Userops, SSA context, architecture/OS state models, full format coverage |
 | Decompilation | Native P-code CFGs, alias-aware liveness-pruned SSA, typed expressions, constant facts and value simplification; x86/x64 function lifting, Dataflow inspection and headless reports | Other processor function flows, broader IR optimization, ABI/type recovery and structured output |
 | Projects | Self-contained `.ghrs` projects with embedded binary, integrity checks, annotations and atomic saves | Project collections, migration, upstream `.gpr`/`.gzf` compatibility and database semantics |

@@ -52,6 +52,12 @@ The P-code tab discovers language assets from this checkout's `Ghidra/Processors
 
 ## Development
 
+Two required architecture goals are responsive UI execution separated from
+analysis/I/O, and native MCP control with discovery and explicit targeting of
+multiple running instances. See the [UI and MCP architecture contract](docs/UI_AND_MCP_ARCHITECTURE.md)
+and [contributor requirements](AGENTS.md). The current background workers do
+not yet satisfy every responsiveness gate; native MCP is planned.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings

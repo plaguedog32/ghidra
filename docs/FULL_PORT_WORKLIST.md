@@ -2,6 +2,17 @@
 
 The unfinished objective is to replace Ghidra's functionality without a Java build or runtime requirement. Work is paused at the user's requested stopping point; the current native milestones do not complete that objective. The retained source has 114 module manifests and 150 SLEIGH specifications under `Ghidra/`; neither those counts nor a successful source compilation establish functional parity. The current handoff is recorded in [RUST_PORT.md](RUST_PORT.md#paused-checkpoint-2026-11-04).
 
+Two user requirements govern every native subsystem: UI callbacks must remain
+responsive while work runs, and the full application must be controllable
+through native MCP with discovery and explicit targeting of concurrent
+instances. The [UI and MCP architecture contract](UI_AND_MCP_ARCHITECTURE.md)
+defines shared commands/queries, bounded jobs, instance/document identity,
+protocol boundaries and acceptance tests. Existing workers only partially
+satisfy the first requirement; native MCP/discovery is not implemented yet.
+Prioritize the application/job boundary and the first usable multi-instance
+MCP surface when implementation resumes, then expand command coverage with
+each subsystem.
+
 The main framework areas still require these coverage gates:
 
 | Upstream framework | Current Rust coverage | Required before full replacement |
@@ -18,6 +29,7 @@ The main framework areas still require these coverage gates:
 | Pty | None | Portable terminal/process integration for debugger and scripting workflows |
 | SoftwareModeling | Loaders, sections, symbols, functions, P-code, source lifting, declared datatype geometry and explicit ABI fallback | Complete address/memory and datatype workflows, references, ABI/calling conventions, analysis services and compatibility |
 | Utility | Rust runtime and selected libraries | Audit remaining logging, task/progress, configuration and lifecycle needs |
+| MCP and automation | CLI JSON commands; no native MCP endpoint | Shared application API, native MCP tools/resources/jobs, protected instance discovery, explicit targeting and cross-platform multi-instance tests |
 
 Feature families also remain: full decompiler, assembler/patching, debugger and trace backends, symbol/debug formats, data archives, strings/encodings, diff/version tracking, function matching/BSim, scripting, extension APIs, shared repositories and collaboration. Java plugins and scripts require a native replacement/migration path; the Rust application cannot execute Java bytecode while also removing its JVM dependency.
 
@@ -56,6 +68,13 @@ ABI storage inspection has an independently reviewed resource-group planner, per
 Compiler-spec stack load-order and frame-namespace checks have independent approval and follow-up fixes; wide-register metadata enumeration includes SH-2A. Historical stack-geometry changes, virtual-frame ranges and remaining source/address-space gaps still need follow-up. Native declared datatype geometry covers scalars, pointers, aliases, arrays and ordinary automatic aggregates, with independent review approval. GCC/MS bitfield layout is implemented; a review's raised-cap comparison-overflow finding is fixed with widened arithmetic and targeted regressions. Bitfield wrapper extraction is connected to the primitive layer. Bitfield value reads and numeric formatting have independent-bigint evidence and cross-lab approval, with the guard-test gap fixed; program-memory/UI integration remains. Manual layouts, explicit mutable datatype setters, archives, mutable datatype managers, member pragmas, enum/character display and type inference remain. Other processor function flows, pointer disambiguation, wider expression/IR optimization, type propagation and structured output remain. A disassembly listing or an operation dump does not satisfy the decompiler gate.
 
 Each increment must preserve a working Java-free build, add behavioral regression evidence and update these boundaries. The overarching goal stays unfinished until all coverage gates are satisfied; a requested pause does not imply completion.
+
+UI responsiveness and MCP coverage are also release gates. Migrate report
+export, function-listing clones, large result disposal and frame-wide queries
+out of UI callbacks. Establish the shared service and job layer before adding
+MCP handlers, so automation cannot bypass project/revision rules or create a
+second implementation of application behavior. A discoverable endpoint alone
+does not meet the full-control or multiple-instance requirements.
 
 Native desktop click-through remains an open verification gate. A 2026-11-04
 attempt could not discover applications because the computer-use helper's

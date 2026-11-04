@@ -59,6 +59,16 @@ pub enum Error {
     InvalidField { owner: TypeId, field: usize },
     #[error("array {owner:?} has an unsized or void element {element:?}")]
     InvalidElement { owner: TypeId, element: TypeId },
+    #[error("datatype {owner:?} has an invalid bitfield at index {field}: {reason}")]
+    InvalidBitfield {
+        owner: TypeId,
+        field: usize,
+        reason: &'static str,
+    },
+    /// Bitfield storage depends on byte order, which is never guessed from
+    /// the host or inferred from the data organization.
+    #[error("datatype {owner:?} declares bitfield {field}, but no byte order was supplied")]
+    EndiannessRequired { owner: TypeId, field: usize },
     #[error("layout arithmetic overflow in datatype {0:?}")]
     Overflow(TypeId),
     #[error("datatype index {0:?} is out of range")]

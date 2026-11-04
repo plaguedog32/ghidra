@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use ghidra_languages::ResolvedDataOrganization;
+use ghidra_languages::{Endianness, ResolvedDataOrganization};
 
+use crate::bitfield::{self, BaseClass};
 use crate::error::{Budget, count};
 use crate::{
-    Builtin, Composite, Error, FieldLayout, Geometry, Limits, MinimumAlignment, Packing, Resource,
-    Result, TypeDefinition, TypeId, TypeKind, TypeLayout,
+    Builtin, Composite, Error, Field, FieldLayout, Geometry, Limits, MAX_BITFIELD_BITS,
+    MinimumAlignment, Packing, Resource, Result, TypeDefinition, TypeId, TypeKind, TypeLayout,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -25,21 +26,48 @@ pub struct LayoutStats {
 pub struct TypeLayouts {
     definitions: Arc<[TypeDefinition]>,
     organization: ResolvedDataOrganization,
+    endianness: Option<Endianness>,
     layouts: Vec<TypeLayout>,
     stats: LayoutStats,
     limits: Limits,
 }
 
 impl TypeLayouts {
+    /// Lays out a graph without a byte order. A declared bitfield fails with
+    /// [`Error::EndiannessRequired`]; ordinary graphs are unaffected.
     pub fn new(
         definitions: Arc<[TypeDefinition]>,
         organization: ResolvedDataOrganization,
         limits: Limits,
     ) -> Result<Self> {
+        Self::build(definitions, organization, None, limits)
+    }
+
+    /// Lays out a graph with the program's byte order, which determines
+    /// normalized bitfield bit offsets. The caller supplies it explicitly; it
+    /// is never taken from the host or the compiler specification.
+    pub fn new_with_endianness(
+        definitions: Arc<[TypeDefinition]>,
+        organization: ResolvedDataOrganization,
+        endianness: Endianness,
+        limits: Limits,
+    ) -> Result<Self> {
+        Self::build(definitions, organization, Some(endianness), limits)
+    }
+
+    fn build(
+        definitions: Arc<[TypeDefinition]>,
+        organization: ResolvedDataOrganization,
+        endianness: Option<Endianness>,
+        limits: Limits,
+    ) -> Result<Self> {
         let mut budget = Budget { limits, work: 0 };
-        let mut stats = validate(&definitions, &organization, &mut budget)?;
+        let mut stats = validate(&definitions, &organization, endianness, &mut budget)?;
         // Counts have been bounded before any node-indexed output is allocated.
         let mut layouts: Vec<Option<TypeLayout>> = vec![None; definitions.len()];
+        // Bitfield-base classes propagate through aliases in dependency order,
+        // so no bitfield walks an alias chain.
+        let mut classes = vec![BaseClass::Ineligible; definitions.len()];
         let mut states = vec![0u8; definitions.len()];
         let mut stack = Vec::new();
         for root in 0..definitions.len() {
@@ -70,13 +98,17 @@ impl TypeLayouts {
                     }
                 } else {
                     let id = *id;
+                    let kind = &definitions[id.0].kind;
                     let layout = compute(
                         id,
-                        &definitions[id.0].kind,
+                        kind,
                         &layouts,
+                        &classes,
                         &organization,
+                        endianness,
                         &mut budget,
                     )?;
+                    classes[id.0] = bitfield::classify(kind, &classes);
                     layouts[id.0] = Some(layout);
                     states[id.0] = 2;
                     stack.pop();
@@ -92,6 +124,7 @@ impl TypeLayouts {
         Ok(Self {
             definitions,
             organization,
+            endianness,
             layouts,
             stats,
             limits,
@@ -106,6 +139,10 @@ impl TypeLayouts {
     }
     pub fn organization(&self) -> &ResolvedDataOrganization {
         &self.organization
+    }
+    /// The byte order supplied at construction, if any.
+    pub fn endianness(&self) -> Option<Endianness> {
+        self.endianness
     }
     pub fn layouts(&self) -> &[TypeLayout] {
         &self.layouts
@@ -154,6 +191,7 @@ fn dependency(kind: &TypeKind, index: usize) -> Option<TypeId> {
 fn validate(
     defs: &[TypeDefinition],
     org: &ResolvedDataOrganization,
+    endianness: Option<Endianness>,
     budget: &mut Budget,
 ) -> Result<LayoutStats> {
     let mut stats = LayoutStats::default();
@@ -296,16 +334,41 @@ fn validate(
                 if c.minimum_alignment == MinimumAlignment::Explicit(0) {
                     return Err(invalid(id, "zero explicit minimum alignment"));
                 }
-                for field in &c.fields {
+                for (index, field) in c.fields.iter().enumerate() {
                     budget.charge(1)?;
                     name(&field.name, &mut stats, budget)?;
                     reference(field.ty)?;
+                    bitfield_declaration(id, index, field, endianness)?;
                 }
             }
             _ => (),
         }
     }
     Ok(stats)
+}
+
+/// Width and byte-order checks need no other type. Base eligibility is checked
+/// during layout from the propagated class.
+fn bitfield_declaration(
+    owner: TypeId,
+    field: usize,
+    declaration: &Field,
+    endianness: Option<Endianness>,
+) -> Result<()> {
+    let Some(bits) = declaration.bit_width else {
+        return Ok(());
+    };
+    if bits > MAX_BITFIELD_BITS {
+        return Err(Error::InvalidBitfield {
+            owner,
+            field,
+            reason: "declared width exceeds 255 bits",
+        });
+    }
+    if endianness.is_none() {
+        return Err(Error::EndiannessRequired { owner, field });
+    }
+    Ok(())
 }
 
 fn name(name: &str, stats: &mut LayoutStats, budget: &Budget) -> Result<()> {
@@ -328,7 +391,9 @@ fn compute(
     id: TypeId,
     kind: &TypeKind,
     layouts: &[Option<TypeLayout>],
+    classes: &[BaseClass],
     org: &ResolvedDataOrganization,
+    endianness: Option<Endianness>,
     budget: &mut Budget,
 ) -> Result<TypeLayout> {
     budget.charge(1)?;
@@ -393,7 +458,19 @@ fn compute(
         }
         TypeKind::Structure(c) | TypeKind::Union(c) => {
             let is_union = matches!(kind, TypeKind::Union(_));
-            let (g, f) = composite(id, c, is_union, layouts, org, budget)?;
+            // A bitfield-free composite keeps the ordinary path below.
+            let (g, f) = if uses_bitfield_packer(c) {
+                let context = bitfield::Context {
+                    id,
+                    layouts,
+                    classes,
+                    org,
+                    endianness: endianness.expect("validation requires a byte order"),
+                };
+                bitfield::composite(&context, c, is_union, budget)?
+            } else {
+                composite(id, c, is_union, layouts, org, budget)?
+            };
             fields = f;
             g
         }
@@ -412,7 +489,23 @@ fn compute(
     })
 }
 
-fn sized(size: u64, length: u64, aligned_length: u64, alignment: u32) -> Geometry {
+#[cfg(test)]
+thread_local! {
+    /// Test hook: also route bitfield-free composites through the bitfield
+    /// packer, so a crate test can require both paths to agree.
+    pub(crate) static FORCE_BITFIELD_PACKER: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn uses_bitfield_packer(c: &Composite) -> bool {
+    #[cfg(test)]
+    if FORCE_BITFIELD_PACKER.with(std::cell::Cell::get) {
+        return true;
+    }
+    c.fields.iter().any(Field::is_bitfield)
+}
+
+pub(crate) fn sized(size: u64, length: u64, aligned_length: u64, alignment: u32) -> Geometry {
     Geometry {
         size: Some(size),
         length: Some(length),
@@ -421,7 +514,7 @@ fn sized(size: u64, length: u64, aligned_length: u64, alignment: u32) -> Geometr
     }
 }
 
-fn primitive(
+pub(crate) fn primitive(
     id: TypeId,
     bytes: u32,
     org: &ResolvedDataOrganization,
@@ -474,7 +567,7 @@ fn size_alignment(bytes: u64, org: &ResolvedDataOrganization, budget: &mut Budge
     })
 }
 
-fn align_up(bytes: u64, alignment: u32, id: TypeId) -> Result<u64> {
+pub(crate) fn align_up(bytes: u64, alignment: u32, id: TypeId) -> Result<u64> {
     let alignment = u64::from(alignment);
     let remainder = bytes % alignment;
     bytes
@@ -486,7 +579,7 @@ fn align_up(bytes: u64, alignment: u32, id: TypeId) -> Result<u64> {
         .ok_or(Error::Overflow(id))
 }
 
-fn lcm(mut a: u32, mut b: u32, id: TypeId, budget: &mut Budget) -> Result<u32> {
+pub(crate) fn lcm(mut a: u32, mut b: u32, id: TypeId, budget: &mut Budget) -> Result<u32> {
     let product_a = a;
     let product_b = b;
     while b != 0 {
@@ -549,6 +642,7 @@ fn composite(
             offset,
             bytes: field_bytes,
             alignment: field_alignment,
+            bitfield: None,
         });
     }
     let minimum = match c.minimum_alignment {

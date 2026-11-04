@@ -99,18 +99,44 @@ pub enum MinimumAlignment {
     Explicit(u32),
 }
 
+/// Largest declared bitfield width accepted, as in the retained datatype API.
+pub const MAX_BITFIELD_BITS: u32 = 255;
+
+/// One declared member. Its index in [`Composite::fields`] is its stable
+/// declaration identity: layout reports exactly one [`FieldLayout`] at the
+/// same index, including for zero-width bitfields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
+    /// The member type, or a bitfield's declared base type.
     pub ty: TypeId,
+    /// `None` declares an ordinary by-value member. `Some(bits)` declares a
+    /// bitfield of `bits` declared bits; zero declares a zero-width bitfield.
+    /// Widths above [`MAX_BITFIELD_BITS`] are rejected explicitly.
+    pub bit_width: Option<u32>,
 }
 
 impl Field {
+    /// An ordinary by-value member.
     pub fn new(name: impl Into<String>, ty: TypeId) -> Self {
         Self {
             name: name.into(),
             ty,
+            bit_width: None,
         }
+    }
+
+    /// A bitfield whose base must be an integer, enum, or alias chain to one.
+    pub fn bitfield(name: impl Into<String>, base: TypeId, declared_bits: u32) -> Self {
+        Self {
+            name: name.into(),
+            ty: base,
+            bit_width: Some(declared_bits),
+        }
+    }
+
+    pub fn is_bitfield(&self) -> bool {
+        self.bit_width.is_some()
     }
 }
 
@@ -144,13 +170,48 @@ impl Geometry {
 }
 
 /// One result for one declared field, in declaration order. Padding occupies
-/// no field record; field sizes are aligned lengths, or zero for logical zeros.
+/// no field record; ordinary field sizes are aligned lengths, or zero for
+/// logical zeros. A bitfield's `bytes` is its minimal component storage, or
+/// zero for a zero-width bitfield.
+///
+/// `alignment` is the member's alignment capped by the composite's packing.
+/// For a bitfield that is its declared base's alignment; compiler-specific
+/// bitfield placement need not put the bitfield at a multiple of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldLayout {
     pub ty: TypeId,
     pub offset: u64,
     pub bytes: u64,
     pub alignment: u32,
+    /// Present exactly for declared bitfields.
+    pub bitfield: Option<BitfieldLayout>,
+}
+
+/// Normalized bitfield storage, reported separately from the byte extent.
+///
+/// The allocation unit (`base_bytes`) and the minimal storage
+/// (`storage_bytes`) are distinct. `bit_offset` is the right shift of the
+/// field's least-significant bit within `storage_bytes` read as a big-endian
+/// value, so it is always `0..=7`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitfieldLayout {
+    /// The width as declared, `0..=255`.
+    pub declared_bits: u32,
+    /// The declared width clamped to `8 * base_bytes`.
+    pub effective_bits: u32,
+    /// Raw length of the declared base type, through aliases.
+    pub base_bytes: u64,
+    /// Minimal bytes containing the field from its byte offset. A zero-width
+    /// bitfield's storage is one byte, although its component `bytes` is zero.
+    pub storage_bytes: u64,
+    /// Little-endian zero-width fields use 0 and big-endian ones use 7.
+    pub bit_offset: u8,
+}
+
+impl BitfieldLayout {
+    pub fn is_zero_width(self) -> bool {
+        self.effective_bits == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

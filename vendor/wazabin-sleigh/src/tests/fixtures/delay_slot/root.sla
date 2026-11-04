@@ -1,0 +1,73 @@
+# Minimal delay-slot architecture: one-byte instructions, so a delay slot
+# measured in bytes can be filled by a varying number of them.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+define register offset=8 size=4 [r0 r1 r2 ra];
+
+define context ctxreg mode=(0,0);
+
+define token instr(8)
+  hi       = (4,7)
+  lo       = (0,3)
+  nextbyte = (0,7)
+;
+
+# ── Instructions with no delay slot, used to fill one ─────────────────────────
+
+:nop     is hi=0x0 & lo=0x1                 { r0 = r0 + 1; }
+
+# Clobbers r1, which the `beq` shape compares before splicing.
+:clobber is hi=0x0 & lo=0x2                 { r1 = 0; }
+
+# Declares `done`, the same label name the delaying instruction below uses.
+:labelled is hi=0x0 & lo=0x3 {
+    if (r0 == 0) goto <done>;
+    r0 = 1;
+  <done>
+    r2 = 2;
+}
+
+# Two bytes wide: fills a two-byte delay slot on its own.
+:two nextbyte is hi=0x2 & lo=0x0; nextbyte  { r0 = 2; }
+
+# ── Instructions with a delay slot ────────────────────────────────────────────
+
+# The manual's shape: the comparison must be emitted before the splice, because
+# the delayed instruction is free to clobber what it compares.
+:beqds   is hi=0x1 & lo=0x0 {
+    tmp:1 = (r1 == r2);
+    delayslot(1);
+    if (tmp) goto inst_start;
+}
+
+# `inst_next` in the semantic section is past the delay slot.
+:jalds   is hi=0x1 & lo=0x1 {
+    ra = inst_next;
+    delayslot(1);
+    call [r0];
+}
+
+# A two-byte slot: one two-byte instruction, or two one-byte ones.
+:ds2     is hi=0x1 & lo=0x2                 { delayslot(2); r0 = 0; }
+
+# `inst_next` in a disassembly action is *not* extended past the slot.
+:gsds    is hi=0x1 & lo=0x3 [ mode=1; globalset(inst_next,mode); ]
+                                            { delayslot(1); r0 = 1; }
+
+# Declares `done` as well: the spliced instruction's label must not collide.
+:lblds   is hi=0x1 & lo=0x4 {
+    if (r0 == 0) goto <done>;
+    delayslot(1);
+  <done>
+    r2 = 3;
+}
+
+# ── A slot length computed in the disassembly action ──────────────────────────
+
+:repds   is hi=0x3 & lo [ nwords = lo; ]    { delayslot(nwords); r0 = 3; }
+
+# ── inst_next2: skip over the following instruction ───────────────────────────
+
+:skip    is hi=0x4 & lo=0x0                 { if (r0 == 0) goto inst_next2; }

@@ -1,0 +1,4 @@
+define endian=little;
+@include "include_child.sinc"
+
+:nop is op=0 { }

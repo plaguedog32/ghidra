@@ -1,0 +1,16 @@
+# Two 3-bit fields of one big-endian token, compared three ways. `sel`
+# separates the constructors so a decode failure means the predicate rejected
+# the encoding, not that another constructor won.
+define endian=big;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+
+define token instr(8)
+  a   = (0,2)
+  b   = (3,5)
+  sel = (6,7)
+;
+
+:ne is sel=0 & a!=b { }
+:lt is sel=1 & a<b  { }
+:eq is sel=2 & a=b  { }

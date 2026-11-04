@@ -1,0 +1,17 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space other type=ram_space size=4;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1];
+define token instr(8)
+  op=(0,3)
+  reg=(4,4)
+;
+attach variables [reg] [r0 r1];
+
+:ldef reg is op=1 & reg { reg = *:4 reg; }
+:loth reg is op=2 & reg { reg = *[other]:2 reg; }
+:sdef reg is op=3 & reg { *:4 reg = reg; }
+:soth reg is op=4 & reg { *[other]:2 reg = reg; }
+:lshr reg is op=5 & reg { reg = (*:1 reg >> 1) & 1; }
+:ladd reg is op=6 & reg { reg = *:1 (reg + 1); }

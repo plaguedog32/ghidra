@@ -1,0 +1,2 @@
+define space ram type=ram_space size=4 default;
+define token instr(8) op=(0,7);

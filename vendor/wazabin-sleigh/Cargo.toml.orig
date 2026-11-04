@@ -1,0 +1,58 @@
+[package]
+name = "wazabin-sleigh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "SLEIGH processor specification parser and instruction decoder"
+readme = "README.md"
+documentation = "https://docs.rs/wazabin-sleigh"
+keywords = ["sleigh", "ghidra", "disassembler", "pcode", "reverse-engineering"]
+categories = ["parser-implementations", "development-tools::debugging", "encoding"]
+
+[lib]
+name = "sleigh"
+
+[[bin]]
+name = "sleigh-decode"
+path = "src/main.rs"
+
+[features]
+# The SLEIGH source AST, for tooling that works on specification text.
+# Exempt from semantic versioning: it mirrors the compiler's front end and
+# changes with it. `sleigh-fmt` is the intended consumer.
+unstable-syntax = []
+
+# Read-only views over the compiled specification's symbolic structures: the
+# decision tree, and constructor p-code with operands still unresolved. Also
+# exempt from semantic versioning; `wazabin-metal` is the intended consumer.
+unstable-introspect = []
+
+[dependencies]
+jstd.workspace = true
+pest.workspace = true
+pest_derive.workspace = true
+pcode-types.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dev-dependencies]
+criterion.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[[bench]]
+name = "compile"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[example]]
+name = "sleigh-compile"

@@ -1,0 +1,18 @@
+# Loongarch's `csr` shape: a table whose constructor's disassembly action
+# assigns a local with the *same name as the table*, and whose semantic body
+# reads that local back by name.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=8;
+define register offset=0 size=4 [r0 r1];
+
+define token instr(8)
+  op  = (4,7)
+  idx = (0,3)
+;
+
+# `csr` the action local shadows `csr` the table, for this constructor only.
+csr: csr is idx [ csr = 4 * idx; ] { export *[register]:4 csr; }
+
+# Here `csr` means the table operand, because this constructor has no local.
+:read r0, csr is op=1 & csr { r0 = csr; }

@@ -1,0 +1,34 @@
+# Every comparison verb the constraint grammar admits, each on its own
+# selector, over two 3-bit fields of one token. `sel` separates the
+# constructors so a decode failure means the predicate rejected the encoding.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+
+define token instr(16)
+  a   = (0,2)
+  b   = (3,5)
+  sel = (6,9)
+;
+
+# ── field versus field ───────────────────────────────────────────────────────
+:f_eq is sel=0  & a=b  { }
+:f_ne is sel=1  & a!=b { }
+:f_lt is sel=2  & a<b  { }
+:f_le is sel=3  & a<=b { }
+:f_gt is sel=4  & a>b  { }
+:f_ge is sel=5  & a>=b { }
+
+# ── field versus integer ─────────────────────────────────────────────────────
+:i_eq is sel=6  & a=3  { }
+:i_ne is sel=7  & a!=3 { }
+:i_lt is sel=8  & a<3  { }
+:i_le is sel=9  & a<=3 { }
+:i_gt is sel=10 & a>3  { }
+:i_ge is sel=11 & a>=3 { }
+
+# ── boundaries, where the rewrite to `<` / `>` would overflow ────────────────
+:i_le_max is sel=12 & a<=7 { }   # always true
+:i_gt_max is sel=13 & a>7  { }   # never true
+:i_ge_zero is sel=14 & a>=0 { }  # always true
+:i_lt_zero is sel=15 & a<0  { }  # never true

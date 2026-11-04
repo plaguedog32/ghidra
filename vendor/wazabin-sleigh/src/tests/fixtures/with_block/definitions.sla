@@ -1,0 +1,23 @@
+# A `with` block scopes a table and a pattern onto the constructors inside it,
+# but its body is the ordinary definition list. ARM wraps its whole instruction
+# set in `with : ARMcondCk=1 { ... }` and puts `attach variables` inside.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+define register offset=4 size=4 [r0 r1 r2 r3];
+
+define context ctxreg phase=(0,0);
+define token outer(8) op=(0,7);
+
+with : phase=0 {
+    # Every kind of definition the top level accepts has to work here too.
+    define token inner(8) sel=(0,1) rest=(2,7);
+    attach variables [ sel ] [ r0 r1 r2 r3 ];
+    define pcodeop innerop;
+
+    macro bump(x) { x = x + 1; }
+
+    :reg sel  is rest=0x3f & sel   { bump(sel); }
+    :call     is op=0x10           { innerop(); }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "wazabin-pcode"
+version = "0.1.4"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Shared p-code vocabulary, source-shaped AST, operators, and diagnostics"
+readme = "README.md"
+repository = "https://github.com/wazabin/pcode"
+homepage = "https://github.com/wazabin/pcode"
+documentation = "https://docs.rs/wazabin-pcode"
+keywords = ["sleigh", "ghidra", "pcode", "reverse-engineering"]
+categories = ["development-tools::debugging", "encoding"]
+
+[lib]
+name = "pcode_types"
+
+[dependencies]
+jstd = { package = "wazabin-jstd", version = "0.2.2" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+bincode = { version = "2", features = ["serde"] }

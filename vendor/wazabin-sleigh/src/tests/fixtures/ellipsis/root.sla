@@ -1,0 +1,20 @@
+# A trailing `...` on one side of an `&`. HCS08 writes
+# `(op=0xDC | op=0xEC | op=0xFC) ... & ADDRI` and M16C `(...) & $(DST5AX) ...`,
+# both with the two sides the same length.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0];
+
+define token instr(8)
+  op  = (4,7)
+  arg = (0,3)
+;
+
+sub: arg is arg { export *[const]:1 arg; }
+
+# Same length on both sides: the ellipsis extends nothing, which is fine.
+:left  is (op=1 | op=2) ... & sub { r0 = sub; }
+
+# The ellipsis on the right-hand operand instead.
+:right is op=3 & sub ...            { r0 = sub; }

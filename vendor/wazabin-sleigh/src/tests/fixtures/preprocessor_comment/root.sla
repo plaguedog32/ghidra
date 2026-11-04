@@ -1,0 +1,7 @@
+@define MODE "on" # enable the active token
+# this comment sits between directives
+@ifdef MODE
+define token active(8);
+@else # inactive branch
+define token inactive(8);
+@endif

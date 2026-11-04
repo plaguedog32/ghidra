@@ -1,0 +1,46 @@
+# Minimal spec exercising disassembly-action context effects.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+
+define context ctxreg
+  mode   = (0,0)          # a committed value persists from its address on
+  sticky = (1,1) noflow   # a committed value applies to one address only
+;
+
+define token instr(8) op=(0,7);
+
+# Plain assignment with no `globalset`: decode-local, invisible to the caller.
+:setmode    is op=1 [ mode=1; ]                         { }
+
+# Plain assignment to a `noflow` variable: purely decode-local.
+:setsticky  is op=2 [ sticky=1; ]                       { }
+
+# Commit `mode` for the next instruction.
+:commit     is op=3 [ mode=1; globalset(inst_next,mode); ]   { }
+
+# Commit a `noflow` variable: applies at exactly one address.
+:point      is op=4 [ sticky=1; globalset(inst_next,sticky); ] { }
+
+# The ARM Thumb interworking idiom: commit 0 at the target, then restore.
+:interwork  is op=5 [ mode=0; globalset(inst_next,mode); mode=1; ] { }
+
+# Two bytes wide, so `inst_next` is not `inst_start + 1`.
+:wide       is op=6; op=0 [ mode=1; globalset(inst_next,mode); ] { }
+
+# Plain assignment to an already-set variable: still decode-local.
+:clearmode  is op=7 [ mode=0; ]                         { }
+
+# Commit `mode=0`, so a later commit can override an earlier one.
+:uncommit   is op=10 [ mode=0; globalset(inst_next,mode); ] { }
+
+# `globalset` onto a sub-table operand: the address is what it exports.
+Target: reloc is op=1 [ reloc = inst_start + 0x10; ]    { export *:4 reloc; }
+:jump Target  is op=8; Target [ mode=1; globalset(Target,mode); ] { }
+
+# `globalset` onto an operand that exports a register rather than an address:
+# there is no address to commit at, and the decoder must say so.
+define register offset=8 size=4 [r0];
+Reg: r0       is op=2                                   { export r0; }
+:noaddr Reg   is op=9; Reg [ mode=1; globalset(Reg,mode); ] { }

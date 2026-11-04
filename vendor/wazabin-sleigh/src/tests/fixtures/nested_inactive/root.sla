@@ -1,0 +1,7 @@
+@ifdef OUTER
+@ifdef INNER
+define token hidden_nested(8);
+@endif
+@else
+define token visible(8);
+@endif

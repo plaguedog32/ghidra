@@ -1,0 +1,13 @@
+# Xtensa writes `local b = *[register]:1 &:4 bs+1;` — the pointer of a load
+# carries a prefix operator.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1];
+
+define token instr(8) op=(0,7);
+
+:byte1 is op=1 { local b = *[register]:1 &:4 r1+1; r0 = zext(b); }
+:addr  is op=2 { r0 = &:4 r1; }
+# The star still binds tighter than a binary operator: this is `(*:4 r1) + 1`.
+:tight is op=3 { r0 = *:4 r1 + 1; }

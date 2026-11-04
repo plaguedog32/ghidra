@@ -3380,8 +3380,6 @@ dependencies = [
 [[package]]
 name = "wazabin-pcode"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16981334ae27b1d9b775db4aff5438742ff352342d4fba4b2ed50fb096d4eae1"
 dependencies = [
  "serde",
  "wazabin-jstd",
@@ -3390,8 +3388,6 @@ dependencies = [
 [[package]]
 name = "wazabin-sleigh"
 version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa80a0a5cada1a21b7674e589653fec61f26854dcd2b7a8f67da28eaacdf26a9"
 dependencies = [
  "pest",
  "pest_derive",

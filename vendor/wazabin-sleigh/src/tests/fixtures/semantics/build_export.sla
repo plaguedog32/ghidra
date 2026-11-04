@@ -1,0 +1,16 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1];
+define token instr(8)
+  op=(0,3)
+  mode=(4,4)
+  reg=(5,5)
+;
+attach variables [reg] [r0 r1];
+
+addr: [reg] is mode=0 & reg { export *:4 reg; }
+addr: [reg]+ is mode=1 & reg { local tmp = reg; reg = reg + 4:4; export *:4 tmp; }
+
+:load addr is op=1 & addr { build addr; r0 = addr; }
+:store addr is op=2 & addr { build addr; addr = r0; }

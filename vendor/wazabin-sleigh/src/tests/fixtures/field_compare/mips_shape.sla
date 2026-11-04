@@ -1,0 +1,22 @@
+# The MIPS R6 branch encoding, reduced to the parts that exercise
+# field-versus-field constraints: a big-endian 32-bit token whose `rs` and `rt`
+# register fields are compared to each other, with an unconstrained constructor
+# competing for the same opcode the way `bovc` competes with `beqc`.
+define endian=big;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+
+define token instr(32)
+  prime = (26,31)
+  rs    = (21,25)
+  rt    = (16,20)
+  imm   = (0,15)
+;
+
+# `bltzalc` / `bltuc`: the same opcode split by whether the registers are equal.
+:eqpair rt     is prime=7 & rt!=0 & rs=rt  & rt      { }
+:nepair rs, rt is prime=7 & rt!=0 & rs!=rt & rs & rt { }
+
+# `beqc` / `bovc`: an ordered comparison against an unconstrained fallback.
+:ltpair rs, rt is prime=8 & rs!=0 & rs<rt & rs & rt  { }
+:anypair rs, rt is prime=8 & rs & rt                 { }

@@ -1,0 +1,10 @@
+@define MODE "on"
+@if defined(MODE)
+define token active(8);
+@else
+define token inactive(8);
+@endif
+
+@ifndef MODE
+define token hidden(8);
+@endif

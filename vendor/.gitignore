@@ -1,0 +1,3 @@
+# Root rules ignore *.sla and *.lock, which these packages ship.
+!*.sla
+!*.lock

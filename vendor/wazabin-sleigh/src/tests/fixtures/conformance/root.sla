@@ -1,0 +1,27 @@
+# Three constructs the corpus needs, each rare enough to have been missed.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1];
+define register offset=8 size=4 [ctl];
+
+define token instr(8)
+  op  = (4,7)
+  sel = (0,1)
+  arg = (0,3)
+;
+
+# 8051 writes `attach values short01 [ 1 2 4 _ ];` — `_` is a slot with
+# nothing attached, exactly as in `attach variables`.
+attach values [ sel ] [ 1 2 4 _ ];
+
+:val sel is op=1 & sel { r0 = 0; }
+
+# TriCore writes `*[ram]:8 BO+8 = ReN0811;` — a store whose pointer is a full
+# expression, not the unary one a load in an expression takes.
+:store is op=2 { *[ram]:4 r0+8 = r1; }
+
+# avr32a computes `disp = ACBA + (disp4_8 << 2)` from a control register.
+# A register has no disassembly-time value; Ghidra reads one as constant zero.
+ctldisp: rel is arg [ rel = ctl + (arg << 2); ] { export *:4 rel; }
+:reg ctldisp is op=3 & ctldisp { r0 = ctldisp; }

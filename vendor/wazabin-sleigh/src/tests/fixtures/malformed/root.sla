@@ -1,0 +1,5 @@
+define token instr(8) op=(0,7);
+
+:broken is op= {
+
+define pcodeop userop;

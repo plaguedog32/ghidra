@@ -1,0 +1,14 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=8;
+define register offset=0 size=8 [r0 r1];
+define token instr(8)
+  op=(0,3)
+  reg=(4,4)
+;
+attach variables [reg] [r0 r1];
+
+:ext reg is op=1 & reg { reg = zext(reg:4); }
+:sext reg is op=2 & reg { reg = sext(reg:4); }
+:bits reg is op=3 & reg { reg[3,1] = 1:1; reg = zext(reg[0,8]); }
+:trunc reg is op=4 & reg { reg = reg(4); }

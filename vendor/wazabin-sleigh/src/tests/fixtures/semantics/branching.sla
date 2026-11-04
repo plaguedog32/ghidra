@@ -1,0 +1,20 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1];
+define token instr(8)
+  op=(0,3)
+  reg=(4,4)
+;
+attach variables [reg] [r0 r1];
+
+:b is op=1 { goto <done>; <done> }
+:cb reg is op=2 & reg { if reg == 0 goto <done>; reg = 1:4; <done> }
+:bi reg is op=3 & reg { goto [reg]; }
+:call is op=4 { call <sub>; }
+:calli reg is op=5 & reg { call [reg]; }
+:ret reg is op=6 & reg { return [reg]; }
+:bn is op=7 { goto inst_next; }
+:bs is op=8 { goto inst_start; }
+target: reloc is reg [ reloc=inst_next+reg; ] { export *[ram]:4 reloc; }
+:bt target is op=9 & target { goto target; }

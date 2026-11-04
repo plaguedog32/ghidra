@@ -1,0 +1,21 @@
+# The avr8 shape: a wrapper constructor toggles a context variable purely to
+# select its own sub-constructors. Nothing about it may survive the decode.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+
+define context ctxreg
+  phase = (0,0)
+  skip  = (1,1) noflow
+;
+
+define token instr(8) op=(0,7);
+
+# `:^instruction is phase=0 & instruction [ phase=1; ]` is avr8's skip-check
+# wrapper, minus the p-code. Every instruction goes through it, so if `phase=1`
+# escaped the decode the wrapper would never match again.
+:^instruction is phase=0 & instruction [ phase=1; ]     { }
+
+:nop          is phase=1 & op=1                         { }
+:skipnext     is phase=1 & op=2 [ skip=1; globalset(inst_next,skip); ] { }

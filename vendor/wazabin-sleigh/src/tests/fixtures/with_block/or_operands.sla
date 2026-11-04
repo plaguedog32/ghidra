@@ -1,0 +1,15 @@
+# ARM NEON's `vdup` shape: one branch of a `|` names an operand the other does
+# not. Operands belong to the constructor, so `sz` is read out of the token
+# whichever branch matched.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1 r2 r3];
+
+define token instr(16)
+  op = (8,15)
+  sz = (4,5)
+  rd = (0,3)
+;
+
+:pick sz, rd is ( ( op=0x10 & sz ) | ( op=0x20 ) ) & rd { }

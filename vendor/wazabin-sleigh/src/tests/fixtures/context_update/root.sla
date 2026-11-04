@@ -1,0 +1,8 @@
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+define context ctxreg mode=(0,0);
+define token instr(8) op=(0,7);
+
+:ctx is op=1 [mode=1;] { }

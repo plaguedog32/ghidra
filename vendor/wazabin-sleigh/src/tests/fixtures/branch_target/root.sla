@@ -1,0 +1,19 @@
+# Branch destinations of every kind the grammar admits, so a change to one
+# cannot quietly break the others.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0];
+
+define token instr(8) op=(0,7);
+
+# Literal addresses in the default space: PIC writes `goto 0x0;`, M16C
+# `call 0x0fffe0;`.
+:g_lit   is op=1 { goto 0x1234; }
+:c_lit   is op=2 { call 0x40; }
+:cb_lit  is op=3 { if (r0) goto 0x8; }
+
+# The forms that already worked.
+:g_next  is op=4 { goto inst_next; }
+:g_label is op=5 { if (r0) goto <done>; r0 = 1; <done> r0 = 2; }
+:g_ind   is op=6 { goto [r0]; }

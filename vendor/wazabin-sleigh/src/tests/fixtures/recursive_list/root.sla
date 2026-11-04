@@ -1,0 +1,28 @@
+# ARM's variable-length register list, reduced to its skeleton: a table that
+# recurses into itself once per element, driven by a context counter and
+# consuming no bytes. `op` is the element count.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=1 [ctxreg];
+define register offset=4 size=4 [r0 r1 r2 r3];
+
+define context ctxreg
+  counter = (0,4)   # list length, 0..31
+  regNum  = (5,6)   # element index, wraps at 4
+;
+
+define token instr(8) op=(0,7);
+
+Reg: r0 is regNum=0 { export r0; }
+Reg: r1 is regNum=1 { export r1; }
+Reg: r2 is regNum=2 { export r2; }
+Reg: r3 is regNum=3 { export r3; }
+
+buildList:               is counter=0                                          { }
+buildList: Reg           is counter=1 & Reg [ counter=0; regNum=regNum+1; ]     { }
+buildList: Reg,buildList is Reg & buildList [ counter=counter-1; regNum=regNum+1; ] { }
+
+list: "{"^buildList^"}" is buildList [ regNum=0; ] { }
+
+:ldm list is op & list [ counter=op; ] { }

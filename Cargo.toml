@@ -1,12 +1,19 @@
 [workspace]
 members = ["crates/ghidra-abi", "crates/ghidra-analysis", "crates/ghidra-cfg", "crates/ghidra-core", "crates/ghidra-desktop", "crates/ghidra-graph", "crates/ghidra-languages", "crates/ghidra-project", "crates/ghidra-pcode", "crates/ghidra-sleigh", "crates/ghidra-ssa", "crates/ghidra-types"]
 resolver = "3"
+# Vendored dependency forks are standalone packages, not workspace members.
+exclude = ["vendor/wazabin-sleigh", "vendor/wazabin-pcode"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
 version = "0.3.0"
+
+# Local forks of the pinned SLEIGH compiler crates; see vendor/README.md.
+[patch.crates-io]
+wazabin-sleigh = { path = "vendor/wazabin-sleigh" }
+wazabin-pcode = { path = "vendor/wazabin-pcode" }
 
 [profile.release]
 lto = "thin"

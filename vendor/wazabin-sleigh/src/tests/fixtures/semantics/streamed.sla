@@ -1,0 +1,37 @@
+# Shapes the streamed lowering must reproduce exactly as the owned one does.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0 r1 r2];
+define token instr(8)
+  op=(0,3)
+  reg=(4,4)
+  sel=(5,5)
+;
+attach variables [reg] [r0 r1];
+
+define pcodeop custom;
+
+# A macro used as an expression: `dbl(x)` reads as its exported local.
+macro dbl(x) {
+  local t = x + x;
+  export t;
+}
+
+# A sub-table exporting one of its own locals. The parent's `local u = sub`
+# takes its width from that export, and a local's width carries nothing, so
+# the specification cannot resolve `u` ahead of time: the instruction falls
+# back to inferring widths from its emitted statements.
+sub: r2 is sel=0 { local t = r2; export t; }
+# The register alternative resolves ahead of time.
+sub: reg is sel=1 & reg { export reg; }
+
+# A sub-table exporting an address computed in the disassembly action.
+target: reloc is reg [ reloc = inst_next + reg; ] { export *[ram]:4 reloc; }
+
+:mexp reg is op=1 & reg { reg = dbl(reg); }
+:width sub is op=2 & sub { local u = sub; r1 = u + 1; }
+:callt target is op=3 & target { call target; }
+:temps reg is op=4 & reg { local a = reg * 3; local b = a + reg; reg = b - 1; }
+:cbt target is op=5 & target { if (r0 == 0) goto target; }
+:uop reg is op=6 & reg { reg = custom(reg, 1:4, r2); }

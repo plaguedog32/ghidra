@@ -1,0 +1,10 @@
+# A table that matches itself at the same offset, consuming nothing. Nothing
+# stops the matcher descending forever, so the decoder's own bound has to.
+define endian=little;
+define space ram type=ram_space size=4 default;
+define space register type=register_space size=4;
+define register offset=0 size=4 [r0];
+define token instr(8) op=(0,7);
+
+loop: is loop      { }
+:go   is op=1 & loop { }

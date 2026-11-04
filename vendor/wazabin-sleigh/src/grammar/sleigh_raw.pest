@@ -1,0 +1,629 @@
+WHITESPACE = { " " | "\t" | "\r" | "\n" }
+COMMENT    = { "#" ~ (!"\n" ~ ANY)* }
+
+keyword_alignment      = @{ "alignment" ~ !ident_continue }
+keyword_attach         = @{ "attach" ~ !ident_continue }
+keyword_big            = @{ "big" ~ !ident_continue }
+keyword_bitrange       = @{ "bitrange" ~ !ident_continue }
+keyword_build          = @{ "build" ~ !ident_continue }
+keyword_call           = @{ "call" ~ !ident_continue }
+keyword_context        = @{ "context" ~ !ident_continue }
+keyword_dec            = @{ "dec" ~ !ident_continue }
+keyword_default        = @{ "default" ~ !ident_continue }
+keyword_delayslot      = @{ "delayslot" ~ !ident_continue }
+keyword_define         = @{ "define" ~ !ident_continue }
+keyword_endian         = @{ "endian" ~ !ident_continue }
+keyword_export         = @{ "export" ~ !ident_continue }
+keyword_globalset      = @{ "globalset" ~ !ident_continue }
+keyword_goto           = @{ "goto" ~ !ident_continue }
+keyword_hex            = @{ "hex" ~ !ident_continue }
+keyword_if             = @{ "if" ~ !ident_continue }
+keyword_is             = @{ "is" ~ !ident_continue }
+keyword_little         = @{ "little" ~ !ident_continue }
+keyword_local          = @{ "local" ~ !ident_continue }
+keyword_macro          = @{ "macro" ~ !ident_continue }
+keyword_names          = @{ "names" ~ !ident_continue }
+keyword_noflow         = @{ "noflow" ~ !ident_continue }
+keyword_offset         = @{ "offset" ~ !ident_continue }
+keyword_pcodeop        = @{ "pcodeop" ~ !ident_continue }
+keyword_ram_space      = @{ "ram_space" ~ !ident_continue }
+keyword_register_space = @{ "register_space" ~ !ident_continue }
+keyword_return         = @{ "return" ~ !ident_continue }
+keyword_rom_space      = @{ "rom_space" ~ !ident_continue }
+keyword_signed         = @{ "signed" ~ !ident_continue }
+keyword_size           = @{ "size" ~ !ident_continue }
+keyword_space          = @{ "space" ~ !ident_continue }
+keyword_token          = @{ "token" ~ !ident_continue }
+keyword_type           = @{ "type" ~ !ident_continue }
+keyword_unimpl         = @{ "unimpl" ~ !ident_continue }
+keyword_values         = @{ "values" ~ !ident_continue }
+keyword_variables      = @{ "variables" ~ !ident_continue }
+keyword_with           = @{ "with" ~ !ident_continue }
+keyword_wordsize       = @{ "wordsize" ~ !ident_continue }
+
+operator_feq       = @{ "f==" }
+operator_fne       = @{ "f!=" }
+operator_fle       = @{ "f<=" }
+operator_fge       = @{ "f>=" }
+operator_sle       = @{ "s<=" }
+operator_sge       = @{ "s>=" }
+operator_sshr      = @{ "s>>" }
+operator_eq        = @{ "==" }
+operator_not_equal = @{ "!=" }
+operator_shift_l   = @{ "<<" }
+operator_shift_r   = @{ ">>" }
+operator_le        = @{ "<=" }
+operator_ge        = @{ ">=" }
+operator_and_log   = @{ "&&" }
+operator_or_log    = @{ "||" }
+operator_xor_log   = @{ "^^" }
+operator_sdiv      = @{ "s/" }
+operator_smod      = @{ "s%" }
+operator_fdiv      = @{ "f/" }
+operator_fmul      = @{ "f*" }
+operator_fadd      = @{ "f+" }
+operator_fsub      = @{ "f-" }
+operator_flt       = @{ "f<" }
+operator_fgt       = @{ "f>" }
+operator_slt       = @{ "s<" }
+operator_sgt       = @{ "s>" }
+operator_and_kw    = @{ "$and" }
+operator_or_kw     = @{ "$or" }
+operator_xor_kw    = @{ "$xor" }
+operator_assign    = @{ "=" }
+operator_less      = @{ "<" }
+operator_greater   = @{ ">" }
+operator_plus      = @{ "+" }
+operator_minus     = @{ "-" }
+operator_times     = @{ "*" }
+operator_div       = @{ "/" }
+operator_mod       = @{ "%" }
+operator_and       = @{ "&" }
+operator_or        = @{ "|" }
+operator_xor       = @{ "^" }
+operator_not       = @{ "~" }
+operator_not_log   = @{ "!" }
+operator_ellipsis  = @{ "..." }
+// A leading `...` (right-aligned pattern). Spelled the same as the trailing
+// form but a separate rule, so the Pratt parser can treat it as a prefix.
+operator_ellipsis_left = @{ "..." }
+// operator_cat is the bit-pattern concatenation operator (;); distinct from
+// punctuation_semicolon which terminates statements.
+operator_cat       = @{ ";" }
+
+punctuation_l_paren    = @{ "(" }
+punctuation_r_paren    = @{ ")" }
+punctuation_l_bracket  = @{ "[" }
+punctuation_r_bracket  = @{ "]" }
+punctuation_l_brace    = @{ "{" }
+punctuation_r_brace    = @{ "}" }
+punctuation_comma      = @{ "," }
+punctuation_semicolon  = @{ ";" }
+punctuation_colon      = @{ ":" }
+punctuation_dot        = @{ "." }
+punctuation_underscore = @{ "_" }
+punctuation_carret     = @{ "^" }
+
+identifier     = @{ (ASCII_ALPHA | "_" | ".") ~ ident_continue* }
+ident_continue = _{ ASCII_ALPHANUMERIC | "_" | "." }
+integer        = @{ ("0x" ~ ASCII_HEX_DIGIT+) | ("0b" ~ ("0" | "1")+) | ASCII_DIGIT+ }
+quoted_string  = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// ==============================
+// TOP LEVEL
+// ==============================
+
+sleigh_program = {
+    SOI ~ top_level_element* ~ EOI
+}
+
+top_level_element = _{
+    endianness_def
+  | alignment_def
+  | space_def
+  | bitrange_def
+  | pcodeop_def
+  | token_def
+  | context_def
+  | register_def
+  | macro
+  | attach_var
+  | attach_val
+  | attach_str
+  | with_block
+  | constructor
+}
+
+// ==============================
+// 4.1 Endianness
+// ==============================
+
+endianness_def = {
+    keyword_define ~ endian ~ punctuation_semicolon
+}
+
+endian = {
+    keyword_endian ~ operator_assign ~ (keyword_big | keyword_little)
+}
+
+// ==============================
+// 4.2 Alignment
+// ==============================
+
+alignment_def = {
+    keyword_define ~ keyword_alignment ~ operator_assign ~ integer ~ punctuation_semicolon
+}
+
+// ==============================
+// 4.3 Address Spaces
+// ==============================
+
+space_def = {
+    keyword_define ~ keyword_space ~ identifier ~ space_attr* ~ punctuation_semicolon
+}
+
+space_attr = {
+    type_attr
+  | size_attr
+  | default_attr
+  | wordsize_attr
+}
+
+type_attr = { keyword_type ~ operator_assign ~ (keyword_ram_space | keyword_rom_space | keyword_register_space) }
+
+size_attr     = { keyword_size ~ operator_assign ~ integer }
+default_attr  = { keyword_default }
+wordsize_attr = { keyword_wordsize ~ operator_assign ~ integer }
+
+// ==============================
+// 4.4 Register Naming
+// ==============================
+
+register_def = {
+    keyword_define ~ identifier ~ keyword_offset ~ operator_assign ~ integer ~ keyword_size ~ operator_assign ~ integer ~ string_list ~ punctuation_semicolon
+}
+
+// TODO: I feel like these are identifiers not strings...
+string_list = {
+    punctuation_l_bracket ~ (identifier | quoted_string | punctuation_underscore)* ~ punctuation_r_bracket
+  | identifier
+}
+
+// ==============================
+// 4.5 Bit Range Registers
+// ==============================
+
+bitrange_def = {
+    keyword_define ~ keyword_bitrange ~ bitrange_item+ ~ punctuation_semicolon
+}
+
+bitrange_item = {
+    identifier ~ operator_assign ~ identifier ~ punctuation_l_bracket ~ integer ~ punctuation_comma ~ integer ~ punctuation_r_bracket
+}
+
+// ==============================
+// 4.6 User-Defined pcodeops
+// ==============================
+
+pcodeop_def = {
+    keyword_define ~ keyword_pcodeop ~ identifier ~ punctuation_semicolon
+}
+
+/// /
+// 6. Tokens and Fields
+/// /
+
+// ==============================
+// 6.1 Defining Tokens and Fields
+// ==============================
+
+token_def = {
+    keyword_define ~ keyword_token ~ identifier ~ punctuation_l_paren ~ integer ~ punctuation_r_paren ~ token_endian ~ field_def* ~ punctuation_semicolon
+}
+
+token_endian = { endian? }
+
+field_def = {
+    identifier ~ operator_assign ~ punctuation_l_paren ~ integer ~ punctuation_comma ~ integer ~ punctuation_r_paren ~ field_attributes*
+}
+
+field_attributes = {
+    keyword_signed
+  | keyword_hex
+  | keyword_dec
+  | keyword_noflow
+}
+
+// ==============================
+// 6.3.1 Attaching Registers
+// ==============================
+
+identifier_list = {
+    punctuation_l_bracket ~ identifier* ~ punctuation_r_bracket
+  | identifier
+}
+
+attach_var = {
+    keyword_attach ~ keyword_variables ~ identifier_list ~ string_list ~ punctuation_semicolon
+}
+
+// ==============================
+// 6.3.2 Attaching Other Integers
+// ==============================
+
+// `attach values` may map a field to negative numbers, so its list takes a
+// signed integer rather than the bare `integer` used everywhere else.
+signed_integer = @{ "-"? ~ integer }
+
+// `_` marks a slot with no attached value, exactly as in `attach variables`.
+integer_list = {
+    punctuation_l_bracket ~ (signed_integer | punctuation_underscore)* ~ punctuation_r_bracket
+  | signed_integer
+}
+
+attach_val = {
+    keyword_attach ~ keyword_values ~ identifier_list ~ integer_list ~ punctuation_semicolon
+}
+
+// ==============================
+// 6.3.3 Attaching Names
+// ==============================
+
+attach_str = {
+    keyword_attach ~ keyword_names ~ identifier_list ~ string_list ~ punctuation_semicolon
+}
+
+// ==============================
+// 6.4 Context
+// ==============================
+
+context_def = {
+    keyword_define ~ keyword_context ~ identifier ~ field_def* ~ punctuation_semicolon
+}
+
+// ==============================
+// 7. Constructors
+// ==============================
+
+constructor = {
+    table_header ~ display ~ bit_pattern ~ actions ~ semantics
+}
+
+table_header = {
+    (!keyword_with ~ identifier)?
+}
+
+// ==============================
+// 7.3. The Display Section
+// ==============================
+
+display = ${ punctuation_colon ~ (!keyword_is ~ display_atom)* ~ keyword_is }
+
+display_atom = _{
+    quoted_string
+  | punctuation_carret
+  | identifier
+  | WHITESPACE
+  | literal_char
+}
+
+literal_char = { ANY }
+
+// ==============================
+// 7.4. The Bit Pattern Section
+// ==============================
+
+bit_pattern = { bit_pattern_binop }
+
+bit_pattern_term = _{ bit_pattern_paren | constraint | identifier }
+
+bit_pattern_paren = { punctuation_l_paren ~ bit_pattern ~ punctuation_r_paren }
+
+constraint = _{ identifier ~ constraint_verb ~ constraint_expression }
+
+// Two-character verbs first: `<` would otherwise claim the `<` of `<=`.
+constraint_verb = {
+    operator_assign
+  | operator_not_equal
+  | operator_le
+  | operator_ge
+  | operator_less
+  | operator_greater
+}
+
+constraint_expression = { constraint_expression_term ~ (constraint_expression_op ~ constraint_expression_term)* }
+
+constraint_expression_term = _{ integer | identifier | constraint_expression_paren }
+
+constraint_expression_paren = { punctuation_l_paren ~ constraint_expression ~ punctuation_r_paren }
+
+// Operators allowed in a constraint's value expression. Each tier is its own
+// rule so the Pratt parser can give them distinct precedence; a single rule
+// would make `a + b * c` associate left-to-right.
+constraint_expression_op = _{ cs_op_shift | cs_op_add | cs_op_mul }
+
+cs_op_shift = { operator_shift_l | operator_shift_r }
+cs_op_add   = { operator_plus | operator_minus }
+cs_op_mul   = { operator_times | operator_div }
+
+bit_pattern_binop = _{ operator_ellipsis_left? ~ bit_pattern_term ~ operator_ellipsis? ~ (bit_pattern_verb ~ operator_ellipsis_left? ~ bit_pattern_term ~ operator_ellipsis?)* }
+
+bit_pattern_verb = _{ operator_and | operator_or | operator_cat }
+
+// ==============================
+// 7.5. Disassembly Actions Section
+// ==============================
+
+action_expression = {
+    action_binop
+}
+
+action_binop = { action_unop ~ (action_bverb ~ action_unop)* }
+
+action_unop  = _{ (action_uverb ~ action_term) | action_term }
+action_uverb = _{ operator_not | operator_minus }
+
+action_sub   = { operator_minus }
+action_plus  = { operator_plus }
+action_times = { operator_times }
+action_div   = { operator_div }
+action_shl   = { operator_shift_l }
+action_shr   = { operator_shift_r }
+action_and   = { operator_and | operator_and_kw }
+action_or    = { operator_or | operator_or_kw }
+action_xor   = { operator_xor | operator_xor_kw }
+
+action_bverb = _{
+    action_sub
+  | action_plus
+  | action_times
+  | action_div
+  | action_shl
+  | action_shr
+  | action_and
+  | action_or
+  | action_xor
+}
+
+action_term = _{ integer | identifier | action_paren }
+
+action_paren = { punctuation_l_paren ~ action_binop ~ punctuation_r_paren }
+
+actions = { (punctuation_l_bracket ~ action* ~ punctuation_r_bracket)? }
+
+// `globalset` is tried first: `action_assign` would otherwise consume the
+// keyword as a plain identifier and only then fail on the missing `=`.
+action = { action_globalset | action_assign }
+
+action_assign = { identifier ~ operator_assign ~ action_expression ~ punctuation_semicolon }
+
+action_globalset = {
+    keyword_globalset ~ punctuation_l_paren ~ action_expression ~ punctuation_comma ~ identifier ~ punctuation_r_paren ~ punctuation_semicolon
+}
+
+semantics = {
+    (punctuation_l_brace ~ pcode_statement* ~ punctuation_r_brace)
+  | keyword_unimpl
+}
+
+pcode_statement = _{
+    // Ahead of `expr_stmt`: SLEIGH spells truncation `x(n)`, so `delayslot(1)`
+    // would otherwise parse as a subpiece of a variable called `delayslot`.
+    delayslot_stmt
+  | definition_stmt
+  // Ahead of `assign_stmt`, whose `load` lvalue takes only a unary pointer.
+  | store_stmt
+  | assign_stmt
+  | expr_stmt
+  | build_stmt
+  | export_stmt
+  | branch_stmt
+  | cbranch_stmt
+  | branchind_stmt
+  | call_stmt
+  | call_ind
+  | return_stmt
+  | label
+}
+
+definition_stmt = {
+    keyword_local ~ identifier ~ pcode_size? ~ (operator_assign ~ pcode_expr)? ~ punctuation_semicolon
+}
+
+assign_stmt = {
+    lvalue ~ pcode_size? ~ operator_assign ~ pcode_expr ~ punctuation_semicolon
+}
+
+// A store's pointer is a full expression, not the unary one a load in an
+// expression takes: TriCore writes `*[ram]:8 BO+8 = ReN0811;`. There is no
+// ambiguity because `=` cannot continue a `pcode_expr`.
+store_stmt = {
+    operator_times ~ space? ~ pcode_size? ~ pcode_expr ~ operator_assign ~ pcode_expr ~ punctuation_semicolon
+}
+
+lvalue = _{
+    range
+  | load
+  | identifier
+}
+
+expr_stmt = {
+    pcode_expr ~ punctuation_semicolon
+}
+
+build_stmt = {
+    keyword_build ~ identifier ~ punctuation_semicolon
+}
+
+// The argument is a minimum byte count: a literal, or a field holding one.
+delayslot_stmt = {
+    keyword_delayslot ~ punctuation_l_paren ~ (integer | identifier) ~ punctuation_r_paren ~ punctuation_semicolon
+}
+
+export_stmt = {
+    keyword_export ~ pcode_expr ~ punctuation_semicolon
+}
+
+label = { operator_less ~ identifier ~ operator_greater }
+
+// A branch destination is a local label, a name (another operand, `inst_next`,
+// a sub-table), or a literal address in the default space — PIC writes
+// `goto 0x0;` and M16C `call 0x0fffe0;`.
+label_or_node = _{ label | integer | identifier }
+
+branch_stmt = {
+    keyword_goto ~ label_or_node ~ punctuation_semicolon
+}
+
+cbranch_stmt = {
+    keyword_if ~ pcode_expr ~ keyword_goto ~ label_or_node ~ punctuation_semicolon
+}
+
+branchind_stmt = {
+    keyword_goto ~ punctuation_l_bracket ~ pcode_expr ~ punctuation_r_bracket ~ punctuation_semicolon
+}
+
+call_stmt = {
+    keyword_call ~ label_or_node ~ punctuation_semicolon
+}
+
+call_ind = {
+    keyword_call ~ punctuation_l_bracket ~ pcode_expr ~ punctuation_r_bracket ~ punctuation_semicolon
+}
+
+return_stmt = {
+    keyword_return ~ punctuation_l_bracket ~ pcode_expr ~ punctuation_r_bracket ~ punctuation_semicolon
+}
+
+pcode_expr = { prefix_operator? ~ atom ~ (binary_operator ~ prefix_operator? ~ atom)* }
+
+prefix_operator = _{
+    op_not_log
+  | op_not_bit
+  | op_minus
+  | op_fminus
+  | op_addr_size
+  | op_addr
+}
+
+op_not_log   = { operator_not_log }
+op_not_bit   = { operator_not }
+op_minus     = { operator_minus }
+op_fminus    = { operator_fsub }
+op_addr_size = { operator_and ~ pcode_size }
+op_addr      = { operator_and }
+
+binary_operator = _{
+    operator_times
+  | operator_div
+  | operator_sdiv
+  | operator_mod
+  | operator_smod
+  | operator_fdiv
+  | operator_fmul
+  | operator_plus
+  | operator_minus
+  | operator_fadd
+  | operator_fsub
+  | operator_shift_l
+  | operator_shift_r
+  | operator_sshr
+  | operator_sle
+  | operator_sge
+  | operator_slt
+  | operator_sgt
+  | operator_le
+  | operator_ge
+  | operator_less
+  | operator_greater
+  | operator_fle
+  | operator_fge
+  | operator_flt
+  | operator_fgt
+  | operator_eq
+  | operator_not_equal
+  | operator_feq
+  | operator_fne
+  | operator_xor_log
+  | operator_and_log
+  | operator_or_log
+  | operator_xor
+  | operator_or
+  | operator_and
+}
+
+atom = _{
+    sized_integer
+  | integer
+  | subpiece
+  | load
+  | range
+  | func_call
+  | identifier
+  | paren_expr
+}
+
+paren_expr = { punctuation_l_paren ~ pcode_expr ~ punctuation_r_paren }
+
+subpiece = { subpiece_msb | subpiece_lsb }
+
+subpiece_msb = {
+    identifier ~ punctuation_l_paren ~ integer ~ punctuation_r_paren
+}
+
+subpiece_lsb = {
+    identifier ~ punctuation_colon ~ integer
+}
+
+range_param = { integer | identifier }
+range       = { identifier ~ punctuation_l_bracket ~ range_param ~ punctuation_comma ~ range_param ~ punctuation_r_bracket }
+
+// The pointer may carry a prefix operator: Xtensa writes
+// `*[register]:1 &:4 bs`. It is a *unary* expression, not a full one — the
+// star binds tighter than any binary operator, so `*:4 x + 1` stays
+// `(*:4 x) + 1`.
+load = {
+    operator_times ~ space? ~ pcode_size? ~ prefix_operator? ~ atom
+}
+
+space = { punctuation_l_bracket ~ identifier ~ punctuation_r_bracket }
+
+pcode_size = { punctuation_colon ~ integer }
+
+func_call = {
+    identifier ~ punctuation_l_paren ~ arg_list? ~ punctuation_r_paren
+}
+
+arg_list = {
+    pcode_expr ~ (punctuation_comma ~ pcode_expr)*
+}
+
+sized_integer = {
+    integer ~ pcode_size
+}
+
+// ==============================
+// 7.6. The With Block
+// ==============================
+
+with_block = {
+    keyword_with ~ table_header ~ punctuation_colon ~ bit_pattern ~ actions ~ punctuation_l_brace ~ with_child* ~ punctuation_r_brace
+}
+
+// A `with` block scopes a table and a pattern onto the *constructors* inside
+// it, but its body is the ordinary definition list — Ghidra's grammar admits
+// `definition | constructorlike` there. ARM wraps its whole instruction set in
+// `with : ARMcondCk=1 { ... }`, `attach variables` statements included.
+//
+// Shares one list with `top_level_element` deliberately: when the two were
+// written out separately they drifted, and a construct legal at the top level
+// became a confusing parse error one brace deeper.
+with_child = _{ top_level_element }
+
+// ==============================
+// 7.9. Macro
+// ==============================
+
+macro = { keyword_macro ~ identifier ~ punctuation_l_paren ~ macro_args ~ punctuation_r_paren ~ semantics }
+
+macro_args = { (identifier ~ (punctuation_comma ~ identifier)*)? }

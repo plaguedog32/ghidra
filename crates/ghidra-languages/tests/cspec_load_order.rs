@@ -91,6 +91,43 @@ fn every_decoded_stack_space_reference_obeys_load_order() {
 }
 
 #[test]
+fn register_range_tags_resolve_explicit_space_before_register_names() {
+    for tag in [
+        "global",
+        "readonly",
+        "nohighptr",
+        "localrange",
+        "paramrange",
+    ] {
+        let tags = format!(r#"<{tag}><register name="r0" space="stack"/></{tag}>"#);
+        let consumer = if matches!(tag, "localrange" | "paramrange") {
+            format!(
+                r#"<default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/>{tags}</prototype></default_proto>"#
+            )
+        } else {
+            format!("{tags}{DEFAULT}")
+        };
+        for body in [consumer.clone(), format!("{consumer}{SP}")] {
+            let spec = parse(&body);
+            assert_eq!(stack_errors(&spec), 1, "{tag}: {:?}", spec.diagnostics);
+            assert!(!spec.is_fully_modeled());
+            if matches!(tag, "localrange" | "paramrange") {
+                assert!(!spec.prototypes[0].is_complete());
+            }
+        }
+        let valid = parse(&format!("{SP}{consumer}"));
+        assert!(valid.is_fully_modeled(), "{tag}: {:?}", valid.diagnostics);
+        assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+        if matches!(tag, "global" | "readonly" | "nohighptr") {
+            let frame = parse(&format!(
+                r#"<spacebase name="stack" register="r1" space="ram"/>{consumer}"#
+            ));
+            assert_eq!(stack_errors(&frame), 0);
+        }
+    }
+}
+
+#[test]
 fn invalid_or_discarded_pointer_declarations_do_not_activate_stack_space() {
     for pointer in [
         r#"<stackpointer register="sp" space="ram" growth="sideways"/>"#,

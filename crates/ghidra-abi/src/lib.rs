@@ -1,7 +1,8 @@
 //! Compiler storage resolution against an immutable language register file.
 //!
-//! Resolving locations does not allocate arguments, execute prototype rules or
-//! establish an ABI implementation. See the crate README for those boundaries.
+//! Storage resolution, per-pool placement and bare declaration-ordered fallback
+//! allocation are distinct APIs. Prototype rules and complete signature
+//! allocation remain unimplemented. See the crate README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;

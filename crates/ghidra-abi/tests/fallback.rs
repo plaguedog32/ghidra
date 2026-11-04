@@ -1078,6 +1078,49 @@ fn with(limits: FallbackLimits, change: impl FnOnce(&mut FallbackLimits)) -> Fal
 }
 
 #[test]
+fn later_batches_bound_existing_occupied_extents_even_without_new_assignments() {
+    let resources = plan(&reg("r0", 1, 4, "general"));
+    let limits = FallbackLimits::default();
+    let mut state = AllocationState::new(&resources, 0, INPUT, limits).unwrap();
+    let request = FallbackRequest {
+        size: 4,
+        alignment: 4,
+        storage_class: G,
+    };
+    state
+        .assign_fallback(&resources, &[request], FallbackPolicy::default(), limits)
+        .unwrap();
+    assert_eq!(state.occupied_count(), 1);
+    let before_groups = state.groups().to_vec();
+    let before_extents = state.occupied().collect::<Vec<_>>();
+    let reduced = with(limits, |l| l.max_occupied_extents = 0);
+    for requests in [&[][..], &[request][..]] {
+        assert!(matches!(
+            state.assign_fallback(&resources, requests, FallbackPolicy::default(), reduced),
+            Err(FallbackError::Limit("occupied extents"))
+        ));
+        assert_eq!(state.groups(), before_groups);
+        assert_eq!(state.occupied().collect::<Vec<_>>(), before_extents);
+    }
+    let exact = with(limits, |l| l.max_occupied_extents = 1);
+    assert_eq!(
+        state
+            .assign_fallback(&resources, &[], FallbackPolicy::default(), exact)
+            .unwrap()
+            .usage
+            .occupied_extents,
+        1
+    );
+    assert!(matches!(
+        state
+            .assign_fallback(&resources, &[request], FallbackPolicy::default(), exact)
+            .unwrap()
+            .outcomes[0],
+        FallbackOutcome::NoFit { .. }
+    ));
+}
+
+#[test]
 fn every_batch_limit_is_exact_and_one_below_fails_without_side_effects() {
     let (resources, requests) = representative();
     let (_, reference) = run(&resources, &requests);

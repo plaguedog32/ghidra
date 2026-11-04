@@ -257,6 +257,11 @@ impl CompilerStorage {
         let mut space_bases = Vec::with_capacity(source.space_bases.len());
         for (index, base) in source.space_bases.iter().enumerate() {
             let resolved = (|| {
+                if base.name.is_empty() {
+                    return Err(AbiError::InvalidStorage(
+                        "empty compiler spacebase names are not modeled",
+                    ));
+                }
                 resolver.budget.name(&base.name)?;
                 resolver
                     .budget

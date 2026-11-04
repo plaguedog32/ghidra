@@ -683,3 +683,68 @@ fn compiler_frames_cannot_silently_shadow_synthetic_space_variants() {
         ));
     }
 }
+
+#[test]
+fn frame_name_bytes_and_namespace_lookup_have_independent_budget_charges() {
+    let spec = parse(
+        r#"<compiler_spec><spacebase name="frame_name" register="r0" space="ram"/><default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/></prototype></default_proto></compiler_spec>"#,
+    );
+    let file = small_file();
+    let baseline = storage(spec.clone(), &file, Default::default()).unwrap();
+    // frame_name (10), register lookup r0 (2), and backing-space ram (3).
+    assert_eq!(baseline.name_bytes(), 15);
+    let error = at(
+        storage(
+            spec.clone(),
+            &file,
+            AbiLimits {
+                max_name_bytes: 9,
+                ..Default::default()
+            },
+        )
+        .unwrap_err(),
+        BindingSite::SpaceBase(0),
+    );
+    assert!(matches!(error, AbiError::Limit("name bytes")));
+    // Before register/backing lookups: two model visits + one record + one
+    // frame visit + 10 name bytes + (floor(log2(3))+2)*10 namespace lookup.
+    let error = at(
+        storage(
+            spec.clone(),
+            &file,
+            AbiLimits {
+                max_work: 43,
+                ..Default::default()
+            },
+        )
+        .unwrap_err(),
+        BindingSite::SpaceBase(0),
+    );
+    assert!(matches!(error, AbiError::Limit("work")));
+    assert!(
+        storage(
+            spec,
+            &file,
+            AbiLimits {
+                max_name_bytes: 15,
+                max_work: 70,
+                ..Default::default()
+            }
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn empty_frame_names_fail_as_unsupported_storage_instead_of_a_budget() {
+    let spec = parse(
+        r#"<compiler_spec><spacebase name="" register="r0" space="ram"/><default_proto><prototype name="p" extrapop="0" stackshift="0"><input/><output/></prototype></default_proto></compiler_spec>"#,
+    );
+    assert!(matches!(
+        at(
+            storage(spec, &small_file(), Default::default()).unwrap_err(),
+            BindingSite::SpaceBase(0)
+        ),
+        AbiError::InvalidStorage("empty compiler spacebase names are not modeled")
+    ));
+}

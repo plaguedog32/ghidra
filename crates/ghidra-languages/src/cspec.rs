@@ -2248,8 +2248,19 @@ impl Reader {
             }
             match child.name.as_str() {
                 "register" => {
-                    self.unknown_attrs(child, &["name"]);
+                    self.unknown_attrs(child, &["name", "space"]);
                     self.leaf(child);
+                    // AddressXML.restoreRangeXml resolves an explicit space
+                    // before the register name replaces the range geometry.
+                    // Global-style compiler frames take readExtraRange first.
+                    if let Some(space) = child.attr("space") {
+                        let frame = matches!(el.name.as_str(), "global" | "nohighptr" | "readonly")
+                            && space == STACK_SPACE
+                            && self.seen.space_bases.contains(STACK_SPACE);
+                        if !frame {
+                            self.space_reference(space, child.line);
+                        }
+                    }
                     if let Some(name) = self.require(child, "name") {
                         out.push(MemoryTag::Register {
                             name: name.to_owned(),

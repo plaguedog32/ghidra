@@ -625,4 +625,35 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn constant_offsets_are_literal_bits_instead_of_storage_extents() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wide_registers.slaspec");
+        let mut language = SleighLanguage::from_spec(&path, &BTreeMap::new()).unwrap();
+        // A small constant-space address width must not constrain literal bits.
+        language
+            .spaces
+            .iter_mut()
+            .find(|s| s.kind == SpaceKind::Constant)
+            .unwrap()
+            .address_size = 1;
+        for size in [1, 8, 16] {
+            let source = sleigh::Varnode {
+                space: sleigh::SPACE_CONST,
+                offset: u64::MAX,
+                size,
+            };
+            let (space, offset, width) = language.adapt_extent(source).unwrap();
+            assert_eq!(
+                (space, offset, width),
+                (
+                    space_id(sleigh::SPACE_CONST).unwrap(),
+                    u64::MAX,
+                    size as u32
+                )
+            );
+            assert_eq!(language.adapt_varnode(source).unwrap().offset, u64::MAX);
+        }
+    }
 }

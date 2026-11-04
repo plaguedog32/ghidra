@@ -490,6 +490,9 @@ impl AllocationState {
         if requests.len() > limits.max_requests {
             return Err(FallbackError::Limit("requests"));
         }
+        if self.occupied.len() > limits.max_occupied_extents {
+            return Err(FallbackError::Limit("occupied extents"));
+        }
         let mut budget = Budget {
             limits,
             usage: FallbackUsage {

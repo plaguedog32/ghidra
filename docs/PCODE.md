@@ -381,6 +381,12 @@ cargo run -p ghidra-desktop -- --lift-pcode \
 
 The CLI and desktop **Copy lift JSON** use schema `ghidra-rs.lifted-instruction`, version 1. Output includes disassembly, register storage, named userops, delay slots, and a `program` object in the execution command's input format. Extract that object and initialize any registers or memory it reads before executing it. A single lifted instruction does not initialize an emulated process.
 
+The top-level `registers[].storage` list describes register metadata, including
+registers wider than the executable value model's 512-byte limit (for example
+SH-2A's 40,960-byte `resbank_base`). These metadata records are not executable
+operands; validating them as execution `Varnode`s may reject their widths. The
+`program` object retains the execution-width checks.
+
 Sixteen default compiler/lifter integration tests pass, including per-token byte order, context precedence, tracked/context separation, delay slots, and concrete Rust execution. Seven opt-in source probes cover this checkout's x86-64, ARM7 LE/BE, MIPS32 LE/BE, ARM7 little-instruction/big-data, and AArch64 BE64 sources. An eighth probe exercises the desktop worker's Thumb IT continuation, verifying that the following MOV remains conditional:
 
 ```sh

@@ -471,7 +471,7 @@ journal, bounded by updates and new extents, restores the state on error.
 
 ### Validation evidence
 
-`tests/fallback.rs` has 19 default tests with hand-derived expectations:
+`tests/fallback.rs` has 20 default tests with hand-derived expectations:
 Windows-like shared float/integer groups continuing onto the stack, exact
 versus General class matching and declaration order, containing pools and
 joins, alignment holes kept after `NoFit` and from failed candidates, positive
@@ -490,6 +490,16 @@ assignments, 1,037 no-fits, 80 group-in-use and 59 overlap refusals. In an
 isolated copy, 20 of 21 source mutations were caught. The survivor removes the
 nested work cap; the total charge still rejects it with the same
 `Limit("work")` error.
+
+Independent review found and reproduced a later-batch cap gap: an empty or
+no-fit batch could retain more occupied extents than a newly lowered limit.
+The entry preflight now bounds already-held extents, with a regression for both
+paths and the exact boundary. The reviewer verified that fix, all 20 default
+tests and all five real probes, and reported no remaining actionable findings.
+
+Compiler frame-name validation also has independent tests for its name-byte and
+namespace-lookup work charges. Empty frame names fail explicitly as unsupported
+storage rather than being mislabeled as a resource-budget failure.
 
 `tests/fallback_real.rs` is ignored by default; run
 `cargo test --release -p ghidra-abi --test fallback_real -- --ignored`. It

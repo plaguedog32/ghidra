@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 
-use ghidra_analysis::{AnalysisOptions, PcodeSsa, UnknownEffectPolicy};
+use ghidra_analysis::{AnalysisOptions, PcodeExpressions, PcodeSsa, UnknownEffectPolicy};
 use ghidra_cfg::{Cfg, CfgInput};
 use ghidra_core::{
     BinaryImage,
@@ -127,7 +127,13 @@ pub(crate) struct FunctionView {
     pub complete: bool,
     pub language_id: String,
     pub native: Vec<NativeInstruction>,
+    /// The verified SSA snapshot; the same allocation as `expressions.analysis()`.
     pub analysis: Arc<PcodeSsa>,
+    /// Typed terms reconstructed on the worker after SSA verification.
+    pub expressions: Arc<PcodeExpressions>,
+    /// Statements with expression operations, in node/statement order, so the
+    /// UI can virtualize operation rows without rescanning every frame.
+    pub expression_operations: Vec<ghidra_ssa::StatementId>,
     pub json: String,
 }
 
@@ -426,6 +432,7 @@ fn lift_function(
         .ssa()
         .verify(analysis.raw())
         .map_err(|e| e.to_string())?;
+    let expressions = Arc::new(crate::expression_report::build(analysis.clone())?);
     let definition = request
         .config
         .definition
@@ -458,29 +465,62 @@ fn lift_function(
     })
     .map_err(|e| e.to_string())?;
     let dataflow = crate::analysis_cli::symbolic_json(&analysis)?;
-    let mut json =
-        br#"{"schema":"ghidra-rs.function-analysis","schema_version":1,"function":"#.to_vec();
-    let size = json
-        .len()
-        .checked_add(metadata.len())
-        .and_then(|n| n.checked_add(dataflow.len()))
-        .and_then(|n| n.checked_add(13))
-        .ok_or("Function JSON size overflow")?;
-    if size > MAX_JSON {
-        return Err("Function analysis JSON exceeds 64 MiB".into());
-    }
-    json.reserve_exact(size - json.len());
-    json.extend_from_slice(&metadata);
-    json.extend_from_slice(b",\"analysis\":");
-    json.extend_from_slice(&dataflow);
-    json.push(b'}');
+    let json = function_json(&metadata, &dataflow, MAX_JSON, |remaining| {
+        crate::expression_report::json(&expressions, remaining, FUNCTION_TOO_LARGE)
+    })?;
     Ok(FunctionView {
         entry: function.entry,
         name: function.name.clone(),
         complete: function.complete,
         language_id: definition.id.clone(),
         native,
+        expression_operations: expressions.operations().map(|o| o.statement).collect(),
         analysis,
+        expressions,
         json: String::from_utf8(json).map_err(|e| e.to_string())?,
     })
+}
+
+const FUNCTION_TOO_LARGE: &str = "Function analysis JSON exceeds 64 MiB";
+const FUNCTION_PREFIX: &[u8] =
+    br#"{"schema":"ghidra-rs.function-analysis","schema_version":1,"function":"#;
+const ANALYSIS_KEY: &[u8] = br#","analysis":"#;
+const EXPRESSIONS_KEY: &[u8] = br#","expressions":"#;
+
+/// Assembles `{prefix function, analysis, expressions}` within `maximum`
+/// bytes. The expression report is serialized into exactly the remaining
+/// budget, and the final buffer is reserved once at its exact size.
+fn function_json(
+    metadata: &[u8],
+    dataflow: &[u8],
+    maximum: usize,
+    expressions: impl FnOnce(usize) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let fixed = [
+        FUNCTION_PREFIX.len(),
+        metadata.len(),
+        ANALYSIS_KEY.len(),
+        dataflow.len(),
+        EXPRESSIONS_KEY.len(),
+        1,
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .ok_or("Function JSON size overflow")?;
+    let remaining = maximum.checked_sub(fixed).ok_or(FUNCTION_TOO_LARGE)?;
+    let expressions = expressions(remaining)?;
+    let size = fixed
+        .checked_add(expressions.len())
+        .filter(|&n| n <= maximum)
+        .ok_or(FUNCTION_TOO_LARGE)?;
+    let mut json = Vec::with_capacity(size);
+    json.extend_from_slice(FUNCTION_PREFIX);
+    json.extend_from_slice(metadata);
+    json.extend_from_slice(ANALYSIS_KEY);
+    json.extend_from_slice(dataflow);
+    json.extend_from_slice(EXPRESSIONS_KEY);
+    json.extend_from_slice(&expressions);
+    json.push(b'}');
+    debug_assert_eq!(json.len(), size);
+    Ok(json)
 }

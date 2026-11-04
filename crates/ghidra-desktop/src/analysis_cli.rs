@@ -21,6 +21,7 @@ const MAX_OUTPUT: usize = 64 * 1024 * 1024;
 pub(crate) struct CommandOptions {
     instruction_uniques: bool,
     havoc_unknown: bool,
+    expressions: bool,
 }
 
 impl CommandOptions {
@@ -32,6 +33,7 @@ impl CommandOptions {
                     result.instruction_uniques = true;
                 }
                 Some("--havoc-unknown") if !result.havoc_unknown => result.havoc_unknown = true,
+                Some("--expressions") if !result.expressions => result.expressions = true,
                 _ => {
                     return Err(format!(
                         "Unknown or duplicate P-code analysis option: {}",
@@ -91,6 +93,45 @@ pub(crate) fn limits() -> AnalysisLimits {
 }
 
 fn analyze(input: ExecutionInput, options: CommandOptions) -> Result<Vec<u8>, String> {
+    analyze_within(input, options, MAX_OUTPUT)
+}
+
+fn analyze_within(
+    input: ExecutionInput,
+    options: CommandOptions,
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
+    let (analysis, initializers) = verified_snapshot(input, options)?;
+    // Terms are reconstructed from the verified snapshot only on request, so
+    // the default report keeps its existing shape and cost.
+    let expressions = if options.expressions {
+        Some(crate::expression_report::build(analysis.clone())?)
+    } else {
+        None
+    };
+    write_report(&analysis, initializers, expressions.as_ref(), maximum)
+}
+
+/// Expressions for a supplied program, built by the command's own path.
+#[cfg(test)]
+pub(crate) fn expressions_for(
+    input: ExecutionInput,
+    instruction_uniques: bool,
+    havoc_unknown: bool,
+) -> ghidra_analysis::PcodeExpressions {
+    let options = CommandOptions {
+        instruction_uniques,
+        havoc_unknown,
+        expressions: true,
+    };
+    let (analysis, _) = verified_snapshot(input, options).unwrap();
+    crate::expression_report::build(analysis).unwrap()
+}
+
+fn verified_snapshot(
+    input: ExecutionInput,
+    options: CommandOptions,
+) -> Result<(Arc<PcodeSsa>, Initializers), String> {
     let initializers = Initializers {
         regions: input.memory.len(),
         bytes: input.memory.iter().map(|region| region.bytes.len()).sum(),
@@ -119,12 +160,12 @@ fn analyze(input: ExecutionInput, options: CommandOptions) -> Result<Vec<u8>, St
         .map_err(|e| e.to_string())?,
     );
     let analysis =
-        PcodeSsa::new(cfg, &[], options.analysis(), limits).map_err(|e| e.to_string())?;
+        Arc::new(PcodeSsa::new(cfg, &[], options.analysis(), limits).map_err(|e| e.to_string())?);
     analysis
         .ssa()
         .verify(analysis.raw())
         .map_err(|e| e.to_string())?;
-    write_report(&analysis, initializers)
+    Ok((analysis, initializers))
 }
 
 #[derive(Serialize)]
@@ -174,6 +215,9 @@ struct Report<'a> {
     nodes: Vec<NodeReport<'a>>,
     values: Vec<ValueReport>,
     natural_loops: Vec<LoopReport>,
+    /// Additive `--expressions` field using `ghidra-rs.expressions` v1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expressions: Option<crate::expression_report::Report<'a>>,
 }
 
 #[derive(Serialize)]
@@ -334,7 +378,17 @@ impl From<NaturalLoop> for LoopReport {
     }
 }
 
-fn write_report(analysis: &PcodeSsa, initializers: Initializers) -> Result<Vec<u8>, String> {
+fn write_report(
+    analysis: &PcodeSsa,
+    initializers: Initializers,
+    expressions: Option<&ghidra_analysis::PcodeExpressions>,
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
+    if let Some(expressions) = expressions
+        && !std::ptr::eq(expressions.analysis().as_ref(), analysis)
+    {
+        return Err("Expressions belong to a different SSA snapshot".into());
+    }
     let cfg = analysis.cfg();
     let ssa = analysis.ssa();
     let graph = ssa.graph();
@@ -568,13 +622,11 @@ fn write_report(analysis: &PcodeSsa, initializers: Initializers) -> Result<Vec<u
             })
             .collect(),
         natural_loops,
+        expressions: expressions.map(crate::expression_report::Report),
     };
-    let mut output = LimitedOutput {
-        bytes: Vec::new(),
-        maximum: MAX_OUTPUT,
-    };
+    let mut output = LimitedOutput::new(maximum, "P-code analysis JSON exceeds 64 MiB");
     serde_json::to_writer_pretty(&mut output, &report).map_err(|e| e.to_string())?;
-    Ok(output.bytes)
+    Ok(output.into_bytes())
 }
 
 pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
@@ -585,6 +637,8 @@ pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
             bytes: 0,
             applied: false,
         },
+        None,
+        MAX_OUTPUT,
     )
 }
 
@@ -626,14 +680,29 @@ fn exit_report(exit: &Exit) -> ExitReport {
     }
 }
 
-struct LimitedOutput {
+/// Buffers serializer output and fails before appending beyond `maximum`, so
+/// callers never write a partial document to stdout.
+pub(crate) struct LimitedOutput {
     bytes: Vec<u8>,
     maximum: usize,
+    message: &'static str,
+}
+impl LimitedOutput {
+    pub(crate) fn new(maximum: usize, message: &'static str) -> Self {
+        Self {
+            bytes: Vec::new(),
+            maximum,
+            message,
+        }
+    }
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 impl Write for LimitedOutput {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > self.maximum.saturating_sub(self.bytes.len()) {
-            return Err(std::io::Error::other("P-code analysis JSON exceeds 64 MiB"));
+            return Err(std::io::Error::other(self.message));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -654,6 +723,56 @@ mod tests {
     }
     fn report(input: ExecutionInput, options: CommandOptions) -> Value {
         serde_json::from_slice(&analyze(input, options).unwrap()).unwrap()
+    }
+    const EXPRESSIONS: CommandOptions = CommandOptions {
+        instruction_uniques: false,
+        havoc_unknown: false,
+        expressions: true,
+    };
+    /// A report with `--expressions`, checked against its own SSA IDs.
+    fn expression_report(input: ExecutionInput, options: CommandOptions) -> Value {
+        let report = report(
+            input,
+            CommandOptions {
+                expressions: true,
+                ..options
+            },
+        );
+        validate_references(&report);
+        crate::expression_report::tests::validate(&report, &report["expressions"]);
+        report
+    }
+    fn definitions<'a>(report: &'a Value, kind: &str) -> Vec<&'a Value> {
+        report["expressions"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["definition"]["kind"] == kind)
+            .collect()
+    }
+    fn terms<'a>(report: &'a Value, kind: &str) -> Vec<&'a Value> {
+        report["expressions"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["term"]["kind"] == kind)
+            .collect()
+    }
+    fn operation<'a>(report: &'a Value, opcode: &str) -> &'a Value {
+        report["expressions"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["opcode"] == opcode)
+            .unwrap()
+    }
+    fn node<'a>(report: &'a Value, id: &Value) -> &'a Value {
+        &report["expressions"]["nodes"][id.as_u64().unwrap() as usize]["term"]
+    }
+    fn root<'a>(report: &'a Value, value: &Value) -> &'a Value {
+        let value = &report["expressions"]["values"][value.as_u64().unwrap() as usize];
+        assert_eq!(value["definition"]["kind"], "expression");
+        node(report, &value["definition"]["root"])
     }
     fn var(space: u32, offset: u64, size: u32) -> Varnode {
         Varnode {
@@ -991,18 +1110,202 @@ mod tests {
     }
 
     #[test]
-    fn bounded_output_never_appends_beyond_its_limit() {
-        let mut output = LimitedOutput {
-            bytes: vec![],
-            maximum: 5,
+    fn expressions_are_opt_in_and_reference_the_same_ssa_ids() {
+        let plain = report(input(), CommandOptions::default());
+        assert!(plain.get("expressions").is_none());
+        let mut with = expression_report(input(), CommandOptions::default());
+        assert_eq!(with["expressions"]["schema"], "ghidra-rs.expressions");
+        assert_eq!(with["expressions"]["schema_version"], 1);
+        // Loop-carried values remain phi definitions referenced as SSA leaves.
+        let phis = definitions(&with, "phi");
+        assert!(!phis.is_empty());
+        let leaves: Vec<_> = terms(&with, "ssa_value")
+            .iter()
+            .map(|n| n["term"]["value"].clone())
+            .collect();
+        assert!(phis.iter().any(|phi| leaves.contains(&phi["id"])));
+        with.as_object_mut().unwrap().remove("expressions");
+        assert_eq!(plain, with);
+    }
+
+    #[test]
+    fn alias_joins_slices_and_phis_keep_exact_widths() {
+        let input: ExecutionInput =
+            serde_json::from_str(include_str!("../../../examples/pcode/alias-branch.json"))
+                .unwrap();
+        let report = expression_report(input, CommandOptions::default());
+        // The 8-byte read after the join composes the merged low byte with
+        // the untouched upper seven bytes.
+        let joins = terms(&report, "join");
+        assert!(joins.iter().any(|join| {
+            let pieces = join["term"]["pieces"].as_array().unwrap();
+            pieces.len() == 2 && pieces[0]["bytes"] == 1 && pieces[1]["bytes"] == 7
+        }));
+        // The initial 8-byte write is split into the same two aliased cells.
+        let slices = terms(&report, "extract");
+        assert!(
+            slices
+                .iter()
+                .any(|s| s["type"]["bytes"] == 1 && s["term"]["lsb_byte"] == 0)
+        );
+        assert!(
+            slices
+                .iter()
+                .any(|s| s["type"]["bytes"] == 7 && s["term"]["lsb_byte"] == 1)
+        );
+        assert_eq!(definitions(&report, "phi").len(), 1);
+        // The RETURN target is a value operand, never an ABI return value.
+        let ret = operation(&report, "RETURN");
+        assert_eq!(ret["operands"][0]["role"], "value");
+        assert_eq!(ret["result"], "none");
+        let cbranch = operation(&report, "CBRANCH");
+        assert_eq!(cbranch["operands"][0]["role"], "direct_target");
+        assert_eq!(cbranch["operands"][1]["role"], "value");
+    }
+
+    #[test]
+    fn word_pointers_fixed_offsets_and_memory_versions_stay_explicit() {
+        let space = |id: u32, name: &str, kind: &str, word: u32, endian: &str| {
+            serde_json::json!({"id": id, "name": name, "kind": kind, "address_size": 8,
+                "word_size": word, "endianness": endian})
         };
+        let vn = |space: u32, offset: u64, size: u32| serde_json::json!({"space": space, "offset": offset, "size": size});
+        let program = serde_json::json!({
+            "spaces": [
+                space(0, "const", "Constant", 1, "Little"),
+                space(1, "ram", "Ram", 2, "Big"),
+                space(2, "register", "Register", 1, "Little"),
+                space(3, "unique", "Unique", 1, "Little"),
+                space(4, "code", "Other", 1, "Little"),
+            ],
+            "code_space": 4,
+            "entry": 4096,
+            "instructions": [{"address": 4096, "length": 4, "ops": [
+                {"opcode": "STORE", "output": null,
+                 "inputs": [vn(0, 1, 4), vn(2, 8, 8), vn(2, 16, 4)]},
+                {"opcode": "LOAD", "output": vn(2, 24, 4), "inputs": [vn(0, 1, 4), vn(2, 8, 8)]},
+                {"opcode": "COPY", "output": vn(1, 16, 4), "inputs": [vn(0, 0x55667788, 4)]},
+                {"opcode": "COPY", "output": vn(2, 32, 2), "inputs": [vn(1, 16, 2)]},
+            ]}]
+        });
+        let report = expression_report(
+            serde_json::from_value(program).unwrap(),
+            CommandOptions::default(),
+        );
+        let store = operation(&report, "STORE");
+        assert_eq!(store["operands"][0]["role"], "space_selector");
+        assert_eq!(store["indirect_memory"]["access"], "write");
+        assert_eq!(store["result"], "none");
+        let stored = &store["definitions"][0];
+        let write = root(&report, stored);
+        assert_eq!(write["kind"], "write_memory");
+        assert_eq!(write["endianness"], "big");
+        assert_eq!(write["address"]["kind"], "word_pointer");
+        assert_eq!(write["address"]["word_size"], 2);
+        assert_eq!(write["address"]["address_bytes"], 8);
+        assert_eq!(write["version"], store["indirect_memory"]["version"]);
+        // The LOAD reads the version the STORE defined, not the entry state.
+        let load = operation(&report, "LOAD");
+        assert_eq!(load["indirect_memory"]["access"], "read");
+        assert_eq!(&load["indirect_memory"]["version"], stored);
+        let read = node(&report, &load["output"]);
+        assert_eq!(read["kind"], "read_memory");
+        assert_eq!(read["address"]["kind"], "word_pointer");
+        assert_eq!(&read["version"], stored);
+        // Fixed varnodes keep byte offsets, even in a word-addressed space.
+        let copies: Vec<_> = report["expressions"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["opcode"] == "COPY")
+            .collect();
+        let fixed = &copies[0]["definitions"][0];
+        let fixed_write = root(&report, fixed);
+        assert_eq!(
+            fixed_write["address"],
+            serde_json::json!({"kind": "byte_offset", "offset": 16})
+        );
+        assert_eq!(&fixed_write["version"], stored);
+        let fixed_read = node(&report, &copies[1]["operands"][0]["node"]);
+        assert_eq!(fixed_read["kind"], "read_memory");
+        assert_eq!(&fixed_read["version"], fixed);
+        assert_eq!(fixed_read["endianness"], "big");
+    }
+
+    #[test]
+    fn instruction_resets_and_havoc_definitions_remain_undefined_or_opaque() {
+        let mut looped = input();
+        looped.instructions[0]
+            .ops
+            .push(branch(Opcode::Branch, var(1, 0x1000, 8)));
+        let report = expression_report(
+            looped,
+            CommandOptions {
+                instruction_uniques: true,
+                ..Default::default()
+            },
+        );
+        assert!(!definitions(&report, "undefined_reset").is_empty());
+        assert!(definitions(&report, "opaque").is_empty());
+        let mut called = input();
+        called.instructions[0]
+            .ops
+            .insert(0, branch(Opcode::Call, var(1, 0x8000, 8)));
+        called.instructions[0].ops.pop();
+        let report = expression_report(
+            called,
+            CommandOptions {
+                havoc_unknown: true,
+                ..Default::default()
+            },
+        );
+        let call = operation(&report, "CALL");
+        assert_eq!(
+            call["effects"],
+            serde_json::json!({"kind": "conservative", "class": "Call"})
+        );
+        assert_eq!(call["result"], "opaque");
+        assert!(call["output"].is_null());
+        assert_eq!(call["operands"][0]["role"], "direct_target");
+        let opaque = definitions(&report, "opaque");
+        assert_eq!(opaque.len(), report["variables"].as_array().unwrap().len());
+        assert!(
+            opaque
+                .iter()
+                .all(|v| v["definition"]["statement"] == call["statement"])
+        );
+    }
+
+    #[test]
+    fn expression_flag_parsing_and_exact_output_bounds() {
+        let parse = |args: &[&str]| CommandOptions::parse(args.iter().map(OsString::from));
+        assert!(parse(&["--expressions"]).unwrap().expressions);
+        assert!(parse(&["--havoc-unknown", "--expressions", "--instruction-uniques"]).is_ok());
+        assert!(parse(&["--expressions", "--expressions"]).is_err());
+        assert!(parse(&["--expression"]).is_err());
+        assert!(!parse(&[]).unwrap().expressions);
+        let exact = analyze(input(), EXPRESSIONS).unwrap().len();
+        assert_eq!(
+            analyze_within(input(), EXPRESSIONS, exact).unwrap().len(),
+            exact
+        );
+        assert!(
+            analyze_within(input(), EXPRESSIONS, exact - 1)
+                .unwrap_err()
+                .contains("64 MiB")
+        );
+        let plain = analyze(input(), CommandOptions::default()).unwrap().len();
+        assert!(plain < exact);
+        assert!(analyze_within(input(), CommandOptions::default(), plain).is_ok());
+    }
+
+    #[test]
+    fn bounded_output_never_appends_beyond_its_limit() {
+        let mut output = LimitedOutput::new(5, "limit");
         output.write_all(b"12345").unwrap();
         assert!(output.write_all(b"6").is_err());
         assert_eq!(output.bytes, b"12345");
-        let mut output = LimitedOutput {
-            bytes: vec![],
-            maximum: 4,
-        };
+        let mut output = LimitedOutput::new(4, "limit");
         assert!(serde_json::to_writer_pretty(&mut output, &[1, 2, 3]).is_err());
         assert!(output.bytes.len() <= 4);
     }

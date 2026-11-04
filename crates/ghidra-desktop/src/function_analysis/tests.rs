@@ -78,6 +78,23 @@ fn recovered_binary_function_is_lifted_to_verified_native_ssa_with_source_bytes(
     assert_eq!(json["analysis"]["schema"], "ghidra-rs.pcode-analysis");
     assert_eq!(json["analysis"]["policies"]["unique_scope"], "instruction");
     assert_eq!(json["analysis"]["policies"]["ssa_verified"], true);
+    // Expressions are built on the worker from the same verified snapshot.
+    assert!(Arc::ptr_eq(&result.analysis, result.expressions.analysis()));
+    assert_eq!(
+        result.expression_operations.len(),
+        result.expressions.operations().count()
+    );
+    assert_eq!(json["expressions"]["schema"], "ghidra-rs.expressions");
+    crate::expression_report::tests::validate(&json["analysis"], &json["expressions"]);
+    let operations = json["expressions"]["operations"].as_array().unwrap();
+    let ret = operations.iter().find(|o| o["opcode"] == "RETURN").unwrap();
+    assert_eq!(ret["result"], "none");
+    assert_eq!(ret["operands"][0]["role"], "value");
+    let exported = crate::expression_report::json(&result.expressions, MAX_JSON, "cap").unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&exported).unwrap(),
+        json["expressions"]
+    );
     assert!(
         result
             .analysis
@@ -239,6 +256,26 @@ fn unknown_calls_are_explicitly_rejected_or_conservatively_marked() {
     request.havoc_unknown = true;
     let result = compiler.analyze(&request).unwrap();
     assert_eq!(result.analysis.cfg().calls().len(), 1);
+    let json: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+    crate::expression_report::tests::validate(&json["analysis"], &json["expressions"]);
+    let call = result
+        .expressions
+        .operations()
+        .find(|o| o.opcode == ghidra_pcode::Opcode::Callind)
+        .unwrap();
+    assert!(call.output.is_none());
+    for value in result
+        .analysis
+        .ssa()
+        .statement(call.statement)
+        .unwrap()
+        .defs()
+    {
+        assert!(matches!(
+            result.expressions.definition(*value).unwrap(),
+            ghidra_analysis::ExpressionDefinition::Opaque { .. }
+        ));
+    }
     assert!(
         result
             .analysis
@@ -260,6 +297,75 @@ fn unknown_calls_are_explicitly_rejected_or_conservatively_marked() {
                 })
             )
     );
+}
+
+#[test]
+fn function_json_reserves_exactly_and_serializes_expressions_into_the_remaining_cap() {
+    let metadata = br#"{"entry":1}"#;
+    let dataflow = br#"{"schema":"ghidra-rs.pcode-analysis"}"#;
+    let report = br#"{"schema":"ghidra-rs.expressions"}"#;
+    let fixed = FUNCTION_PREFIX.len()
+        + metadata.len()
+        + ANALYSIS_KEY.len()
+        + dataflow.len()
+        + EXPRESSIONS_KEY.len()
+        + 1;
+    let exact = fixed + report.len();
+    let mut offered = None;
+    let json = function_json(metadata, dataflow, exact, |remaining| {
+        offered = Some(remaining);
+        Ok(report.to_vec())
+    })
+    .unwrap();
+    assert_eq!(offered, Some(report.len()));
+    assert_eq!(json.len(), exact);
+    assert_eq!(json.capacity(), exact);
+    let parsed: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(parsed["schema"], "ghidra-rs.function-analysis");
+    assert_eq!(parsed["function"]["entry"], 1);
+    assert_eq!(parsed["analysis"]["schema"], "ghidra-rs.pcode-analysis");
+    assert_eq!(parsed["expressions"]["schema"], "ghidra-rs.expressions");
+    // The expression writer receives the remaining budget and enforces it.
+    let error = function_json(metadata, dataflow, exact - 1, |remaining| {
+        let mut output = crate::analysis_cli::LimitedOutput::new(remaining, FUNCTION_TOO_LARGE);
+        std::io::Write::write_all(&mut output, report).map_err(|e| e.to_string())?;
+        Ok(output.into_bytes())
+    })
+    .unwrap_err();
+    assert!(error.contains("64 MiB"));
+    // A writer that ignores its budget is still rejected.
+    assert!(
+        function_json(metadata, dataflow, exact - 1, |_| Ok(report.to_vec()))
+            .unwrap_err()
+            .contains("64 MiB")
+    );
+    // No expression budget remains once the fixed parts exceed the cap.
+    let mut called = false;
+    assert!(
+        function_json(metadata, dataflow, fixed - 1, |_| {
+            called = true;
+            Ok(Vec::new())
+        })
+        .is_err()
+    );
+    assert!(!called);
+}
+
+#[test]
+fn ordinary_analysis_errors_keep_the_compiled_language_for_expression_runs() {
+    let fixture = fixture();
+    let mut compiler = Compiler::default();
+    assert!(compiler.analyze(&fixture.request).is_ok());
+    let mut request = fixture.request.clone();
+    let mut functions = (*request.functions).clone();
+    functions.functions[0].instructions[0].bytes[1] ^= 1;
+    request.functions = Arc::new(functions);
+    assert!(compiler.analyze(&request).unwrap_err().contains("differ"));
+    assert!(compiler.compiled.is_some());
+    // Removing the source proves the retained compiled language is reused.
+    std::fs::remove_file(fixture.directory.path().join("test.slaspec")).unwrap();
+    let result = compiler.analyze(&fixture.request).unwrap();
+    assert!(!result.expressions.nodes().is_empty());
 }
 
 #[test]
@@ -310,6 +416,17 @@ fn upstream_x86_function_lifts_to_ssa_and_executes_pcode() {
     assert!(result.complete);
     assert!(result.native.len() >= 5);
     assert!(result.analysis.ssa().phi_count() > 0);
+    // The real function's expressions reference the same SSA IDs and keep
+    // its loop phis as definitions rather than expanded terms.
+    let json: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+    crate::expression_report::tests::validate(&json["analysis"], &json["expressions"]);
+    assert!(
+        json["expressions"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["definition"]["kind"] == "phi")
+    );
     let graph = result.analysis.ssa().graph();
     assert!(
         !graph

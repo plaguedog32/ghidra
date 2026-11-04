@@ -37,6 +37,69 @@ fn command_runs_without_java_and_emits_only_the_analysis_document() {
 }
 
 #[test]
+fn expression_export_is_opt_in_java_free_and_fails_without_partial_stdout() {
+    let mut command = binary();
+    command
+        .arg("--analyze-pcode")
+        .arg(example())
+        .arg("--expressions")
+        .env("JAVA_HOME", "");
+    #[cfg(windows)]
+    {
+        command.env(
+            "PATH",
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32"),
+        );
+    }
+    #[cfg(not(windows))]
+    command.env("PATH", "/nonexistent");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema"], "ghidra-rs.pcode-analysis");
+    assert_eq!(report["expressions"]["schema"], "ghidra-rs.expressions");
+    assert_eq!(report["expressions"]["schema_version"], 1);
+    assert_eq!(
+        report["expressions"]["values"].as_array().unwrap().len(),
+        report["values"].as_array().unwrap().len()
+    );
+    let plain = binary()
+        .arg("--analyze-pcode")
+        .arg(example())
+        .output()
+        .unwrap();
+    let plain: serde_json::Value = serde_json::from_slice(&plain.stdout).unwrap();
+    assert!(plain.get("expressions").is_none());
+
+    let output = binary()
+        .arg("--analyze-pcode")
+        .arg(example())
+        .args(["--expressions", "--expressions"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(16 * 1024 * 1024 + 1).unwrap();
+    let output = binary()
+        .arg("--analyze-pcode")
+        .arg(file.path())
+        .arg("--expressions")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("16 MiB"));
+    let output = binary().arg("--help").output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("[--expressions]"));
+}
+
+#[test]
 fn command_rejects_bad_arguments_or_input_without_partial_stdout() {
     let output = binary().arg("--analyze-pcode").output().unwrap();
     assert_eq!(output.status.code(), Some(2));

@@ -28,6 +28,8 @@ Analyze a supplied P-code program without opening a window:
 cargo run -p ghidra-desktop -- --analyze-pcode examples/pcode/sum-loop.json
 cargo run -p ghidra-desktop -- --analyze-pcode \
   examples/pcode/alias-branch.json --instruction-uniques
+cargo run -p ghidra-desktop -- --analyze-pcode \
+  examples/pcode/alias-branch.json --expressions
 ```
 
 Input uses the same `ExecutionInput` JSON format as `--run-pcode`. The analysis is
@@ -73,6 +75,15 @@ phis and work; exhaustion is an error. The JSON `policies.ssa_form` records the
 actual placement mode. This output is an analysis format,
 not structured decompiled code or an execution-input format.
 
+`--expressions` is opt-in and may be combined with the other options. It adds
+one top-level `expressions` field (described in
+[Typed expression inspection](#typed-expression-inspection)) to the same
+`ghidra-rs.pcode-analysis` version 1 document. It is built from the verified
+SSA in that document, so its value, phi and statement IDs index the report's
+`values` and `nodes`. Without the flag, the report has no `expressions` field
+and is otherwise unchanged. The 64 MiB output cap applies to the whole
+document, including expressions.
+
 Input is limited to a regular JSON file of 16 MiB. Native analysis phases have
 separate instruction, operation, operand, graph, storage, phi and work limits.
 Output is buffered under a 64 MiB cap before writing to stdout, so analysis or
@@ -86,9 +97,11 @@ Choose a matching x86 catalog language in **P-code**, select an instruction in a
 recovered function, then open **Dataflow** and choose **Analyze selected function**.
 The background worker reuses source compilation and keeps only the newest queued
 request. Image, processor and effect-policy changes invalidate stale results.
-The view shows CFG nodes, terminal exits, phi values, SSA operations and storage
-variables; **Copy analysis JSON** exports the result. Analysis does not modify
-project metadata or annotations.
+The view has three modes: **CFG & SSA** (nodes, terminal exits, phi values and
+SSA operations), **Storage variables**, and **Expressions** (see
+[Typed expression inspection](#typed-expression-inspection)). **Copy analysis
+JSON** exports the result. Analysis does not modify project metadata or
+annotations.
 
 The same pipeline is available without a window:
 
@@ -123,11 +136,18 @@ rather than guessing a calling convention. Incomplete function recovery remains
 explicit, including branches outside the supplied domain. Output uses
 `ghidra-rs.function-analysis`, version 1: `function` records native bytes,
 disassembly, recovery status, declared language version, context and boundary
-policy; `analysis` contains the P-code analysis schema described above.
+policy; `analysis` contains the P-code analysis schema described above;
+`expressions` contains the `ghidra-rs.expressions` version 1 report built from
+that same analysis. `expressions` is an additive field: the function schema
+version remains 1, and earlier fields are unchanged. The command always
+includes it.
 
 Each function is limited to 5,000 native instructions, 100,000 lifted operations,
 4,096 bytes of display text per instruction and 4 MiB total display text, plus
-the native analysis budgets and a 64 MiB JSON cap. SSA uses liveness pruning.
+the native analysis and expression budgets and a 64 MiB JSON cap. The cap covers
+the complete document: expressions are serialized into the bytes left after the
+fixed prefix, function metadata, analysis report and closing brace, and the
+final buffer is reserved once at its exact size. SSA uses liveness pruning.
 There is no ABI/type recovery, indirect-target resolution, expression
 simplification or structured decompiled output yet. Instruction-boundary checks
 and SSA verification do not establish complete instruction-semantic parity.
@@ -139,6 +159,98 @@ P-code to produce 3:
 ```sh
 cargo test -p ghidra-desktop upstream_x86_function -- --ignored
 ```
+
+## Typed expression inspection
+
+`ghidra_analysis::PcodeExpressions` reconstructs typed P-code terms from a
+verified SSA snapshot. The desktop and both headless commands use that one
+engine and one report module; there is no second expression implementation.
+Function analysis builds expressions on its background worker, after SSA
+verification, and shares the SSA allocation with them. These are inspection
+terms: opcodes are not evaluated or folded, and no types, calling convention or
+C source are recovered.
+
+**Dataflow → Expressions** lists either **SSA values** or **Operations** in
+virtualized rows. A value row shows its ID, width or memory space, storage
+variable and definition. An operation row shows the source statement and
+address, opcode, operands and result. The detail panel shows the selected
+item's type, storage, definition, operand roles, memory version, definitions
+and direct inputs, plus **Go to** the source instruction where one exists.
+
+Previews render one term level only. `vN` is an SSA value and `tN` is a term
+node; children are shown by reference, never expanded. Phis list their
+incoming values, so loops remain references. Joins, operand lists and phi
+inputs show at most 8 items; detail lists show at most 16; literals show at
+most 16 hexadecimal digits. Omitted items are counted. Join pieces are listed
+from least to most significant, with byte position and width. Slices name their
+low byte and width. Memory terms show their space, byte order and the exact
+memory version read or written. Fixed varnodes show **byte** offsets; LOAD/STORE
+pointers show their pointer width and word size. Instruction resets are labelled
+**UNDEFINED** and conservative-effect outputs **OPAQUE**. Neither is shown as a
+computed value. A RETURN input is labelled a control target, not an ABI return
+value. Selections are clamped when the view changes. Image, processor and policy
+changes invalidate the view as before. Expression inspection does not modify
+project metadata or annotations.
+
+### `ghidra-rs.expressions` version 1
+
+The report is streamed from borrowed data and contains:
+
+| Field | Contents |
+| --- | --- |
+| `schema`, `schema_version` | `"ghidra-rs.expressions"`, `1` |
+| `policies` | Accompanying SSA schema (`ghidra-rs.pcode-analysis` v1), and fixed statements: unexpanded acyclic terms, no evaluation, byte offsets, word-scaled pointers, versioned whole-space memory, explicit undefined values, opaque unknown effects, `type_recovery: false`, `decompiled_output: false` |
+| `counts` | `nodes`, `values`, `operations`, stored `references`, owned `constant_bytes`, reconstruction `build_work` |
+| `nodes` | `{id, type, term}` in ID order. Each term references only earlier node IDs. |
+| `values` | One entry for every SSA value: `{id, variable, type, definition}` |
+| `operations` | One entry for every reachable explicit or opaque operation, in node/statement order |
+
+`type` is `{"kind":"bits","bytes":N}` or `{"kind":"memory","space":S}`.
+Bit vectors and memory states are separate types. `term.kind` is one of:
+
+- `constant`: `bytes` and unsigned `hex` bit pattern.
+- `ssa_value`: an SSA `value` reference. Its definition is not expanded.
+- `join`: `pieces` of `{node, lsb_byte, bytes}` in ascending significance,
+  covering the whole width without gaps.
+- `extract`: the `lsb_byte` slice of `node`; width is the term's type.
+- `apply`: an unevaluated `opcode` mnemonic over `inputs`. The operation may trap,
+  for example on division by zero.
+- `read_memory` / `write_memory`: `space`, prior memory `version` (an SSA value
+  ID), `endianness` (`little`/`big`) of that space and `address`. Writes add
+  the stored `node`, and their type is the new memory state. `address` is
+  `{"kind":"byte_offset","offset":N}` for a fixed varnode, or
+  `{"kind":"word_pointer","node":N,"word_size":W,"address_bytes":A}` for
+  LOAD/STORE. Pointer values are in addressable words.
+
+`definition.kind` is one of:
+
+- `entry`: a symbolic `state` (`input`/`undefined`).
+- `phi`: SSA `node` and `index`. Its operands are in the SSA report.
+- `expression`: a `root` term.
+- `undefined_reset`: a fresh temporary at `instruction`, from SSA `statement`.
+  It is never zero.
+- `opaque`: `statement` and `definition_slot`. No term is reconstructed.
+
+Each operation records its SSA `statement {node, index}`, source `point`,
+`opcode` and `effects`. `effects` is `{"kind":"explicit"}` or
+`{"kind":"conservative","class":C}`. `operands` keep source order and roles:
+
+- `value`: a term.
+- `constant_metadata`: a term plus its `source` varnode.
+- `relative_target`, `direct_target`: control labels, not memory reads.
+- `space_selector`, `userop`, `operation_reference`.
+
+`result` is `expression` (`output` is the complete bit result before alias
+splitting or memory writes), `none` (STORE and control operations), or `opaque`.
+`indirect_memory` is `{space, version, access}` for LOAD/STORE. `definitions`
+are the SSA values the statement defines. An opaque operation's full-domain
+uses are its SSA statement's `renamed.uses`; they are not copied. No-op,
+reset and unreachable statements have no operation entry.
+
+Expression construction uses separate limits: 500,000 graph nodes and
+statements, 2,000,000 values, 4,000,000 term nodes, 8,000,000 references,
+16 MiB of literal bytes and 100,000,000 work units. Exhaustion fails the
+analysis with no partial result.
 
 ## Source-based instruction lifting
 

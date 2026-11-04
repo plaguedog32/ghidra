@@ -6,6 +6,17 @@ use ghidra_analysis::{AdaptedStatement, AppliedEffects};
 use ghidra_cfg::NodeKind;
 use std::sync::Arc;
 
+mod expressions;
+
+/// Dataflow inspection modes over one completed function analysis.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Inspect {
+    #[default]
+    ControlFlow,
+    Storage,
+    Expressions,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     next_request: u64,
@@ -15,7 +26,8 @@ pub(super) struct State {
     worker: Option<FunctionWorker>,
     selected_node: usize,
     havoc_unknown: bool,
-    show_storage: bool,
+    inspect: Inspect,
+    expression: expressions::Selection,
 }
 
 impl State {
@@ -45,6 +57,8 @@ impl State {
         match response.result {
             Ok(view) => {
                 self.selected_node = view.analysis.ssa().entry();
+                self.expression.value = 0;
+                self.expression.operation = 0;
                 self.view = Some((response.key, view));
                 self.error = None;
             }
@@ -168,7 +182,14 @@ impl Workbench {
             {
                 self.dataflow.invalidate();
             }
-            ui.checkbox(&mut self.dataflow.show_storage, "Storage variables");
+            ui.separator();
+            for (mode, label) in [
+                (Inspect::ControlFlow, "CFG & SSA"),
+                (Inspect::Storage, "Storage variables"),
+                (Inspect::Expressions, "Expressions"),
+            ] {
+                ui.selectable_value(&mut self.dataflow.inspect, mode, label);
+            }
             if self.dataflow.waiting.is_some() {
                 ui.spinner();
                 ui.label("Analyzing function…");
@@ -182,7 +203,7 @@ impl Workbench {
             ui.colored_label(GOLD, error);
         }
         let Some((_, view)) = &self.dataflow.view else {
-            ui.label("Analyze a function to inspect native control flow and SSA. Structured decompiled code is still in development.");
+            ui.label("Analyze a function to inspect native control flow, SSA and typed P-code expressions. Structured decompiled code is still in development.");
             return;
         };
         let analysis = Arc::clone(&view.analysis);
@@ -200,6 +221,7 @@ impl Workbench {
         });
         ui.label(format!("{} native instructions · {} graph nodes · {} storage variables · {} SSA values · {} phis",
             view.native.len(), analysis.ssa().graph().node_count(), analysis.layout().variables().len(), analysis.ssa().values().len(), analysis.ssa().phi_count()));
+        debug_assert!(Arc::ptr_eq(&analysis, view.expressions.analysis()));
         if !view.complete {
             ui.colored_label(GOLD, "Binary function recovery is incomplete. This result covers the recovered instructions.");
         }
@@ -209,7 +231,16 @@ impl Workbench {
         };
         ui.label(RichText::new(format!("Instruction lengths and bytes checked; instruction-local temporaries start undefined. Memory dependencies use whole address spaces. {placement}")).small().color(MUTED));
         ui.separator();
-        if self.dataflow.show_storage {
+        if self.dataflow.inspect == Inspect::Expressions {
+            let Some((_, view)) = &self.dataflow.view else {
+                return;
+            };
+            if let Some(address) = expressions::panel(ui, &mut self.dataflow.expression, view) {
+                self.navigate_address(address);
+            }
+            return;
+        }
+        if self.dataflow.inspect == Inspect::Storage {
             let variables = analysis.layout().variables();
             egui::ScrollArea::both()
                 .id_salt("dataflow_storage")
@@ -475,8 +506,8 @@ mod tests {
         );
         assert!(app.dataflow.view.is_some());
         let context = egui::Context::default();
-        for storage in [false, true] {
-            app.dataflow.show_storage = storage;
+        for storage in [Inspect::ControlFlow, Inspect::Storage] {
+            app.dataflow.inspect = storage;
             let output = context.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -495,6 +526,141 @@ mod tests {
         assert_eq!(app.revision, 0);
         app.dataflow.poll(&context, (generation + 1, revision));
         assert!(app.dataflow.view.is_none());
+    }
+
+    fn completed(result: FunctionView) -> (Workbench, (u64, u64)) {
+        let loaded = crate::report::load_bytes(
+            "fixture".into(),
+            crate::function_analysis::tests::fixture()
+                .request
+                .image
+                .bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        let mut app = Workbench::empty();
+        app.selected = Some(result.entry);
+        app.loaded = Some(loaded);
+        let fingerprint = app.pcode.fingerprint();
+        let key = RequestKey {
+            id: 1,
+            generation: fingerprint.0,
+            revision: fingerprint.1,
+            entry: result.entry,
+        };
+        app.dataflow.waiting = Some(key);
+        app.dataflow.accept(
+            FunctionResponse {
+                key,
+                result: Ok(result),
+            },
+            fingerprint,
+        );
+        assert!(app.dataflow.view.is_some());
+        (app, fingerprint)
+    }
+
+    fn render(app: &mut Workbench, context: &egui::Context) {
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.dataflow_view(ui));
+            },
+        );
+        assert!(!output.shapes.is_empty());
+    }
+
+    fn render_expression_rows(app: &mut Workbench, context: &egui::Context) {
+        app.dataflow.inspect = Inspect::Expressions;
+        let (values, operations) = {
+            let view = &app.dataflow.view.as_ref().unwrap().1;
+            (
+                view.analysis.ssa().values().len(),
+                view.expression_operations.len(),
+            )
+        };
+        assert!(values > 0 && operations > 0);
+        for rows in [expressions::Rows::Values, expressions::Rows::Operations] {
+            app.dataflow.expression.rows = rows;
+            // Selections from an older, larger view are clamped, not indexed.
+            for selected in [0, 1, usize::MAX] {
+                app.dataflow.expression.value = selected;
+                app.dataflow.expression.operation = selected;
+                render(app, context);
+                match rows {
+                    expressions::Rows::Values => assert!(app.dataflow.expression.value < values),
+                    expressions::Rows::Operations => {
+                        assert!(app.dataflow.expression.operation < operations)
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expression_mode_renders_values_operations_and_opaque_calls_without_mutation() {
+        let fixture = crate::function_analysis::tests::fixture();
+        let result = crate::function_analysis::tests::analyze(&fixture.request).unwrap();
+        let (mut app, fingerprint) = completed(result);
+        let context = egui::Context::default();
+        render_expression_rows(&mut app, &context);
+        // A new result resets expression selections.
+        let result = crate::function_analysis::tests::analyze(&fixture.request).unwrap();
+        app.dataflow.expression.value = 3;
+        let key = RequestKey {
+            id: 2,
+            generation: fingerprint.0,
+            revision: fingerprint.1,
+            entry: result.entry,
+        };
+        app.dataflow.waiting = Some(key);
+        app.dataflow.accept(
+            FunctionResponse {
+                key,
+                result: Ok(result),
+            },
+            fingerprint,
+        );
+        assert_eq!(app.dataflow.expression.value, 0);
+        // Conservative calls render as opaque operations and definitions.
+        let source = std::fs::read_to_string(fixture.directory.path().join("test.slaspec"))
+            .unwrap()
+            .replace("rax = zext(imm);", "rax = zext(imm); call [rip];");
+        std::fs::write(fixture.directory.path().join("test.slaspec"), source).unwrap();
+        let mut request = fixture.request.clone();
+        request.havoc_unknown = true;
+        let result = crate::function_analysis::tests::analyze(&request).unwrap();
+        let call = result
+            .expression_operations
+            .iter()
+            .position(|s| {
+                matches!(
+                    result.expressions.operation(*s).unwrap().effects,
+                    AppliedEffects::Conservative(_)
+                )
+            })
+            .unwrap();
+        let (mut app, fingerprint) = completed(result);
+        render_expression_rows(&mut app, &context);
+        app.dataflow.expression.rows = expressions::Rows::Operations;
+        app.dataflow.expression.operation = call;
+        render(&mut app, &context);
+        assert_eq!(app.dataflow.expression.operation, call);
+        assert!(!app.dirty);
+        assert_eq!(app.revision, 0);
+        assert!(app.loaded.as_ref().unwrap().metadata.annotations.is_empty());
+        // Image/processor changes and policy edits drop the expression view.
+        app.dataflow
+            .poll(&context, (fingerprint.0 + 1, fingerprint.1));
+        assert!(app.dataflow.view.is_none());
+        render(&mut app, &context);
+        assert_eq!(app.dataflow.inspect, Inspect::Expressions);
     }
 
     #[test]

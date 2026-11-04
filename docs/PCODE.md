@@ -311,3 +311,38 @@ large valid groups can exhaust the configurable work budget. Static injection
 bodies must be nonempty and last in their payload; their original text is retained,
 without compilation. Numeric size lists and nonnegative Java-int fields are
 validated separately from address offsets.
+
+## Resolved compiler storage
+
+Resolve compiler locations against a compiled language's register layout:
+
+```sh
+cargo run -p ghidra-desktop -- --compiler-storage \
+  Ghidra/Processors x86:LE:64:default windows
+```
+
+This command compiles the selected SLEIGH source and emits
+`ghidra-rs.compiler-storage` version 1 JSON. The declarative `--compiler-spec`
+command above remains available without compilation. The new report includes
+the original compiler specification and diagnostics, the language register file,
+and resolved locations indexed by source model/list positions. Its policy flags
+explicitly report that argument allocation, prototype rules, injection
+compilation and overlap resource groups are not implemented.
+
+`RegisterId` indexes `registers.registers`; each physical alias retains its
+actual space ID, byte offset and size. `resolved_storage` contains bindings,
+ranges, stack properties, space bases and dead-code delays. Compiler-only
+`Stack`/`Other` are separate space variants. Stack offsets are sign-extended
+64-bit bits; interpret them as signed byte offsets. Joined pieces are in
+most-significant-first order with explicit significance; floating logical-size
+extensions are marked conversions with no slice offset. Unsized parameter
+pool addresses stay unsized even when their maximum capacity is large.
+
+The command accepts exactly ROOT, LANGUAGE_ID and COMPILER_ID. Argument failures
+exit 2; discovery/compilation/resolution/output failures exit 1. Serialization
+is buffered under a 64 MiB cap including the final newline, so failed analysis
+does not print a partial JSON document. ABI construction bounds records, pieces,
+names and work independently of compiler/parser budgets. A successfully resolved
+report does not mean its calling convention can allocate arguments or execute
+calls; source capture diagnostics remain visible. Initial real-source probes
+and further validation are recorded in [RUST_PORT.md](RUST_PORT.md).

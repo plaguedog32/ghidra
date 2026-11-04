@@ -1131,6 +1131,7 @@ name = "ghidra-desktop"
 version = "0.3.0"
 dependencies = [
  "eframe",
+ "ghidra-abi",
  "ghidra-analysis",
  "ghidra-cfg",
  "ghidra-core",

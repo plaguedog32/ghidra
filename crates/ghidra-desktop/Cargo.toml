@@ -11,6 +11,7 @@ name = "ghidra-rs"
 path = "src/main.rs"
 
 [dependencies]
+ghidra-abi = { path = "../ghidra-abi" }
 ghidra-analysis = { path = "../ghidra-analysis" }
 ghidra-cfg = { path = "../ghidra-cfg" }
 ghidra-graph = { path = "../ghidra-graph" }

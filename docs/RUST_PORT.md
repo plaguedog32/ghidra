@@ -16,6 +16,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
 | `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
+| `crates/ghidra-abi` | Register-backed compiler storage resolution, signed stack locations, joins and bounded source-position overlays |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
@@ -127,7 +128,7 @@ Local validation on Windows with Rust 1.99.1:
 - The headless analysis command passes nine report/schema tests and two process-level tests, including a Java-free subprocess and empty stdout on argument/input failures. The optimized executable also analyzed `alias-branch.json` with `JAVA_HOME` empty and `PATH` restricted to Windows system files: 5 nodes, 10 SSA values and 1 phi, with verification enabled. Concrete `sum-loop.json` execution still returns 6 in 14 operations in the same environment.
 - Function analysis tests cover binary/source boundary agreement, catalog compatibility, context-commit rejection, incomplete recovery, bounded display text, compilation reuse, unknown calls, queue coalescing and stale responses. Populated function/storage views render through egui without changing project state. The real x86 source probe lifts a recovered PE loop function to verified SSA and executes its P-code to return 3.
 - The optimized `--analyze-function` command also lifts the retained PE32 WinHelloCPP entry at `401E46` with no Java available: 135 recovered instructions, 151 graph nodes, 10,953 SSA values and 2,192 phis. Its 32 calls use marked conservative effects, and incomplete recovery remains explicit. This is native dataflow inspection, not structured decompiled output.
-- Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Register/space resolution, argument allocation, rule execution and injection compilation remain pending; parser coverage is not executable ABI support.
+- Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Initial register/space resolution is available separately; argument allocation, rule execution and injection compilation remain pending. Parser coverage is not executable ABI support.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
@@ -144,9 +145,38 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ## Development checkpoint
 
-### Current pause: expression inspection milestone
+### Active continuation: compiler storage
 
-Work is paused at the user's request. The integrated native desktop can open
+The full replacement goal is active again after the saved pause below.
+`ghidra-abi` now resolves compiler declarations against physical language registers
+and address spaces. The `--compiler-storage ROOT LANGUAGE_ID COMPILER_ID` command
+compiles the selected SLEIGH source and exports the register layout, original
+compiler declarations/diagnostics and bounded resolved storage. It checks missing
+registers/spaces, physical parameter widths and address extents while preserving
+unsized stack-pool capacity, signed stack offsets and join significance.
+
+Initial Java-free debug-command probes succeed for x86-64 Windows, GCC and Go,
+ARM v7's default AAPCS, MIPS32 big-endian default, and AArch64 Go. These are six
+compiler/language combinations, not all 107 compiler specs or 202 languages.
+The x86-64 source exposes 1,440 physical aliases; the Windows overlay resolves
+71 bindings and six ranges. AArch64 Go resolves 157 bindings and 194 pieces.
+Three initial library tests, three report/argument tests and a Java-free process
+test pass. The workspace passes 406 default tests and nine doctests;
+formatting, ABI/desktop Clippy and rustdoc with warnings denied pass. The release
+build succeeds, and Java-free release probes resolve x86-64 Windows and AArch64
+Go storage. The Windows probe also checks register order and its stack pool's
+offset 40 without assigning the pool's maximum capacity as a value width.
+Comprehensive ABI behavioral validation and independent review remain pending.
+
+Resolution is not argument allocation or executable ABI behavior: resource groups,
+legal parameter-overlap nesting, justification, rule/merged-model evaluation,
+injection compilation, type recovery and SSA call-effect integration remain.
+The preserved constant-propagation draft is still outside the integrated source;
+it must be recovered and verified before it can support simplification.
+
+### Saved pause: expression inspection milestone
+
+Work was paused at the user's request. The integrated native desktop can open
 binaries, inspect disassembly and recovered functions, lift P-code, and inspect
 CFG/SSA and typed expressions. Dataflow has value/operation expression views;
 `--analyze-pcode --expressions` optionally exports expressions, and every

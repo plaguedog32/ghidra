@@ -189,9 +189,12 @@ injection compilation, type recovery and SSA call-effect integration remain.
 Sparse conditional constant-propagation facts are integrated as a library at
 `596c39a505`: `PcodeConstants` uses def-use scheduling, exact-width values and
 augmented-graph feasibility. Undefined/reset/memory/opaque state stays unknown;
-faults do not prune paths. Its 22 supplied tests and mutation evidence need
-independent review before CLI/desktop integration. No IR rewrite, type recovery
-or structured output is claimed.
+faults do not prune paths. Independent review at `fdb61172e6` approved the engine
+with no actionable findings. It added 7,200 solver comparisons, 310,306 concrete
+observations and 14,213,072 observations from a separate byte interpreter across
+both temporary scopes and phi placements. These are bounded tests, not a proof
+or an independent check of every arithmetic opcode. CLI/desktop integration is
+next. No IR rewrite, type recovery or structured output is claimed.
 
 The combined continuation passes 474 default workspace tests and ten doctests
 on Windows/Rust 1.99.1. Resource planning and the ABI review fixes are new

@@ -300,8 +300,9 @@ with a limit error even when construction just fit.
 
 `DefUseIndex::new(&ssa, DefUseLimits)` builds an owned index from every SSA
 value to every operand that reads it. It is the use side of the def-use
-relation; the definition side is `Ssa::value(id).origin`. It is groundwork for
-sparse simplification and out-of-SSA translation, neither of which exists yet.
+relation; the definition side is `Ssa::value(id).origin`. Sparse constant
+propagation in `ghidra-analysis` uses it. Parallel-copy scheduling and phi
+lowering are separate APIs below; neither mutates an existing index.
 
 ```rust
 use std::sync::Arc;
@@ -542,8 +543,133 @@ entry operands, fails tests.
   dead-phi removal pass over an existing result, and no public liveness
   query. Extra live phis are accepted by verification.
 - The def-use index is a read-only snapshot: no incremental update as
-  values are rewritten, no copy folding, expression simplification, or
-  out-of-SSA translation yet, and no check that it is paired with its own
-  `Ssa`. It is not used by `ghidra-analysis` yet.
+  values are rewritten and no check that it is paired with its own `Ssa`.
+  Consumers must maintain their own counts or rebuild after rewriting.
 - One immutable graph per result; no incremental update or re-heritage.
 - Values are per whole variable; there is no partial-definition model.
+
+## Parallel copies
+
+`ParallelCopySchedule::new(slot_count, copies, CopyLimits)` turns simultaneous
+copies into a deterministic sequential move list. Destinations must be unique,
+including identities, which otherwise emit no move. Other slots are unchanged.
+Cycles use one shared `Temporary`; every read of it follows a save of an
+original slot. No initializer, zero or replacement value is invented. Slots
+are abstract whole values: a consumer supplies compatible types, actual
+storage and effects rather than treating them as physical byte addresses.
+
+```rust
+use ghidra_ssa::{CopyLimits, CopySlot, ParallelCopy, ParallelCopySchedule};
+
+let swap = [
+    ParallelCopy { destination: CopySlot(0), source: CopySlot(1) },
+    ParallelCopy { destination: CopySlot(1), source: CopySlot(0) },
+];
+let schedule = ParallelCopySchedule::new(2, &swap, CopyLimits::default())?;
+assert_eq!(schedule.moves().len(), 3); // save, copy, restore
+assert_eq!(schedule.temporary_count(), 1);
+# Ok::<(), ghidra_ssa::CopyError>(())
+```
+
+Sparse ordered maps/sets track pending destinations and remaining readers.
+Destinations no longer read by a pending copy are processed in ascending
+order; the remainder consists of disjoint cycles. Each cycle starts at its
+smallest destination and reuses the same temporary. Input reordering leaves
+the moves and work unchanged. For C copies, time is `O(C log(C+1))`, space
+`O(C)`, and no allocation depends on the slot-domain size. Limits cap the slot
+domain, input copies, emitted moves, scratch count and abstract work before
+growth. Failure returns no partial schedule. Work counts ordered-container
+operations rather than tree comparisons: `3C + 6N + 3A + Z + 2K`, for N
+nonidentity copies, A copies processed before cycles, Z sources whose last
+pending reader disappears in that phase, and K cycles. Empty input costs zero.
+
+Sixteen tests include independent old-snapshot execution of exhaustive maps
+through five slots, 1,920 generated maps/permutations, input reordering,
+undefined tokens, exact limits, every smaller work budget, absolute cost pins,
+huge sparse slot IDs and 100,000-copy chains/cycles/swaps. Both stable and
+Rust 1.88 runs pass.
+
+## Phi lowering
+
+`PhiLowering::new(Arc<Ssa>, PhiLoweringLimits)` removes phi operations from the
+execution plan by adding edge-specific copy blocks. It retains the immutable
+SSA snapshot. Each `ValueId(i)` becomes mutable `CopySlot(i)`; original
+statement IDs, operand slots and definition slots stay unchanged. Statements
+still read all uses before writing all definitions, including multi-def
+statements. Entry Input/Undefined values keep their declared meaning. This
+pass does not initialize them or infer bytes for undefined values.
+
+```rust
+use std::sync::Arc;
+use ghidra_graph::{Graph, Limits as GraphLimits};
+use ghidra_ssa::*;
+
+let graph = Arc::new(Graph::new(4, [(0, 1), (0, 2), (1, 3), (2, 3)], GraphLimits::default())?);
+let program = RawProgram {
+    variables: vec![EntryState::Input],
+    blocks: vec![vec![],
+        vec![RawStatement::new([], [VariableId(0)])],
+        vec![RawStatement::new([], [VariableId(0)])],
+        vec![RawStatement::new([VariableId(0)], [])]],
+};
+let source = Arc::new(Ssa::construct_pruned(graph, 0, &program, Limits::default())?);
+let lowered = PhiLowering::new(source.clone(), PhiLoweringLimits::default())?;
+assert!(Arc::ptr_eq(lowered.source(), &source));
+assert_eq!(lowered.stats().eliminated_phis, 1);
+assert_eq!(lowered.copy_blocks().len(), 2);
+assert_eq!(lowered.graph().node_count(), 6);
+assert!(matches!(lowered.node(3), Some(LoweredNode::Block { .. })));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Original graph IDs are preserved. New copy blocks follow target-node order,
+then canonical incoming order. Each is on exactly one original edge, so copies
+on critical edges execute only when that edge is selected. A virtual Entry
+operand becomes a one-shot prologue; backedges enter the original entry and
+bypass it. Identity-only batches need no new block. Real unreachable nodes and
+edges remain present with explicit unreachable statement counts; no missing
+renamed statements are invented. `LoweredNode` exposes ordinary statements or
+copy blocks, never phis. Edge provenance and move slices are queryable, and
+invalid node lookups return None. Borrowed node views cannot outlive the owned
+snapshot.
+
+Phi copies are passed through the parallel-copy scheduler, with its work and
+move bounds included in the pass budget. Current uncoalesced SSA phis have one
+destination per variable and operands of that same variable, so only identity
+cycles occur and no scratch is needed; the general scheduler supports real
+cycles for future location coalescing. This pass performs no coalescing and no
+interference analysis. Abstract memory tokens stay logical dependencies;
+lowering them does not implement concrete memory copies or pointer analysis.
+
+Limits cap values, input phi operands (including identities), copy blocks,
+total moves and work. Output graph node/edge limits are checked before copy
+block growth, including the added nodes/edges. Nested scheduling receives only
+remaining work/moves; limit errors have a common typed classification. A
+rebuilt graph has its own construction budget, so a call spends at most
+`max_work + graph.max_work`. When no copies are needed, the original graph Arc
+is reused: it retains its original analysis limits and spends no graph
+construction work. Each graph query after lowering has that graph's own
+separate budget.
+
+With N source nodes, E edges, B copy blocks and P phi operands, pass time is
+`O(N + P log(P+1) + (E+B) log(B+1))` plus bounded graph construction; scratch
+storage is `O(N + P + E + B)` in addition to the retained source. It is iterative,
+and no scheduling table is allocated for all value slots per edge.
+
+Thirteen tests compare mutable-variable execution to actual lowered graph
+paths, including entry/self-loops, irreducible loops, critical edges,
+unreachable predecessors, undefined inputs, repeated uses, simultaneous defs,
+dead unpruned phis and pruned forms. Generated checks cover 750 programs in both
+modes, 24,000 paths and 1,561,607 uses. A 100,000-node/value case produces
+66,666 sparse copy blocks. Exact/one-below limits, every lower work budget,
+graph limits, preflight precedence, absolute work pins and ownership/query
+bounds are checked. An external independent interpreter additionally compared
+29,716,765 uses on 12,010 lowerings in debug/release without a mismatch.
+Twenty-one compiling mutations of scheduling and lowering are caught by the
+two suites, including cycle saves/restores, duplicate/fanout handling, entry
+prologues, critical-edge routing, incoming operands, identity edges and limits.
+
+Neither API is connected to P-code expression projection, CLI/desktop export,
+structured control-flow generation or C output yet. The source SSA and its
+verifier are unchanged. Independent cross-lab review of these lowering APIs is
+still required before downstream integration.

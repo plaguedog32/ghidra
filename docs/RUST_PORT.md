@@ -162,8 +162,8 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype tree passes 710 default workspace tests and
-18 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
+The current analysis/ABI/datatype/SSA tree passes 764 default workspace tests and
+21 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
@@ -177,7 +177,10 @@ The converted native datatype graph, native primitive extraction and native
 filter/qualifier/HFA evaluation are integrated as separate APIs, with
 independent review approval. Bitfield value reads and numeric formatting now
 have directed and independent-bigint evidence and cross-lab approval. The
-review's guard-specific test gap is fixed. Source changes
+review's guard-specific test gap is fixed. Opt-in typed expression
+simplification/export has independent approval. New parallel-copy and phi
+lowering APIs have path-oracle evidence; their cross-lab review is pending.
+Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
 
@@ -602,6 +605,70 @@ oracle. Its test-gap finding is fixed with isolated guard cases and three
 additional compiling mutations; the value suite passes on Rust 1.88. This
 API has no program-memory/UI consumer yet;
 enum names/masks, character encodings, settings and editing are still open.
+
+### Typed expression simplification
+
+`PcodeSimplification` builds a canonical value-term projection over the exact
+constant/expression/SSA snapshot. It folds exact literals, propagates safe
+definitions, applies width-checked integer/normalized-boolean identities and
+reduces join/extract shapes. Original operations remain the required
+evaluation stream. Faulting and memory terms keep distinct identities;
+faulting/memory definitions stay leaves, and rewrites cannot discard a
+faulting subterm. There is no memory CSE/forwarding, unsafe float identity,
+annihilator shortcut, CFG pruning, operation removal or C output.
+
+Both headless analysis commands accept opt-in `--simplify`, implying constants
+and expressions and adding `ghidra-rs.simplification` version 1. Reports retain
+source IDs and snapshot guards, deterministic term IDs and the shared 64 MiB
+cap including the newline. Without the flag, all previous output bytes remain
+unchanged. The desktop worker/view is not yet connected. CI now has a raw
+P-code `--simplify` smoke step on each stable host; the new run must pass before
+claiming that increment's cross-platform behavior.
+
+Independent review approved `e518c4cac9` with no findings. It checked 193,286
+operation/SSA observations and 244,327 canonical-term observations across 120
+programs, both byte orders, overlapping slices and widths through 512 bytes.
+CLI probes confirmed default byte identity and actual output-cap failure with
+empty stdout. Local Java-free Rust 1.88 release runs reproduce unchanged
+default sum-loop/alias-branch/WinHelloCPP documents. With `--simplify`, the
+respective outputs are 43,235, 46,158 and 9,305,623 bytes. WinHelloCPP has 113
+literal values and 283 propagated definitions, with its incomplete 135-
+instruction recovery still explicit. These reductions do not imply recovered
+types, ABI return values or structured decompilation.
+
+The preceding value checkpoint's CI run `41844505885` passed stable and Rust
+1.88 jobs on Windows and Linux. Both macOS jobs were cancelled before any
+runner was assigned; GitHub annotated hosted ARM64 capacity constraints, with
+no failed test/build step. The newer simplification run `41847716217` is
+queued. macOS verification remains open until those jobs execute; the ARM64
+matrix target is retained.
+
+### Parallel-copy scheduling and phi lowering
+
+`ghidra-ssa` now schedules simultaneous copies with sparse deterministic
+bookkeeping and one reused scratch for cycles. A separate `PhiLowering` plan
+keeps source statement/value IDs and places scheduled copies on their selected
+incoming edges. Critical edges receive their own blocks; a virtual-entry
+prologue runs once while entry-loop backedges bypass it. Identity-only copies
+need no new block. Input/Undefined values retain their source meanings, and
+original multi-definition statements still read all uses before writing defs.
+
+The owned plan retains its immutable source. Work and input/output counts are
+bounded, nested scheduling uses only remaining budgets, and rebuilt graph
+limits are separate. No dense value table is allocated per edge. Sixteen
+scheduler tests and thirteen lowering tests cover cyclic/fanout copies,
+entry/irreducible loops, critical edges, undefined state, unreachable edges,
+exact limits and 100,000-element cases. A committed raw-path reference compares
+1,561,607 uses on 750 programs in both SSA modes; an external interpreter adds
+29,716,765 observations on 12,010 lowerings. All 21 compiling mutations are
+caught. The combined tree passes 764 tests and 21 doctests on stable and Rust
+1.88, workspace Clippy/rustdoc with warnings denied and the Rust 1.88 release
+build. Cross-lab review remains pending for this stage.
+
+This is generic SSA lowering, with no location coalescing/interference pass or
+P-code/export/code-generation consumer yet. Abstract memory tokens are not
+concrete memory-copy operations. Complete signature allocation, structuring,
+type propagation and readable decompiled output remain required.
 
 ### Saved pause: expression inspection milestone
 

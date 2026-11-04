@@ -1899,3 +1899,83 @@ fn window_native_int_overflow_precedes_primitive_exhaustion_and_rolls_back() {
     ));
     assert_eq!(snapshot(&state), before);
 }
+
+#[test]
+fn spill_accepts_the_inclusive_native_int_boundary() {
+    let mut t = Source::default();
+    let byte = t.int(1, false);
+    let value = t.array(byte, 24);
+    let g = graph(&t, false);
+    assert_eq!(g.get(nid(value)).unwrap().alignment, 1);
+    let maximum = i32::MAX as u32;
+    let r = plan(
+        &(reg("d0", 8, "float") + &reg("x0", 8, "general") + &stack(1, maximum, 1, 0)),
+        LE,
+    );
+    for extra in [0, 1] {
+        let cursor = maximum - 16 + extra;
+        let mut state = fresh(&r, IN);
+        state
+            .assign_pool(
+                &r,
+                PoolRequest {
+                    entry: 2,
+                    size: cursor,
+                    alignment: 1,
+                    justification: Justification::Default,
+                },
+                Default::default(),
+            )
+            .unwrap();
+        let before = snapshot(&state);
+        let result =
+            state.assign_dual_join(&r, &spill(), g.clone(), nid(value), Default::default());
+        if extra == 0 {
+            // Eight bytes use x0; sixteen spill with alignment one. The
+            // exclusive next slot is exactly the largest valid native int.
+            let allocation = result.unwrap();
+            assert_eq!(
+                pieces(&allocation),
+                [(STACK, i64::from(cursor), 16, 8), (REG, 0x80, 8, 0)]
+            );
+            assert_eq!(
+                state.groups()[2],
+                GroupState::Available {
+                    used_slots: u64::from(maximum)
+                }
+            );
+        } else {
+            assert!(matches!(result, Err(DualJoinError::NativeIntRange(_))));
+            assert_eq!(snapshot(&state), before);
+        }
+    }
+}
+
+#[test]
+fn right_justification_refuses_excess_covering_the_first_tile() {
+    let mut t = Source::default();
+    let int = t.int(4, true);
+    let value = t.structure(&[int, int, int]);
+    let g = graph(&t, false);
+    let r = plan(
+        &(reg("x0", 8, "general") + &reg("q0", 16, "general") + &reg("d0", 8, "float")),
+        LE,
+    );
+    let mut state = fresh(&r, IN);
+    let before = snapshot(&state);
+    let attributes = DualJoinAttributes {
+        reverse_justify: Some(true),
+        ..attrs()
+    };
+    // Raw size 12 consumes tiles of 8 and 16 bytes, leaving excess 12.
+    // Right justification crops the first 8-byte tile, so no valid piece
+    // would remain. Left justification would crop the last, wider tile.
+    assert!(matches!(
+        state.assign_dual_join(&r, &attributes, g, nid(value), Default::default()),
+        Err(DualJoinError::Unsupported {
+            site: BindingSite::Input { model: 0, entry: 0 },
+            reason: "excess bytes cover the whole justified piece"
+        })
+    ));
+    assert_eq!(snapshot(&state), before);
+}

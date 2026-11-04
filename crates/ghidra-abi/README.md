@@ -1263,8 +1263,9 @@ the action would otherwise succeed, so they never mask a source `NoFit`.
   tile narrower than its join storage, and a floating-extension join tile
   inside a compound or truncated value are `Unsupported`. An exact single
   floating-extension tile is that recorded conversion. Excess at least as
-  large as the justified piece, possible only with narrower later tiles, is
-  `Unsupported` rather than a zero or wrapped width.
+  large as the justified piece, possible only when justifying right and a
+  later tile is wider than the first one, is `Unsupported` rather than a zero
+  or wrapped width.
 - **Native ints.** A window or primitive end beyond `i32::MAX`, or stack slot
   arithmetic beyond it, is a refusal, never a wrapped value. Window-end
   arithmetic precedes primitive exhaustion, and stack cursor addition precedes
@@ -1311,7 +1312,7 @@ logarithmic lookups.
 
 ### Validation evidence
 
-`tests/dual_join_action.rs` has 25 directed tests with hand-derived
+`tests/dual_join_action.rs` has 27 directed tests with hand-derived
 expectations, covering:
 
 - Defaults, true-only toggles and parsed `storage`/`a`/`b` attributes, and
@@ -1417,7 +1418,19 @@ Still required for a full calling convention: output-trial recovery
 (`fillinOutputMap`), rule matching and dispatch with preconditions and side
 effects, `pointermax`, hidden returns, per-member joins
 (`join_per_primitive`), whole-signature allocation, `sharestack`, SSA call
-effects and desktop exports. This action has had no independent review yet.
+effects and desktop exports.
+
+Independent re-review approved `51850a14ba` after the two native-int
+evaluation-order fixes, with no correctness defects. It checked the action,
+shared helpers and ordered compiler-spec aliases against retained native and
+Java source. It reran the 25 then-current directed tests, the 35,776-case
+reference, three real profiles, compiler-spec hardening and scoped Clippy.
+Five external probes additionally checked inclusive signed-int spill limits,
+alignment overflow versus minimum-size rejection, swapped classes, attribute
+order and the wider-later-tile crop refusal. Spills ending exactly at
+`i32::MAX` and that crop refusal now have directed regressions in this crate.
+This is source/probe evidence, not a
+live Java or native decompiler comparison.
 
 ## Native primitive alignment
 

@@ -162,7 +162,7 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 837 default workspace tests and
+The current analysis/ABI/datatype/SSA tree passes 839 default workspace tests and
 23 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
@@ -184,8 +184,8 @@ has been reviewed, and its stack-rejection-order finding is fixed.
 Native dual-class ABI join allocation now consumes the converted native
 datatype graph, classifies primitive windows and allocates across two register
 classes with optional stack spill. Its initial review found two native-int
-evaluation-order gaps; both have regression fixes and are undergoing a fresh
-independent review. Compiler `storage`/`a` aliases now follow document order
+evaluation-order gaps; both have regression fixes and independent re-review
+approval at `51850a14ba`. Compiler `storage`/`a` aliases now follow document order
 and validate both values. Eight opt-in native general/dual-class join probes
 pass in a Rust 1.88 release build, including x86-64 GCC and MIPS64 LE/BE.
 Source changes
@@ -854,12 +854,14 @@ The first independent review at `43550e25d5` requested two fixes: signed-int
 spill cursor addition must be checked before capacity rejection, and window
 end arithmetic before primitive exhaustion. `51850a14ba` fixes both in source
 evaluation order and adds regressions that preserve the complete prior state.
-A fresh review is pending. It also corrects compiler-spec `storage`/`a`
-precedence: later aliases win, but invalid earlier values still fail.
+A fresh review approved `51850a14ba` with no correctness defects. That commit
+also corrects compiler-spec `storage`/`a` precedence: later aliases win, but
+invalid earlier values still fail. The inclusive signed-int spill boundary and
+right-justified wider-tile crop refusal now have directed regression tests.
 
-The combined tree passes 837 default tests and 23 doctests on stable and Rust
+The combined tree passes 839 default tests and 23 doctests on stable and Rust
 1.88, formatting, workspace Clippy and Rust 1.88 rustdoc with warnings denied,
-and both Windows release builds. The 25 directed action tests include exact
+and both Windows release builds. The 27 directed action tests include exact
 work/limit boundaries and the two large-number regressions without allocation
 per payload byte. The builder's source-derived reference checks 35,776 calls
 across 8,000 layouts; these bounded tests are separate from independent review.

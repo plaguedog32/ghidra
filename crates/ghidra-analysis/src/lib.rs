@@ -4,7 +4,10 @@
 //! expression terms preserve aliases, memory versions and opaque definitions.
 //! Sparse conditional constant propagation computes owned whole-value facts
 //! and executable nodes/edges over those terms without rewriting them.
-//! This crate does not yet infer types or emit decompiled code.
+//! Bounded simplification builds a hash-consed canonical value-term projection
+//! of executed statements over those facts, keeping the original operations as
+//! the required evaluation stream. This crate does not yet infer types or emit
+//! decompiled code.
 #![doc = include_str!("../README.md")]
 
 mod storage;
@@ -15,3 +18,5 @@ mod expressions;
 pub use expressions::*;
 mod constants;
 pub use constants::*;
+mod simplify;
+pub use simplify::*;

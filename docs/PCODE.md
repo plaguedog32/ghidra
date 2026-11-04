@@ -32,6 +32,8 @@ cargo run -p ghidra-desktop -- --analyze-pcode \
   examples/pcode/alias-branch.json --expressions
 cargo run -p ghidra-desktop -- --analyze-pcode \
   examples/pcode/sum-loop.json --constants
+cargo run -p ghidra-desktop -- --analyze-pcode \
+  examples/pcode/alias-branch.json --simplify
 ```
 
 Input uses the same `ExecutionInput` JSON format as `--run-pcode`. The analysis is
@@ -94,6 +96,16 @@ may be given once, in any order; `--expressions --constants` produces the
 same document as `--constants`. Without `--constants` the report has no
 `constants` field and is otherwise unchanged.
 
+`--simplify` is also opt-in. It adds a final top-level `simplification` field
+(described in [Expression simplification inspection](#expression-simplification-inspection))
+and implies `expressions` and `constants`, whose IDs and facts it maps. Every
+order and combination of the three flags that includes `--simplify` produces
+one document, whose bytes up to the `simplification` field are exactly the
+`--constants` document. Without `--simplify` the output is byte-for-byte
+unchanged. A duplicate or unknown flag exits with status 2 and an
+analysis or simplification-limit error with status 1; both leave stdout
+empty.
+
 Input is limited to a regular JSON file of 16 MiB. Native analysis phases have
 separate instruction, operation, operand, graph, storage, phi and work limits.
 Output, including the final newline, is buffered under a 64 MiB cap before
@@ -153,6 +165,11 @@ that same analysis; `constants` contains the `ghidra-rs.constants` version 1
 report built from those same expressions. `expressions` and `constants` are
 additive fields: the function schema version remains 1, and earlier fields are
 unchanged. The command and **Copy analysis JSON** always include both.
+The command's opt-in `--simplify` appends a final `simplification` field, the
+`ghidra-rs.simplification` version 1 report built from those same constant
+facts. Without the flag the command output is byte-for-byte unchanged; with
+it, the document up to that field is identical. The desktop worker, view and
+**Copy analysis JSON** do not build simplifications.
 
 Each function is limited to 5,000 native instructions, 100,000 lifted operations,
 4,096 bytes of display text per instruction and 4 MiB total display text, plus
@@ -163,10 +180,14 @@ same document. Expressions are serialized into the bytes left after the fixed
 prefix, function metadata, analysis report, field names and closing brace;
 constants are serialized into what then remains. The final buffer is reserved
 once at its exact size. A constant-propagation limit or error fails the whole
-analysis; there is no result without facts. SSA uses liveness pruning.
-There is no ABI/type recovery, indirect-target resolution, expression
-simplification, IR rewriting or structured decompiled output yet. Instruction-boundary checks
-and SSA verification do not establish complete instruction-semantic parity.
+analysis; there is no result without facts. With `--simplify`, the report is
+serialized into the bytes left after the complete document and its field
+name, and a simplification limit or error fails the command with empty
+stdout. SSA uses liveness pruning. There is no ABI/type recovery,
+indirect-target resolution, IR rewriting or structured decompiled output yet;
+simplification is an inspection projection of values, not a rewritten
+program. Instruction-boundary checks and SSA verification do not establish
+complete instruction-semantic parity.
 
 An opt-in probe compiles the real x86-64 source, lifts a recovered loop function
 from the synthetic PE sample, checks its SSA/loop structure and executes its
@@ -176,9 +197,10 @@ P-code to produce 3:
 cargo test -p ghidra-desktop upstream_x86_function -- --ignored
 ```
 
-The probe also checks that the function's constant facts share its expression
-and SSA allocations and that every fact, feasibility entry and fault refers to
-the same snapshot's IDs. It does not assert incidental fact counts.
+The probe also checks that the function's constant facts and simplification
+share its expression and SSA allocations and that every fact, term,
+feasibility entry and fault refers to the same snapshot's IDs. It does not
+assert incidental fact or term counts.
 
 ## Typed expression inspection
 
@@ -350,6 +372,80 @@ were not computed from those exact snapshots.
 Propagation uses the engine's default limits except 16 MiB of evaluated
 constant bytes, matching the expression literal budget. Exhaustion or an
 inconsistent snapshot fails the analysis with no partial output.
+
+## Expression simplification inspection
+
+`ghidra_analysis::PcodeSimplification` builds a bounded canonical value-term
+projection over one `PcodeConstants` snapshot (see the crate README for the
+complete rule set). `--analyze-pcode --simplify` and
+`--analyze-function --simplify` use that one engine and one report module. It
+is not yet shown in the desktop view.
+
+Each original node of a statement that constant propagation executed maps to a
+canonical term. Constant facts become literals, literal applications fold with
+the native evaluator, copies and same-width casts disappear, definitions
+propagate into their uses, neutral integer operations (`x+0`, `x|0`, `x^0`,
+`x&~0`, `x*1`, shifts by 0, `x&x`, double negation) and constant chains
+(`(x+c1)+c2`, `x-c`) reduce, normalized boolean tests and negated comparisons
+simplify, and joins and extracts of aliased storage flatten and recombine.
+Structural terms are hash-consed, so identical scalar computations share one
+term ID. Phis, entry values, undefined resets, opaque outputs and memory states
+stay leaves; they are never zero. Memory reads and writes stay distinct, keep
+their versions, byte order and word-scaled pointers, and are never forwarded.
+Applications that may fault stay distinct, are never shared or propagated, and
+are never dropped by a rewrite. Annihilators such as `x*0` and `x^x`, and all
+floating-point identities, are not applied. Pointer arithmetic and metadata
+operands are not reordered.
+
+The terms describe the values the original operations produce. They are not
+an executable program: the original operation stream, with all its operand
+reads, effects, control flow and faults, remains the required evaluation and
+is unchanged in the `expressions` report. Unexecuted statements are not
+simplified, and newly literal conditions do not change the constant report's
+feasibility. This is not decompiled C, type recovery or ABI recovery, and
+`--run-pcode` does not accept it.
+
+### `ghidra-rs.simplification` version 1
+
+The report is streamed from borrowed terms. IDs in `term`, `inputs` and
+`pieces[].term` are canonical term IDs in this report's `terms`; `node`
+indexes the `expressions` report's `nodes`; `value` and `version` index SSA
+values; `statement` indexes the analysis report's nodes and statements. The
+producer rejects a simplification that was not computed from the exact
+constant facts in the same document.
+
+| Field | Contents |
+| --- | --- |
+| `schema`, `schema_version` | `"ghidra-rs.simplification"`, `1` |
+| `policies` | Accompanying SSA, expression and constant schemas and versions; the original constant-propagation feasibility policy (`constants`); fixed statements for scope, the value-projection relation to the evaluation stream, term identity, faulting terms, memory, leaves and folding; and the fixed flags `executable_statements_only` (`true`), `normalized_boolean_rewrites` (`true`), and `prunes_control`, `rewrites_operations`, `eliminates_dead_code`, `forwards_memory`, `shares_memory_terms`, `shares_faulting_terms`, `propagates_faulting_definitions`, `discards_faulting_subterms`, `annihilators`, `float_identities`, `reorders_pointer_or_metadata`, `resolves_indirect_targets`, `type_recovery`, `abi_return_values`, `decompiled_output` (all `false`) |
+| `limits` | The simplification limits used |
+| `counts` | Input `expression_nodes` and `values`; `terms`, `literal_terms`, `leaf_terms`, `distinct_terms`, stored `term_inputs`, owned `literal_bytes`; `executed_statements`, `executed_operations`, `skipped_operations`, `canonical_nodes`, `unmapped_nodes`; reductions `shared_terms`, `literal_nodes`, `literals_beyond_constants`, `literal_values`, `propagated_values`, `leaf_values`, `literal_outputs`, `forwarded_outputs`, `new_literal_conditions`; `evaluations`, `refused_folds`, `faults`, `live_peak` and simplification `work` |
+| `rules` | How often each named rule fired |
+| `terms` | `{id, type, term, fault, identity, reads_memory, boolean, origin, rule}` in ID order. Children have smaller IDs. |
+| `node_terms` | One term ID per expression node, or `null` for nodes of unexecuted statements |
+| `values` | One `{id, term, definition_term, propagated}` per SSA value |
+| `operations` | One entry per expression operation, in the same order: `{statement, point, opcode, executable, operands, output}`. `operands` has one term or `null` (non-value role) per source operand; it and `output` are `null` when the operation was not executed. |
+| `faults` | Each constant-propagation fault, `{statement, point, node, term, opcode, error}` |
+| `refused_folds` | Literal applications the evaluator rejected, in the same shape. These are refused compile-time folds, not run-time faults. |
+
+`term.kind` is one of `literal` (`bytes`, unsigned `hex`), `leaf` (`value`),
+`join` (`pieces` of `{term, lsb_byte, bytes}`), `extract` (`term`,
+`lsb_byte`), `apply` (`opcode`, `inputs`), `read_memory` (`node`, `space`,
+`version`, `address`, `endianness`) or `write_memory` (the same plus the
+stored `term`). `address` is `{"kind":"byte_offset","offset":N}` or
+`{"kind":"word_pointer","term":T,"word_size":W,"address_bytes":A}`. `fault` is
+`none`, `subterm` or `here` (this term itself may fault); `identity` is
+`structural`, `distinct` or `value`; `origin` is `{"kind":"node","node":N}`
+or `{"kind":"value","value":V}`; `rule` names the rule that produced the
+term, or is `null`.
+
+Simplification uses the engine's default limits except 16 MiB of owned literal
+bytes: 2,000,000 values, 4,000,000 expression nodes and terms, 1,000,000
+statements, 16,000,000 term inputs, 8,000,000 pending traversal entries and
+200,000,000 work units. Exhaustion fails the command with no partial output.
+On the retained WinHelloCPP `401E46` function (`--havoc-unknown`), simplified
+outputs include x86 flag tests such as `INT_NOTEQUAL(v, 0)` for `TEST`/`JNZ`
+and reassociated stack-pointer offsets, while `x*0` and `x^x` remain explicit.
 
 ## Source-based instruction lifting
 

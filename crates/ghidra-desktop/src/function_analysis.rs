@@ -23,19 +23,23 @@ pub(crate) struct CommandArguments {
     entry: u64,
     context: BTreeMap<String, u64>,
     havoc_unknown: bool,
+    simplify: bool,
 }
 
 impl CommandArguments {
     pub fn parse(entry: &str, arguments: &[String]) -> Result<Self, String> {
-        if arguments.len() > ghidra_project::MAX_CONTEXT_FIELDS + 1 {
+        if arguments.len() > ghidra_project::MAX_CONTEXT_FIELDS + 2 {
             return Err("Too many function analysis arguments".into());
         }
         let entry = crate::pcode_cli::hex_address(entry)?;
         let mut havoc_unknown = false;
+        let mut simplify = false;
         let mut context = Vec::new();
         for argument in arguments {
             if argument == "--havoc-unknown" && !havoc_unknown {
                 havoc_unknown = true;
+            } else if argument == "--simplify" && !simplify {
+                simplify = true;
             } else if argument.starts_with('-') {
                 return Err(format!(
                     "Unknown or duplicate function analysis option: {argument}"
@@ -48,6 +52,7 @@ impl CommandArguments {
             entry,
             context: crate::pcode_cli::context_overrides(&context)?,
             havoc_unknown,
+            simplify,
         })
     }
 }
@@ -88,11 +93,31 @@ pub(crate) fn execute(
         havoc_unknown: arguments.havoc_unknown,
     };
     let result = Compiler::default().analyze(&request)?;
+    // `--simplify` is command-only: the shared worker result is unchanged,
+    // and the field is appended to its exact document.
+    let simplified = if arguments.simplify {
+        let simplification = crate::simplification_report::build(result.constants.clone())?;
+        if !Arc::ptr_eq(simplification.constants(), &result.constants)
+            || !Arc::ptr_eq(simplification.expressions(), &result.expressions)
+        {
+            return Err("Simplification belongs to a different function snapshot".into());
+        }
+        Some(append_field(
+            result.json.as_bytes(),
+            SIMPLIFICATION_KEY,
+            MAX_DOCUMENT,
+            |remaining| {
+                crate::simplification_report::json(&simplification, remaining, FUNCTION_TOO_LARGE)
+            },
+        )?)
+    } else {
+        None
+    };
     // The document was assembled within `MAX_DOCUMENT`, so the final newline
     // keeps stdout within the 64 MiB cap.
     let mut stdout = std::io::stdout().lock();
     stdout
-        .write_all(result.json.as_bytes())
+        .write_all(simplified.as_deref().unwrap_or(result.json.as_bytes()))
         .map_err(|e| e.to_string())?;
     writeln!(stdout).map_err(|e| e.to_string())?;
     stdout.flush().map_err(|e| e.to_string())
@@ -507,6 +532,38 @@ const FUNCTION_PREFIX: &[u8] =
 const ANALYSIS_KEY: &[u8] = br#","analysis":"#;
 const EXPRESSIONS_KEY: &[u8] = br#","expressions":"#;
 const CONSTANTS_KEY: &[u8] = br#","constants":"#;
+const SIMPLIFICATION_KEY: &[u8] = br#","simplification":"#;
+
+/// Appends `key` and a report before the closing brace of a complete JSON
+/// object, within `maximum` bytes. The report is serialized into exactly the
+/// budget left by the document and key, and the result is reserved once.
+fn append_field(
+    document: &[u8],
+    key: &[u8],
+    maximum: usize,
+    report: impl FnOnce(usize) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let Some((b'}', body)) = document.split_last() else {
+        return Err("Function JSON is not a complete object".into());
+    };
+    let fixed = document
+        .len()
+        .checked_add(key.len())
+        .ok_or("Function JSON size overflow")?;
+    let remaining = maximum.checked_sub(fixed).ok_or(FUNCTION_TOO_LARGE)?;
+    let report = report(remaining)?;
+    let size = fixed
+        .checked_add(report.len())
+        .filter(|&n| n <= maximum)
+        .ok_or(FUNCTION_TOO_LARGE)?;
+    let mut json = Vec::with_capacity(size);
+    json.extend_from_slice(body);
+    json.extend_from_slice(key);
+    json.extend_from_slice(&report);
+    json.push(b'}');
+    debug_assert_eq!(json.len(), size);
+    Ok(json)
+}
 
 /// Assembles `{prefix function, analysis, expressions, constants}` within
 /// `maximum` bytes. Each report is serialized into exactly the budget left by

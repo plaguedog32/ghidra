@@ -494,6 +494,96 @@ fn ordinary_analysis_errors_keep_the_compiled_language_for_expression_runs() {
 }
 
 #[test]
+fn append_field_reserves_exactly_and_serializes_into_the_remaining_cap() {
+    let document = br#"{"schema":"ghidra-rs.function-analysis","constants":{}}"#;
+    let report = br#"{"schema":"ghidra-rs.simplification"}"#;
+    let exact = document.len() + SIMPLIFICATION_KEY.len() + report.len();
+    let capped = |remaining: usize| {
+        if report.len() > remaining {
+            Err(FUNCTION_TOO_LARGE.to_string())
+        } else {
+            Ok(report.to_vec())
+        }
+    };
+    let json = append_field(document, SIMPLIFICATION_KEY, exact, |remaining| {
+        assert_eq!(remaining, report.len());
+        capped(remaining)
+    })
+    .unwrap();
+    assert_eq!(json.len(), exact);
+    assert!(json.starts_with(&document[..document.len() - 1]));
+    let parsed: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(
+        parsed["simplification"]["schema"],
+        "ghidra-rs.simplification"
+    );
+    assert!(parsed["constants"].is_object());
+    assert_eq!(
+        append_field(document, SIMPLIFICATION_KEY, exact - 1, capped).unwrap_err(),
+        FUNCTION_TOO_LARGE
+    );
+    // Too small for the fixed parts: the report is never serialized.
+    let mut called = false;
+    assert!(
+        append_field(document, SIMPLIFICATION_KEY, document.len(), |_| {
+            called = true;
+            Ok(Vec::new())
+        })
+        .is_err()
+    );
+    assert!(!called);
+    assert!(append_field(b"[1]", SIMPLIFICATION_KEY, 1024, capped).is_err());
+}
+
+#[test]
+fn simplification_appends_to_the_function_document_from_its_own_snapshot() {
+    let fixture = fixture();
+    let result = analyze(&fixture.request).unwrap();
+    let simplification = crate::simplification_report::build(result.constants.clone()).unwrap();
+    assert!(Arc::ptr_eq(simplification.constants(), &result.constants));
+    assert!(Arc::ptr_eq(simplification.analysis(), &result.analysis));
+    let json = append_field(
+        result.json.as_bytes(),
+        SIMPLIFICATION_KEY,
+        MAX_DOCUMENT,
+        |remaining| crate::simplification_report::json(&simplification, remaining, "cap"),
+    )
+    .unwrap();
+    // The unflagged document is an exact byte prefix.
+    assert!(json.starts_with(&result.json.as_bytes()[..result.json.len() - 1]));
+    let parsed: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    crate::simplification_report::tests::validate(
+        &parsed["analysis"],
+        &parsed["expressions"],
+        &parsed["constants"],
+        &parsed["simplification"],
+    );
+    let mut without = parsed.clone();
+    without.as_object_mut().unwrap().remove("simplification");
+    assert_eq!(
+        without,
+        serde_json::from_str::<serde_json::Value>(&result.json).unwrap()
+    );
+    // `rax = zext(1)`: the zero extension of a literal folds exactly.
+    let simplification = &parsed["simplification"];
+    assert!(
+        simplification["terms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["term"]["kind"] == "literal"
+                && t["term"]["hex"] == "0x1"
+                && t["term"]["bytes"] == 8)
+    );
+    assert!(
+        simplification["counts"]["literal_outputs"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
 fn function_command_arguments_preserve_context_and_reject_ambiguous_options() {
     let parse = |entry, arguments: &[&str]| {
         CommandArguments::parse(
@@ -504,6 +594,12 @@ fn function_command_arguments_preserve_context_and_reject_ambiguous_options() {
     let arguments = parse("0x1000", &["--havoc-unknown", "longMode=1", "addrsize=0x2"]).unwrap();
     assert_eq!(arguments.entry, 0x1000);
     assert!(arguments.havoc_unknown);
+    assert!(!arguments.simplify);
+    let simplified = parse("1000", &["longMode=1", "--simplify", "--havoc-unknown"]).unwrap();
+    assert!(simplified.simplify && simplified.havoc_unknown);
+    assert_eq!(simplified.context["longMode"], 1);
+    assert!(parse("1000", &["--simplify", "--simplify"]).is_err());
+    assert!(parse("1000", &["--simplified"]).is_err());
     assert_eq!(arguments.context["addrsize"], 2);
     assert!(parse("0x", &[]).is_err());
     assert!(parse("1000", &["--havoc-unknown", "--havoc-unknown"]).is_err());
@@ -565,6 +661,21 @@ fn upstream_x86_function_lifts_to_ssa_and_executes_pcode() {
             .map(|(id, _)| id)
             .collect::<Vec<_>>()
     );
+    // The real function also simplifies from the same allocations; checked
+    // structurally, with its reductions printed rather than asserted.
+    let simplification = crate::simplification_report::build(result.constants.clone()).unwrap();
+    assert!(Arc::ptr_eq(simplification.constants(), &result.constants));
+    let simplified: serde_json::Value = serde_json::from_slice(
+        &crate::simplification_report::json(&simplification, MAX_JSON, "cap").unwrap(),
+    )
+    .unwrap();
+    crate::simplification_report::tests::validate(
+        &json["analysis"],
+        &json["expressions"],
+        &json["constants"],
+        &simplified,
+    );
+    eprintln!("real x86 simplification counts: {}", simplified["counts"]);
     // The loop's carried values merge distinct constants or inputs, so at least
     // one loop phi is unknown; entry state is never a constant.
     let constants = &json["constants"];

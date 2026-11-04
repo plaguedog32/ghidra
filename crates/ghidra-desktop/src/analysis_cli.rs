@@ -23,6 +23,7 @@ pub(crate) struct CommandOptions {
     havoc_unknown: bool,
     expressions: bool,
     constants: bool,
+    simplify: bool,
 }
 
 impl CommandOptions {
@@ -36,6 +37,7 @@ impl CommandOptions {
                 Some("--havoc-unknown") if !result.havoc_unknown => result.havoc_unknown = true,
                 Some("--expressions") if !result.expressions => result.expressions = true,
                 Some("--constants") if !result.constants => result.constants = true,
+                Some("--simplify") if !result.simplify => result.simplify = true,
                 _ => {
                     return Err(format!(
                         "Unknown or duplicate P-code analysis option: {}",
@@ -109,14 +111,22 @@ fn analyze_within(
     let (analysis, initializers) = verified_snapshot(input, options)?;
     // Terms are reconstructed from the verified snapshot only on request, so
     // the default report keeps its existing shape and cost. Constants imply
-    // terms, because their facts are indexed by term IDs.
-    let expressions = if options.expressions || options.constants {
+    // terms, because their facts are indexed by term IDs; simplification
+    // implies both, because its mappings index terms, values and facts.
+    let constants_needed = options.constants || options.simplify;
+    let expressions = if options.expressions || constants_needed {
         Some(Arc::new(crate::expression_report::build(analysis.clone())?))
     } else {
         None
     };
-    let constants = match (&expressions, options.constants) {
-        (Some(expressions), true) => Some(crate::constant_report::build(expressions.clone())?),
+    let constants = match (&expressions, constants_needed) {
+        (Some(expressions), true) => Some(Arc::new(crate::constant_report::build(
+            expressions.clone(),
+        )?)),
+        _ => None,
+    };
+    let simplification = match (&constants, options.simplify) {
+        (Some(constants), true) => Some(crate::simplification_report::build(constants.clone())?),
         _ => None,
     };
     let mut output = LimitedOutput::new(maximum, OUTPUT_TOO_LARGE);
@@ -124,7 +134,8 @@ fn analyze_within(
         &analysis,
         initializers,
         expressions.as_deref(),
-        constants.as_ref(),
+        constants.as_deref(),
+        simplification.as_ref(),
         &mut output,
     )?;
     output
@@ -150,6 +161,7 @@ pub(crate) fn expressions_for(
         havoc_unknown,
         expressions: true,
         constants: false,
+        simplify: false,
     };
     let (analysis, _) = verified_snapshot(input, options).unwrap();
     crate::expression_report::build(analysis).unwrap()
@@ -248,6 +260,9 @@ struct Report<'a> {
     /// Additive `--constants` field using `ghidra-rs.constants` v1.
     #[serde(skip_serializing_if = "Option::is_none")]
     constants: Option<crate::constant_report::Report<'a>>,
+    /// Additive `--simplify` field using `ghidra-rs.simplification` v1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    simplification: Option<crate::simplification_report::Report<'a>>,
 }
 
 #[derive(Serialize)]
@@ -413,6 +428,7 @@ fn write_report(
     initializers: Initializers,
     expressions: Option<&ghidra_analysis::PcodeExpressions>,
     constants: Option<&ghidra_analysis::PcodeConstants>,
+    simplification: Option<&ghidra_analysis::PcodeSimplification>,
     output: &mut LimitedOutput,
 ) -> Result<(), String> {
     if let Some(expressions) = expressions
@@ -426,6 +442,12 @@ fn write_report(
         && !expressions.is_some_and(|e| std::ptr::eq(constants.expressions().as_ref(), e))
     {
         return Err("Constant facts belong to a different expression snapshot".into());
+    }
+    // Canonical terms map those exact facts, terms and SSA values.
+    if let Some(simplification) = simplification
+        && !constants.is_some_and(|c| std::ptr::eq(simplification.constants().as_ref(), c))
+    {
+        return Err("Simplification belongs to a different constant snapshot".into());
     }
     let cfg = analysis.cfg();
     let ssa = analysis.ssa();
@@ -662,6 +684,7 @@ fn write_report(
         natural_loops,
         expressions: expressions.map(crate::expression_report::Report),
         constants: constants.map(crate::constant_report::Report),
+        simplification: simplification.map(crate::simplification_report::Report),
     };
     serde_json::to_writer_pretty(output, &report).map_err(|e| e.to_string())
 }
@@ -675,6 +698,7 @@ pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
             bytes: 0,
             applied: false,
         },
+        None,
         None,
         None,
         &mut output,
@@ -769,6 +793,7 @@ pub(crate) mod tests {
         havoc_unknown: false,
         expressions: true,
         constants: false,
+        simplify: false,
     };
     /// A report with `--expressions`, checked against its own SSA IDs.
     fn expression_report(input: ExecutionInput, options: CommandOptions) -> Value {
@@ -1345,6 +1370,7 @@ pub(crate) mod tests {
         havoc_unknown: false,
         expressions: false,
         constants: true,
+        simplify: false,
     };
     /// A report with `--constants`, checked against its own SSA and term IDs.
     fn constant_report(input: ExecutionInput, options: CommandOptions) -> Value {
@@ -1634,7 +1660,7 @@ pub(crate) mod tests {
         let (second, _) = verified_snapshot(constant_program(), CONSTANTS).unwrap();
         let first_terms = Arc::new(crate::expression_report::build(first.clone()).unwrap());
         let second_terms = Arc::new(crate::expression_report::build(second.clone()).unwrap());
-        let facts = crate::constant_report::build(first_terms.clone()).unwrap();
+        let facts = Arc::new(crate::constant_report::build(first_terms.clone()).unwrap());
         assert!(Arc::ptr_eq(facts.expressions(), &first_terms));
         assert!(Arc::ptr_eq(facts.analysis(), &first));
         let initializers = || Initializers {
@@ -1649,12 +1675,23 @@ pub(crate) mod tests {
                 initializers(),
                 Some(&second_terms),
                 Some(&facts),
+                None,
                 &mut output
             )
             .unwrap_err()
             .contains("different expression snapshot")
         );
-        assert!(write_report(&first, initializers(), None, Some(&facts), &mut output).is_err());
+        assert!(
+            write_report(
+                &first,
+                initializers(),
+                None,
+                Some(&facts),
+                None,
+                &mut output
+            )
+            .is_err()
+        );
         assert!(output.into_bytes().is_empty());
         let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
         write_report(
@@ -1662,6 +1699,233 @@ pub(crate) mod tests {
             initializers(),
             Some(&first_terms),
             Some(&facts),
+            None,
+            &mut output,
+        )
+        .unwrap();
+    }
+
+    const SIMPLIFY: CommandOptions = CommandOptions {
+        instruction_uniques: false,
+        havoc_unknown: false,
+        expressions: false,
+        constants: false,
+        simplify: true,
+    };
+    fn alias_branch() -> ExecutionInput {
+        serde_json::from_str(include_str!("../../../examples/pcode/alias-branch.json")).unwrap()
+    }
+    /// A report with `--simplify`, checked against its own SSA, term and
+    /// fact IDs.
+    fn simplified_report(input: ExecutionInput, options: CommandOptions) -> Value {
+        let report = report(
+            input,
+            CommandOptions {
+                simplify: true,
+                ..options
+            },
+        );
+        validate_references(&report);
+        crate::expression_report::tests::validate(&report, &report["expressions"]);
+        crate::constant_report::tests::validate(
+            &report,
+            &report["expressions"],
+            &report["constants"],
+        );
+        crate::simplification_report::tests::validate(
+            &report,
+            &report["expressions"],
+            &report["constants"],
+            &report["simplification"],
+        );
+        report
+    }
+
+    #[test]
+    fn simplification_is_opt_in_implies_its_sources_and_appends_one_field() {
+        for input in [input(), alias_branch(), constant_program()] {
+            let constants = analyze(input.clone(), CONSTANTS).unwrap();
+            let simplified = analyze(input.clone(), SIMPLIFY).unwrap();
+            // The constants document is a byte prefix: only the final field
+            // is added, after `constants`.
+            assert!(constants.ends_with(b"\n}\n"));
+            let prefix = &constants[..constants.len() - 3];
+            assert!(simplified.starts_with(prefix));
+            assert!(simplified[prefix.len()..].starts_with(b",\n  \"simplification\": {"));
+            assert!(simplified.ends_with(b"}\n") && !simplified.ends_with(b"\n\n"));
+            // Every order and combination with --simplify is one document.
+            for flags in [
+                &["--simplify"][..],
+                &["--expressions", "--simplify"],
+                &["--simplify", "--constants"],
+                &["--constants", "--expressions", "--simplify"],
+                &["--simplify", "--expressions", "--constants"],
+            ] {
+                let options = CommandOptions::parse(flags.iter().map(OsString::from)).unwrap();
+                assert_eq!(
+                    analyze(input.clone(), options).unwrap(),
+                    simplified,
+                    "{flags:?}"
+                );
+            }
+            for options in [CommandOptions::default(), EXPRESSIONS, CONSTANTS] {
+                let plain: Value =
+                    serde_json::from_slice(&analyze(input.clone(), options).unwrap()).unwrap();
+                assert!(plain.get("simplification").is_none());
+            }
+            for options in [
+                CommandOptions::default(),
+                CommandOptions {
+                    instruction_uniques: true,
+                    ..Default::default()
+                },
+            ] {
+                let report = simplified_report(input.clone(), options);
+                let simplification = &report["simplification"];
+                assert_eq!(simplification["schema"], "ghidra-rs.simplification");
+                assert_eq!(simplification["schema_version"], 1);
+                assert!(
+                    simplification["counts"]["propagated_values"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simplified_terms_fold_known_values_keep_faults_and_leave_unreached_code_alone() {
+        let report = simplified_report(constant_program(), CommandOptions::default());
+        let s = &report["simplification"];
+        let operations = s["operations"].as_array().unwrap();
+        let terms = s["terms"].as_array().unwrap();
+        let at = |address: u64, opcode: &str| {
+            operations
+                .iter()
+                .find(|o| o["point"]["address"] == address && o["opcode"] == opcode)
+                .unwrap()
+        };
+        let term = |id: &Value| &terms[id.as_u64().unwrap() as usize]["term"];
+        // The skipped block is not simplified: no terms, no literal 7.
+        let skipped = at(0x1004, "COPY");
+        assert_eq!(skipped["executable"], false);
+        assert!(skipped["operands"].is_null() && skipped["output"].is_null());
+        // 9 + 1 through the folded phi is the literal 10.
+        let sum = term(&at(0x1010, "INT_ADD")["output"]);
+        assert_eq!(sum["kind"], "literal");
+        assert_eq!(sum["hex"], "0xa");
+        // The division by zero stays an explicit, distinct, faulting term,
+        // and its constant-propagation fault keeps its point.
+        let division = &at(0x1010, "INT_DIV")["output"];
+        assert_eq!(term(division)["kind"], "apply");
+        assert_eq!(terms[division.as_u64().unwrap() as usize]["fault"], "here");
+        let faults = s["faults"].as_array().unwrap();
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0]["term"], *division);
+        assert_eq!(faults[0]["point"]["operation_index"], 1);
+        assert_eq!(s["refused_folds"].as_array().unwrap().len(), 1);
+        // The load is a distinct read through the folded constant pointer.
+        let load = term(&at(0x1010, "LOAD")["output"]);
+        assert_eq!(load["kind"], "read_memory");
+        assert_eq!(term(&load["address"]["term"])["hex"], "0x2000");
+        // An entry-input condition stays a comparison of an SSA leaf.
+        let condition = &at(0x1010, "CBRANCH")["operands"][1];
+        let comparison = term(condition);
+        assert_eq!(comparison["opcode"], "INT_EQUAL");
+        assert_eq!(term(&comparison["inputs"][0])["kind"], "leaf");
+        assert_eq!(s["policies"]["prunes_control"], false);
+        assert_eq!(s["policies"]["constants"]["prunes_constant_branches"], true);
+        // Opaque calls keep leaf outputs under the havoc policy.
+        let mut called = input();
+        called.instructions[0]
+            .ops
+            .insert(0, branch(Opcode::Call, var(1, 0x8000, 8)));
+        called.instructions[0].ops.pop();
+        let report = simplified_report(
+            called,
+            CommandOptions {
+                havoc_unknown: true,
+                ..Default::default()
+            },
+        );
+        let values = report["simplification"]["values"].as_array().unwrap();
+        let terms = report["simplification"]["terms"].as_array().unwrap();
+        for value in report["expressions"]["values"].as_array().unwrap() {
+            if value["definition"]["kind"] == "opaque" {
+                let id = value["id"].as_u64().unwrap() as usize;
+                let term = &terms[values[id]["term"].as_u64().unwrap() as usize];
+                assert_eq!(term["term"]["kind"], "leaf");
+                assert_eq!(term["term"]["value"], id);
+            }
+        }
+    }
+
+    #[test]
+    fn simplification_flags_exact_bounds_and_snapshot_identity() {
+        let parse = |args: &[&str]| CommandOptions::parse(args.iter().map(OsString::from));
+        let parsed = parse(&["--simplify"]).unwrap();
+        assert!(parsed.simplify && !parsed.constants && !parsed.expressions);
+        assert!(parse(&["--simplify", "--simplify"]).is_err());
+        assert!(parse(&["--simplify", "--constants", "--simplify"]).is_err());
+        assert!(parse(&["--simplified"]).is_err());
+        assert!(!parse(&[]).unwrap().simplify);
+        let exact = analyze(constant_program(), SIMPLIFY).unwrap();
+        assert_eq!(
+            analyze_within(constant_program(), SIMPLIFY, exact.len()).unwrap(),
+            exact
+        );
+        assert!(
+            analyze_within(constant_program(), SIMPLIFY, exact.len() - 1)
+                .unwrap_err()
+                .contains("64 MiB")
+        );
+        // A simplification must belong to the exact facts being reported.
+        let (first, _) = verified_snapshot(constant_program(), SIMPLIFY).unwrap();
+        let (second, _) = verified_snapshot(constant_program(), SIMPLIFY).unwrap();
+        let first_terms = Arc::new(crate::expression_report::build(first.clone()).unwrap());
+        let second_terms = Arc::new(crate::expression_report::build(second.clone()).unwrap());
+        let first_facts = Arc::new(crate::constant_report::build(first_terms.clone()).unwrap());
+        let second_facts = Arc::new(crate::constant_report::build(second_terms.clone()).unwrap());
+        let simplification = crate::simplification_report::build(first_facts.clone()).unwrap();
+        assert!(Arc::ptr_eq(simplification.constants(), &first_facts));
+        let initializers = || Initializers {
+            regions: 0,
+            bytes: 0,
+            applied: false,
+        };
+        let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
+        assert!(
+            write_report(
+                &second,
+                initializers(),
+                Some(&second_terms),
+                Some(&second_facts),
+                Some(&simplification),
+                &mut output
+            )
+            .unwrap_err()
+            .contains("different constant snapshot")
+        );
+        assert!(
+            write_report(
+                &first,
+                initializers(),
+                Some(&first_terms),
+                None,
+                Some(&simplification),
+                &mut output
+            )
+            .is_err()
+        );
+        assert!(output.into_bytes().is_empty());
+        let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
+        write_report(
+            &first,
+            initializers(),
+            Some(&first_terms),
+            Some(&first_facts),
+            Some(&simplification),
             &mut output,
         )
         .unwrap();

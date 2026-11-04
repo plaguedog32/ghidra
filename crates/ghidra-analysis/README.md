@@ -412,15 +412,16 @@ Malformed input, such as a shared non-leaf term, a CBRANCH that does not end
 its block, a decreasing fact or two different constants for one value at the
 same lattice level, is reported as `ConstantError::Inconsistent`.
 
-**Limitations.** This is a library dataflow stage; no CLI or desktop view
-uses it yet. Facts are whole values: no ranges, known bits or partially known
+**Limitations.** This is a library dataflow stage, read by the CLI and desktop
+reports and by expression simplification below. Facts are whole values: no ranges, known bits or partially known
 aliases, and no algebraic identities. Memory is not modeled at all, so stores
 never reach loads, and calls, userops and other opaque effects have no
 summaries. Indirect targets are never resolved, so feasibility is relative to
 the supplied CFG. Faults never cut control, so code after a definite trap
 stays feasible. The pass requires statement-local non-leaf terms, as
 `PcodeExpressions` builds them. It performs no pointer disambiguation, ABI or
-calling-convention modeling, simplification, rewriting or code generation.
+calling-convention modeling, rewriting or code generation; the separate
+simplification stage below reads these facts without changing them.
 
 Tests compare every value, term, node, graph edge, semantic edge and fault
 with an independent dense round-robin reference fixpoint, and check facts
@@ -442,3 +443,175 @@ inputs, indirect control, metadata roles with hand-computed results, odd and
 scaling. The pure arithmetic evaluator is shared with the P-code core and is
 not re-proven here; these tests establish binding, lattice and control
 semantics.
+
+## Expression simplification
+
+`PcodeSimplification::new(Arc<PcodeConstants>, SimplifyLimits)` builds an owned,
+immutable canonical value-term projection of one constant-propagation snapshot.
+It retains that `Arc`, so its terms, mappings and policies stay associated with
+the exact facts, expressions and SSA values they were computed from. Canonical
+terms use their own `TermId` namespace. It is `Clone + Send + Sync`.
+
+```rust
+use std::sync::Arc;
+use ghidra_analysis::{AnalysisOptions, PcodeConstants, PcodeExpressions,
+    PcodeSimplification, PcodeSsa, TermKind};
+use ghidra_cfg::{Cfg, CfgInput, ProgramPoint};
+use ghidra_pcode::{Opcode, machine::ExecutionInput};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let input: ExecutionInput = serde_json::from_str(include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"), "/../../examples/pcode/sum-loop.json")))?;
+let cfg = Arc::new(Cfg::new(CfgInput::new(input.spaces, input.code_space,
+    input.entry, input.instructions), Default::default())?);
+let analysis = Arc::new(PcodeSsa::new(cfg, &[], AnalysisOptions::pcode_program(),
+    Default::default())?);
+let terms = Arc::new(PcodeExpressions::new(analysis.clone(), Default::default())?);
+let facts = Arc::new(PcodeConstants::new(terms, Default::default())?);
+let simplified = PcodeSimplification::new(facts.clone(), Default::default())?;
+assert!(Arc::ptr_eq(simplified.constants(), &facts));
+// `INT_SUB r1, r1, 1` becomes `r1 + 0xffffffff` over the loop phi of r1.
+let sub = analysis.statement_id(ProgramPoint::new(0x1000, 3)).unwrap();
+let output = simplified.operation(sub)?.unwrap().output().unwrap();
+let TermKind::Apply { opcode, inputs } = &simplified.term(output)?.kind else {
+    unreachable!()
+};
+assert_eq!(*opcode, Opcode::IntAdd);
+assert!(matches!(simplified.term(inputs[0])?.kind, TermKind::Leaf(_)));
+// The following comparison reads that same canonical term.
+let compare = analysis.statement_id(ProgramPoint::new(0x1000, 4)).unwrap();
+let compared = simplified.operation(compare)?.unwrap().output().unwrap();
+let TermKind::Apply { inputs, .. } = &simplified.term(compared)?.kind else {
+    unreachable!()
+};
+assert_eq!(inputs[0], output);
+# Ok(())
+# }
+# example().unwrap();
+```
+
+**Relation to the evaluation stream.** Terms describe the values original
+operations produce when they complete. They are not an executable replacement
+for the program. Every original operation stays in `PcodeExpressions` with
+its operand reads, memory effects, control flow and faults, and remains the
+required evaluation order. A canonical term can omit an operand read whose
+value it no longer needs (an extract of one alias piece, say), but never an
+evaluation that may fault (see below). No CFG or SSA rewriting, dead-code
+elimination, indirect-target resolution, type inference, ABI recovery or C
+output is performed.
+
+**Scope.** Only statements that constant propagation executed are simplified.
+Operations of unexecuted statements have no canonical terms, and values with
+`Unreached` facts stay SSA leaves. They are never presented as literals or
+results. Feasibility is the original `ConstantPolicy`; a condition that becomes
+a literal only through simplification does not prune control flow, and
+`new_literal_conditions` counts those cases.
+
+**Mappings.** `node_term(ExpressionId)` maps every original node of an executed
+statement to its canonical term. An SSA leaf node always maps to its value's
+term. `value_term(ValueId)` is what every use of that value refers to: its
+constant literal, its propagated definition term, or its own `Leaf`.
+`operation(StatementId)` and `operations()` pair each original operation with
+canonical operand and output terms. Lookups of unknown IDs return errors.
+Every term records its `origin` (the original node or value whose
+canonicalization created it) and the `rule` that produced it.
+
+**Terms and identity.** `Literal` (exact width, 1 to 512 bytes), `Leaf`,
+`Join` (at least two pieces in ascending significance), `Extract`, `Apply`,
+and `ReadMemory`/`WriteMemory`, which keep their original node, space, exact
+memory version, byte order and address. Fixed varnode addresses remain byte
+offsets; LOAD/STORE pointers keep their width and word scaling. Structural
+terms are hash-consed by their complete type, operator, operand IDs and
+literal width and bytes. Memory accesses and applications that may fault are
+`Distinct`: each keeps its own term, even when another one is identical. The
+cons table uses a fixed FNV-1a hash and is only looked up, never iterated.
+IDs follow creation order in a fixed traversal, so equal snapshots produce
+equal IDs. Every child term has a smaller ID than its parent.
+
+**Rewrites.** Phis, entry declarations, native undefined resets, opaque
+outputs and memory states remain leaves. The rules are:
+
+- *Constant facts and folds*: an SSA value with a constant fact becomes its
+  literal. An application of literals is evaluated by `evaluate_pure`; if
+  evaluation fails, the application is kept, marked `TermFault::Here`, and
+  listed in `refused_folds()`. Each constant fact of a node is checked against
+  its canonical term, which must be that exact literal.
+- *Propagation*: a use of an expression-defined value refers to its
+  definition's canonical term, unless that term may fault or reads memory;
+  then the use keeps the value's leaf. A definition can belong to a later
+  statement or graph node; the traversal is iterative and needs no
+  definition order.
+- *Neutral operations* at shape-checked equal widths: same-width COPY and
+  CAST; `x+0`, `x|0`, `x^0`, `x&~0`, `x*1`, shifts by 0; `x&x`, `x|x`;
+  `~~x`, `-(-x)`, `!!x`; `x-c` becomes `x+(-c)`; constant reassociation of
+  integer add, multiply, and, or, xor; commutative integer operands are
+  ordered by term ID with literals last.
+- *Booleans*: `BOOL_OR/XOR x,0` and `BOOL_AND x,0xff` are bitwise identities.
+  `BOOL_AND x,1`, `x!=0` and `x==1` require an operand proven to be 0 or 1
+  (an integer comparison or boolean operation over such operands).
+  `!(a==b)`, `!(a<b)` and the other integer comparisons become the negated
+  comparison.
+- *Joins and extracts*: `PIECE` becomes a join, in-range `SUBPIECE` an
+  extract. Nested joins are flattened; adjacent literal pieces and adjacent
+  slices of one term merge, so a value split into alias cells and read back
+  whole becomes the original term. A join topped by literal zero becomes a
+  zero extension. Extracts of extracts, literals and joins reduce; the low
+  bytes of `zext`/`sext` are their input or a narrower extension, and the
+  zero bytes of a zero extension are a literal.
+
+These follow the guarded forms of retained `ruleaction.cc` (`RuleIdentityEl`,
+`RuleTrivialArith`, `RuleSub2Add`, `RuleAddMultCollapse`, `RulePiece2Zext`,
+`RuleBooleanNegate`, `RuleCollapseConstants`), with `evaluate_pure` and the
+typed node semantics as the authority. The rules are stricter than those
+sources. Annihilators such as `x*0`, `x&0`, `x^x` and `x-x`, which drop a
+nonconstant evaluation, are not applied. There are no floating-point identities
+(they are invalid for NaNs and signed zero); float literals fold only through
+`evaluate_pure`. Pointer arithmetic, memory operations and metadata operands are
+never reordered. There is no store-to-load forwarding or memory CSE.
+
+**Faults.** `TermFault::Here` marks an application that can fail for some
+input (division, floating point, bit-range operations, invalid shapes, refused
+folds) and every memory access; `Subterm` marks a term containing one. Reading
+an SSA leaf does not count, since its read remains in the operation stream.
+A rewrite never discards a subterm that may fault, faulting terms are never
+shared, and uses of faulting definitions keep leaves. `faults()` maps each
+final constant-propagation fault, with its statement, to its canonical term.
+A refused fold is a refused compile-time evaluation, not a claim of a run-time
+fault.
+
+**Algorithm and complexity.** One iterative post-order traversal visits each
+executed statement's operands, result and definition roots; value tasks
+descend into definition roots in any order. Dependency cycles, impossible in
+verified SSA where phis are leaves, are reported as `Inconsistent`. Local
+rewrites that build further terms nest at most eight deep; past that a term is
+kept as built, which is still exact. With `N` expression nodes, `V` values,
+`R` stored term inputs and `L` literal words, work is
+`O(N + V + R + L)` plus join/extract piece scans bounded by the 512-byte width
+and charged hash-chain comparisons. There is no recursion over the input, no
+allocation proportional to an address-space span, and no copy of the SSA or
+expression graph.
+
+**Accounting.** `SimplifyLimits` caps input values, expression nodes and
+statements before the dense node and value maps are allocated. Terms, stored
+term inputs, owned literal bytes (once per distinct literal) and pending
+traversal entries are checked before each growth. `max_work` is one
+deterministic budget: every frame, child, hash word, candidate comparison and
+piece costs at least one unit, and each `evaluate_pure` call is charged by the
+constant-propagation formula before it runs. Evaluation arguments are transient
+copies of at most 512 bytes. The source snapshots were built under their own
+budgets, so aggregate work is at most the expression, constant (including
+def-use) and simplification budgets combined. Exhaustion returns
+`SimplifyError::Limit` with no partial result. Ordinary Rust allocation failure
+is not caught.
+
+Tests compare every canonical node and propagated value with an independent
+evaluator over the original nodes, in random environments where some memory
+reads fail, and check value terms against the concrete `Machine` after every
+executed operation. These run in both byte orders, both temporary scopes and
+both phi placements, over generated programs that exercise every rule. Further
+tests cover identities, refused annihilators, refused and shared faulting folds,
+definitions later in node order, aliases and 512-byte widths, word-addressed
+memory, phis, entry self-loops, resets and opaque outputs, booleans and floats,
+reassociation versus pointer metadata, unreached code and newly literal
+conditions, 24,000-deep chains, fan-out sharing, every limit exactly and one
+below, determinism and checked lookups.

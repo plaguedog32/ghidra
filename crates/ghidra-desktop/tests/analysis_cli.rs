@@ -199,6 +199,103 @@ fn constants_export_is_opt_in_java_free_and_fails_without_partial_stdout() {
 }
 
 #[test]
+fn simplification_export_is_opt_in_java_free_and_fails_without_partial_stdout() {
+    let mut command = binary();
+    command
+        .arg("--analyze-pcode")
+        .arg(example())
+        .arg("--simplify")
+        .env("JAVA_HOME", "");
+    #[cfg(windows)]
+    {
+        command.env(
+            "PATH",
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32"),
+        );
+    }
+    #[cfg(not(windows))]
+    command.env("PATH", "/nonexistent");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert!(output.stdout.ends_with(b"}\n") && !output.stdout.ends_with(b"\n\n"));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Simplification implies the terms and facts its IDs index.
+    assert_eq!(report["expressions"]["schema"], "ghidra-rs.expressions");
+    assert_eq!(report["constants"]["schema"], "ghidra-rs.constants");
+    let simplification = &report["simplification"];
+    assert_eq!(simplification["schema"], "ghidra-rs.simplification");
+    assert_eq!(simplification["schema_version"], 1);
+    assert_eq!(
+        simplification["node_terms"].as_array().unwrap().len(),
+        report["expressions"]["nodes"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        simplification["values"].as_array().unwrap().len(),
+        report["values"].as_array().unwrap().len()
+    );
+    assert_eq!(simplification["policies"]["decompiled_output"], false);
+    // The `--constants` document is an exact byte prefix.
+    let constants = binary()
+        .arg("--analyze-pcode")
+        .arg(example())
+        .arg("--constants")
+        .output()
+        .unwrap();
+    assert!(constants.status.success());
+    let prefix = &constants.stdout[..constants.stdout.len() - 3];
+    assert!(output.stdout.starts_with(prefix));
+    assert!(output.stdout[prefix.len()..].starts_with(b",\n  \"simplification\": "));
+    for flags in [
+        &["--constants", "--simplify"][..],
+        &["--simplify", "--expressions"],
+        &["--expressions", "--constants", "--simplify"],
+    ] {
+        let same = binary()
+            .arg("--analyze-pcode")
+            .arg(example())
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(same.status.success());
+        assert_eq!(same.stdout, output.stdout, "{flags:?}");
+    }
+    for flags in [
+        &["--simplify", "--simplify"][..],
+        &["--simplify", "--constants", "--simplify"],
+        &["--simplify", "--simplification"],
+    ] {
+        let output = binary()
+            .arg("--analyze-pcode")
+            .arg(example())
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flags:?}");
+        assert!(output.stdout.is_empty());
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(16 * 1024 * 1024 + 1).unwrap();
+    let output = binary()
+        .arg("--analyze-pcode")
+        .arg(file.path())
+        .arg("--simplify")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("16 MiB"));
+    let output = binary().arg("--help").output().unwrap();
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("[--expressions] [--constants] [--simplify]"));
+    assert!(help.contains("[--havoc-unknown] [--simplify] [context=value ...]"));
+}
+
+#[test]
 fn command_rejects_bad_arguments_or_input_without_partial_stdout() {
     let output = binary().arg("--analyze-pcode").output().unwrap();
     assert_eq!(output.status.code(), Some(2));
@@ -230,6 +327,8 @@ fn function_command_rejects_invalid_arguments_before_reading_files() {
         vec!["bad-entry"],
         vec!["1000", "--unknown"],
         vec!["1000", "--havoc-unknown", "--havoc-unknown"],
+        vec!["1000", "--simplify", "--simplify"],
+        vec!["1000", "--simplify", "--simplified"],
     ] {
         let output = binary()
             .args([
@@ -244,18 +343,20 @@ fn function_command_rejects_invalid_arguments_before_reading_files() {
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
     }
-    let output = binary()
-        .args([
-            "--analyze-function",
-            "missing.bin",
-            ".",
-            "x86:LE:64:default",
-            "1000",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    for rest in [&["1000"][..], &["1000", "--simplify"]] {
+        let output = binary()
+            .args([
+                "--analyze-function",
+                "missing.bin",
+                ".",
+                "x86:LE:64:default",
+            ])
+            .args(rest)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+    }
     let output = binary().arg("--help").output().unwrap();
     assert!(String::from_utf8_lossy(&output.stdout).contains("--analyze-function"));
 }

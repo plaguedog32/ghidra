@@ -126,15 +126,31 @@ pub(crate) fn read_bounded(path: &Path, limits: &Limits) -> Result<String, Error
 
 pub(crate) fn parse_file(path: &Path, limits: &Limits) -> Result<Element, Error> {
     let text = read_bounded(path, limits)?;
-    parse_document(&text, limits).map_err(|e| {
+    parse_text(&text, path, limits)
+}
+
+/// Parse in-memory spec text under the same limits as a file. `label` names the source
+/// in errors.
+pub(crate) fn parse_text(text: &str, label: &Path, limits: &Limits) -> Result<Element, Error> {
+    if text.len() as u64 > limits.max_file_bytes {
+        return Err(Error::Limit {
+            path: label.to_path_buf(),
+            message: format!(
+                "text is {} bytes, limit is {}",
+                text.len(),
+                limits.max_file_bytes
+            ),
+        });
+    }
+    parse_document(text, limits).map_err(|e| {
         if e.limit {
             Error::Limit {
-                path: path.to_path_buf(),
+                path: label.to_path_buf(),
                 message: format!("line {}: {}", e.line, e.message),
             }
         } else {
             Error::Xml {
-                path: path.to_path_buf(),
+                path: label.to_path_buf(),
                 line: e.line,
                 message: e.message,
             }

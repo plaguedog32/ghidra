@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::{self, DiscoveryOptions, FileIndex, Resolution};
 use crate::xml::{self, Element};
-use crate::{AssetKind, Diagnostic, DiagnosticKind, Error, Limits, ProcessorSpec, Severity};
+use crate::{
+    AssetKind, CompilerSpec, Diagnostic, DiagnosticKind, Error, Limits, ProcessorSpec, Severity,
+};
 
 /// Where a declared asset was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -55,13 +57,32 @@ impl AssetRef {
     }
 }
 
-/// A compiler (ABI) entry. Only the asset reference is read; cspec semantics are not
-/// interpreted by this crate.
+/// A compiler (ABI) entry. The catalog records the asset reference;
+/// [`CompilerDefinition::load_spec`] reads the `.cspec` into a [`CompilerSpec`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompilerDefinition {
     pub id: String,
     pub name: String,
     pub spec: AssetRef,
+}
+
+impl CompilerDefinition {
+    /// Read this compiler's `.cspec` with default [`Limits`].
+    pub fn load_spec(&self) -> Result<CompilerSpec, Error> {
+        self.load_spec_with(&Limits::default())
+    }
+
+    pub fn load_spec_with(&self, limits: &Limits) -> Result<CompilerSpec, Error> {
+        let path = self
+            .spec
+            .available_path()
+            .ok_or_else(|| Error::CompilerSpecUnavailable {
+                compiler_id: self.id.clone(),
+                declared: self.spec.declared.clone(),
+                status: self.spec.status,
+            })?;
+        CompilerSpec::from_path_with(path, limits)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +178,34 @@ impl LanguageDefinition {
                 status: self.processor_spec.status,
             })?;
         ProcessorSpec::from_path_with(path, limits)
+    }
+
+    /// Read the `.cspec` of compiler `compiler_id` with default [`Limits`].
+    pub fn load_compiler_spec(&self, compiler_id: &str) -> Result<CompilerSpec, Error> {
+        self.load_compiler_spec_with(compiler_id, &Limits::default())
+    }
+
+    pub fn load_compiler_spec_with(
+        &self,
+        compiler_id: &str,
+        limits: &Limits,
+    ) -> Result<CompilerSpec, Error> {
+        let compiler = self
+            .compiler(compiler_id)
+            .ok_or_else(|| Error::UnknownCompiler {
+                language_id: self.id.clone(),
+                compiler_id: compiler_id.to_owned(),
+            })?;
+        let path = compiler
+            .spec
+            .available_path()
+            .ok_or_else(|| Error::AssetUnavailable {
+                language_id: self.id.clone(),
+                asset: AssetKind::CompilerSpec,
+                declared: compiler.spec.declared.clone(),
+                status: compiler.spec.status,
+            })?;
+        CompilerSpec::from_path_with(path, limits)
     }
 }
 

@@ -36,6 +36,18 @@ pub enum Error {
         declared: String,
         status: AssetStatus,
     },
+    /// A compiler's `.cspec` asset is missing, ambiguous or rejected.
+    #[error("compiler {compiler_id}: compiler spec `{declared}` is unavailable ({status:?})")]
+    CompilerSpecUnavailable {
+        compiler_id: String,
+        declared: String,
+        status: AssetStatus,
+    },
+    #[error("language {language_id} declares no compiler `{compiler_id}`")]
+    UnknownCompiler {
+        language_id: String,
+        compiler_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -79,6 +91,15 @@ pub enum DiagnosticKind {
     UnknownElement,
     /// A schema form this crate reads but does not model (reported, not guessed).
     UnsupportedForm,
+    /// A required child element is absent.
+    MissingElement,
+    /// A name refers to a prototype model (or other declaration) that does not exist.
+    UnresolvedReference,
+    /// The file breaks a consistency rule Ghidra enforces when loading it (for example
+    /// parameter entries out of storage-class order). Ghidra rejects such files.
+    InconsistentSpec,
+    /// A recognised element whose content is recorded but not turned into a typed model.
+    UnmodeledElement,
     DuplicateLanguageId,
     DuplicateCompilerId,
     DuplicateEntry,

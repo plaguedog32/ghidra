@@ -144,30 +144,7 @@ impl ProcessorSpec {
         limits: &Limits,
     ) -> Result<ProcessorSpec, Error> {
         let label = path.map(Path::to_path_buf).unwrap_or_default();
-        if text.len() as u64 > limits.max_file_bytes {
-            return Err(Error::Limit {
-                path: label,
-                message: format!(
-                    "text is {} bytes, limit is {}",
-                    text.len(),
-                    limits.max_file_bytes
-                ),
-            });
-        }
-        let doc = xml::parse_document(text, limits).map_err(|e| {
-            if e.limit {
-                Error::Limit {
-                    path: label.clone(),
-                    message: format!("line {}: {}", e.line, e.message),
-                }
-            } else {
-                Error::Xml {
-                    path: label.clone(),
-                    line: e.line,
-                    message: e.message,
-                }
-            }
-        })?;
+        let doc = xml::parse_text(text, &label, limits)?;
         Self::from_element(&doc, path)
     }
 
@@ -529,6 +506,34 @@ impl ProcessorSpec {
         resolve(self.tracked_sets.iter().map(|t| &t.0), |b| {
             b.contains(space, offset)
         })
+    }
+}
+
+/// Context and tracked blocks read from one `<context_data>` element.
+pub(crate) struct ContextData {
+    pub context_sets: Vec<ContextSet>,
+    pub tracked_sets: Vec<TrackedSet>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Read a `<context_data>` element with the `.pspec` rules. `.cspec` files use the same
+/// `context_data_type` schema.
+pub(crate) fn read_context_data_element(el: &Element, path: Option<&Path>) -> ContextData {
+    let mut spec = ProcessorSpec {
+        path: path.map(Path::to_path_buf),
+        program_counter: None,
+        properties: Vec::new(),
+        context_sets: Vec::new(),
+        tracked_sets: Vec::new(),
+        unmodeled_elements: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    spec.unknown_attrs(el, &[]);
+    spec.read_context_data(el);
+    ContextData {
+        context_sets: spec.context_sets,
+        tracked_sets: spec.tracked_sets,
+        diagnostics: spec.diagnostics,
     }
 }
 

@@ -96,12 +96,22 @@ pub struct ResolvedValue {
     pub origin: ValueOrigin,
 }
 
-/// Parsed processor spec.
+/// Segmented address-space replacement requested by a processor spec.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SegmentedAddress {
+    pub space: String,
+    /// Only `protected` selects Java's protected space; other values select real mode.
+    pub kind: String,
+}
+
+/// Parsed processor spec. Capturing segmented metadata does not implement it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessorSpec {
     pub path: Option<PathBuf>,
     /// `<programcounter register=".."/>`.
     pub program_counter: Option<String>,
+    #[serde(default)]
+    pub segmented_address: Option<SegmentedAddress>,
     /// In document order; duplicates are kept (see [`ProcessorSpec::property`]).
     pub properties: Vec<Property>,
     pub context_sets: Vec<ContextSet>,
@@ -159,12 +169,15 @@ impl ProcessorSpec {
         let mut spec = ProcessorSpec {
             path: path.map(Path::to_path_buf),
             program_counter: None,
+            segmented_address: None,
             properties: Vec::new(),
             context_sets: Vec::new(),
             tracked_sets: Vec::new(),
             unmodeled_elements: Vec::new(),
             diagnostics: Vec::new(),
         };
+        let mut segmented_seen = false;
+        let mut segmented_duplicate_reported = false;
         for child in &doc.children {
             match child.name.as_str() {
                 "properties" => spec.read_properties(child),
@@ -192,6 +205,50 @@ impl ProcessorSpec {
                     }
                 }
                 "context_data" => spec.read_context_data(child),
+                "segmented_address" => {
+                    if segmented_seen {
+                        if !segmented_duplicate_reported {
+                            spec.diag(
+                                Severity::Warning,
+                                DiagnosticKind::DuplicateEntry,
+                                child.line,
+                                "duplicate segmented_address ignored; first definition wins".into(),
+                            );
+                            segmented_duplicate_reported = true;
+                        }
+                        continue;
+                    }
+                    segmented_seen = true;
+                    spec.unknown_attrs(child, &["space", "type"]);
+                    if !child.children.is_empty() {
+                        spec.diag(
+                            Severity::Warning,
+                            DiagnosticKind::UnknownElement,
+                            child.line,
+                            "segmented_address must have no child elements".into(),
+                        );
+                    }
+                    if !spec
+                        .unmodeled_elements
+                        .iter()
+                        .any(|name| name == "segmented_address")
+                    {
+                        spec.unmodeled_elements.push("segmented_address".into());
+                    }
+                    if let Some(space) = child.attr("space").filter(|space| !space.is_empty()) {
+                        spec.segmented_address = Some(SegmentedAddress {
+                            space: space.into(),
+                            kind: child.attr("type").unwrap_or("").into(),
+                        });
+                    } else {
+                        spec.diag(
+                            Severity::Warning,
+                            DiagnosticKind::MissingAttribute,
+                            child.line,
+                            "segmented_address has no space".into(),
+                        );
+                    }
+                }
                 name if UNMODELED.contains(&name) => {
                     if !spec.unmodeled_elements.iter().any(|n| n == name) {
                         spec.unmodeled_elements.push(name.to_owned());

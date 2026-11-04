@@ -492,15 +492,25 @@ impl Output {
             } else {
                 (capacity - 1) as u64
             };
-            let first = properties.normalize(range.first.unwrap_or(0), None)?;
-            let last = properties.normalize(range.last.unwrap_or(default_last), None)?;
+            let mut first = properties.normalize(range.first.unwrap_or(0), None)?;
+            let mut last = properties.normalize(range.last.unwrap_or(default_last), None)?;
             let reversed = if properties.signed {
                 (first.offset as i64) > last.offset as i64
             } else {
                 first.offset > last.offset
             };
             if reversed {
-                return Err(AbiError::InvalidStorage("reversed address range"));
+                if matches!(
+                    site,
+                    BindingSite::Global(_)
+                        | BindingSite::NoHighPointer(_)
+                        | BindingSite::ReadOnly(_)
+                        | BindingSite::InferPointerBounds(_)
+                ) {
+                    std::mem::swap(&mut first, &mut last);
+                } else {
+                    return Err(AbiError::InvalidStorage("reversed address range"));
+                }
             }
             self.push_range(
                 resolver,

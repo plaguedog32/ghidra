@@ -99,10 +99,10 @@ fn register_spaces_names_and_extents_are_validated() {
         check(vec![register("x", SpaceId(9), 0, 4)]),
         "register names unknown space"
     );
-    for id in [CONST, RAM, SpaceId(3)] {
+    for id in [CONST, SpaceId(3)] {
         assert_eq!(
             check(vec![register("x", id, 0, 4)]),
-            "register is not in register space"
+            "register is not in register or RAM space"
         );
     }
     assert_eq!(
@@ -246,6 +246,53 @@ fn non_ascii_case_folding_and_oversized_lookups_are_not_synthesized() {
             limits,
         ),
         "name length",
+    );
+}
+
+#[test]
+fn ram_mapped_named_registers_resolve_and_keep_physical_aliases() {
+    let file = build(
+        spaces(4),
+        RAM,
+        vec![
+            register("RW1C", RAM, 0x1c, 2),
+            register("RW1CL", RAM, 0x1c, 1),
+            register("separate", REGISTER, 0x1c, 2),
+        ],
+    )
+    .unwrap();
+    assert!(
+        file.registers_overlap(RegisterId(0), RegisterId(1))
+            .unwrap()
+    );
+    assert!(
+        !file
+            .registers_overlap(RegisterId(0), RegisterId(2))
+            .unwrap()
+    );
+    let resolved = ghidra_abi::resolve_storage(
+        &file,
+        None,
+        &ghidra_languages::Storage::Register {
+            name: "RW1C".into(),
+        },
+        None,
+        AbiLimits::default(),
+    )
+    .unwrap();
+    let ghidra_abi::ResolvedStorage::Single(range) = resolved else {
+        panic!()
+    };
+    assert_eq!(range.address.space, ghidra_abi::AbiSpace::Language(RAM));
+    assert_eq!(range.address.offset, 0x1c);
+    assert_eq!(range.size, Some(2));
+    assert!(
+        build(
+            spaces(4),
+            RAM,
+            vec![register("bad", RAM, u32::MAX as u64, 2)]
+        )
+        .is_err()
     );
 }
 

@@ -7,6 +7,7 @@
 mod compiler;
 mod error;
 mod registry;
+mod resources;
 mod storage;
 
 pub use compiler::{
@@ -15,6 +16,10 @@ pub use compiler::{
 };
 pub use error::{AbiError, AbiLimits, AbiResult};
 pub use registry::{RegisterDefinition, RegisterFile, RegisterId};
+pub use resources::{
+    CompilerResources, EntryResources, ListResources, ModelResources, ParameterDirection,
+    ResourceError, ResourceId, ResourceLimits,
+};
 pub use storage::{
     AbiAddress, AbiSpace, JoinKind, ResolvedPiece, ResolvedStorage, StackProperties, StorageRange,
     resolve_storage,

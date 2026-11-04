@@ -64,6 +64,14 @@ impl RegisterFile {
             space
                 .validate()
                 .map_err(|_| AbiError::InvalidLayout("invalid address space"))?;
+            if space.word_size > 8
+                || (1_u128 << (8 * u32::from(space.address_size))) * u128::from(space.word_size)
+                    > 1_u128 << 64
+            {
+                return Err(AbiError::InvalidLayout(
+                    "address space exceeds Ghidra's byte domain",
+                ));
+            }
             if space_ids.insert(space.id, index).is_some() {
                 return Err(AbiError::InvalidLayout("duplicate space ID"));
             }
@@ -91,8 +99,10 @@ impl RegisterFile {
                 .get(&register.space)
                 .map(|&i| &spaces[i])
                 .ok_or(AbiError::InvalidLayout("register names unknown space"))?;
-            if space.kind != SpaceKind::Register {
-                return Err(AbiError::InvalidLayout("register is not in register space"));
+            if !matches!(space.kind, SpaceKind::Register | SpaceKind::Ram) {
+                return Err(AbiError::InvalidLayout(
+                    "register is not in register or RAM space",
+                ));
             }
             if register.size == 0
                 || u128::from(register.offset) + u128::from(register.size) > capacity(space)

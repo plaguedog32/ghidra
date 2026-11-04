@@ -59,6 +59,15 @@ impl SleighLanguage {
         let processor = definition
             .load_processor_spec()
             .map_err(|e| Error::Context(e.to_string()))?;
+        if processor
+            .segmented_address
+            .as_ref()
+            .is_some_and(|segment| segment.kind != "protected")
+        {
+            return Err(Error::Unsupported(
+                "real-mode segmented address spaces are not yet modeled".into(),
+            ));
+        }
         if let Some(diagnostic) = processor
             .diagnostics
             .iter()
@@ -69,6 +78,19 @@ impl SleighLanguage {
             )));
         }
         let mut language = Self::from_spec(source, &BTreeMap::new())?;
+        if let Some(segment) = &processor.segmented_address {
+            let space = language
+                .spaces
+                .iter()
+                .find(|space| space.name == segment.space);
+            if !space.is_some_and(|space| {
+                space.kind == SpaceKind::Ram && space.address_size == 4 && space.word_size == 1
+            }) {
+                return Err(Error::Unsupported(
+                    "protected segmented space requires a 32-bit byte-addressed RAM space".into(),
+                ));
+            }
+        }
         // Match SleighLanguage's compatibility rule. A source's global endian
         // declaration is also its register-storage layout, while individual
         // instruction tokens can override that byte order (e.g. AArch64 BE).

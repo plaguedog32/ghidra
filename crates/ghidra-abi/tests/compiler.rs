@@ -468,6 +468,31 @@ fn reversed_ranges_and_failures_report_their_site() {
     ));
 }
 
+#[test]
+fn global_style_reversed_ranges_are_swapped_while_local_ranges_stay_strict() {
+    let file = small_file();
+    let mut spec = parse(FIXTURE);
+    let range = AddressRange {
+        space: "ram".into(),
+        first: Some(20),
+        last: Some(4),
+    };
+    spec.global = vec![MemoryTag::Range(range.clone())];
+    spec.no_high_ptr = Some(vec![MemoryTag::Range(range.clone())]);
+    spec.read_only = Some(vec![MemoryTag::Range(range.clone())]);
+    spec.infer_pointer_bounds = vec![range];
+    let resolved = storage(spec, &file, AbiLimits::default()).unwrap();
+    for site in [
+        BindingSite::Global(0),
+        BindingSite::NoHighPointer(0),
+        BindingSite::ReadOnly(0),
+        BindingSite::InferPointerBounds(0),
+    ] {
+        let range = resolved.range(site).unwrap();
+        assert_eq!((range.first.offset, range.last.offset), (4, 20));
+    }
+}
+
 /// Independently counted output records for FIXTURE.
 const RECORDS: usize = 18 /* bindings */ + 10 /* ranges */ + 2 /* bases */ + 2 /* delays */;
 

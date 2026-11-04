@@ -417,42 +417,43 @@ fn at_root(result: Result<StackProperties, AbiError>) -> AbiError {
 }
 
 #[test]
-fn stack_domains_beyond_64_byte_address_bits_are_rejected() {
+fn stack_domain_validation_precedes_pointer_narrowing() {
     // An 8-byte address of 2-byte words cannot be a byte-addressed stack.
+    let invalid = RegisterFile::new(
+        vec![
+            space(1, "ram", SpaceKind::Ram, 8, 2),
+            space(2, "register", SpaceKind::Register, 8, 1),
+        ],
+        RAM,
+        vec![
+            register("sp", REGISTER, 0, 4),
+            register("sp64", REGISTER, 8, 8),
+        ],
+        AbiLimits::default(),
+    );
+    assert!(matches!(invalid, Err(AbiError::InvalidLayout(_))));
+    // A valid larger backing space can still be narrowed by its pointer.
     let file = Arc::new(
         RegisterFile::new(
             vec![
-                space(1, "ram", SpaceKind::Ram, 8, 2),
+                space(1, "ram", SpaceKind::Ram, 7, 2),
                 space(2, "register", SpaceKind::Register, 8, 1),
             ],
             RAM,
-            vec![
-                register("sp", REGISTER, 0, 4),
-                register("sp64", REGISTER, 8, 8),
-            ],
+            vec![register("sp", REGISTER, 0, 4)],
             AbiLimits::default(),
         )
         .unwrap(),
     );
-    for pointer in ["", r#"<stackpointer register="sp64" space="ram"/>"#] {
-        assert!(matches!(
-            stack_of(&file, pointer),
-            Err(AbiError::InvalidStorage(
-                "stack exceeds the 64-bit byte-address domain"
-            ))
-        ));
-    }
-    // A 4-byte pointer narrows the stack to 2^32 words, which fits.
     let narrow = stack_of(&file, r#"<stackpointer register="sp" space="ram"/>"#).unwrap();
     assert_eq!((narrow.address_size, narrow.word_size), (4, 2));
 }
 
 /// Reported divergence: Ghidra's `AbstractAddressSpace` rejects unit sizes
 /// outside 1..=8 and spaces wider than 2^64 bytes. `RegisterFile` currently
-/// accepts them and caps the byte domain at 2^64. This test pins the current
-/// behavior so a fix is a deliberate, visible change.
+/// rejects them as well, rather than silently capping its byte domain.
 #[test]
-fn divergence_oversized_word_domains_are_capped_rather_than_rejected() {
+fn oversized_word_domains_are_rejected_like_ghidra() {
     let build = |address_size, word_size, offset| {
         RegisterFile::new(
             vec![
@@ -467,12 +468,11 @@ fn divergence_oversized_word_domains_are_capped_rather_than_rejected() {
     // Each of these spaces would throw in Ghidra's constructor.
     for (address_size, word_size) in [(8_u8, 2_u32), (4, 16), (1, u32::MAX)] {
         assert!(
-            build(address_size, word_size, 0).is_ok(),
+            build(address_size, word_size, 0).is_err(),
             "a{address_size} w{word_size}"
         );
     }
-    // 2^64 addresses of 2-byte words is capped to a 2^64-byte domain.
-    assert!(build(8, 2, u64::MAX).is_ok());
+    assert!(build(8, 2, u64::MAX).is_err());
 }
 
 #[test]

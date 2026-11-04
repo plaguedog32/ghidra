@@ -65,6 +65,27 @@ slafile="tiny.sla" processorspec="tiny.pspec" id="Tiny:LE:32:default">
         2
     );
     assert_eq!(report["resolved_storage"]["stack"]["address_size"], 4);
+    assert!(report.get("resources").is_none());
+    let output = binary()
+        .arg("--compiler-storage")
+        .arg(dir.path())
+        .args(["Tiny:LE:32:default", "test", "--resources"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resource_report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        resource_report["policies"]["overlap_resource_groups_computed"],
+        true
+    );
+    assert_eq!(
+        resource_report["resources"]["models"][0]["input"]["entries"][0]["slot_capacity"],
+        125
+    );
     for rest in [
         vec![],
         vec!["Tiny:LE:32:default"],
@@ -106,6 +127,37 @@ slafile="tiny.sla" processorspec="tiny.pspec" id="Tiny:LE:32:default">
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown register"));
+    write(
+        "tiny.cspec",
+        r#"<compiler_spec>
+<default_proto><prototype name="p" extrapop="0" stackshift="0">
+<input><pentry minsize="1" maxsize="4"><register name="r0"/></pentry>
+<pentry minsize="1" maxsize="4"><varnode space="register" offset="2" size="4"/></pentry></input>
+<output/></prototype></default_proto></compiler_spec>"#,
+    );
+    let output = binary()
+        .arg("--compiler-storage")
+        .arg(dir.path())
+        .args(["Tiny:LE:32:default", "test", "--resources"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("illegally overlaps"));
+    write(
+        "tiny.pspec",
+        r#"<processor_spec><segmented_address space="ram" type="real"/></processor_spec>"#,
+    );
+    let output = binary()
+        .arg("--compiler-storage")
+        .arg(dir.path())
+        .args(["Tiny:LE:32:default", "test"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("real-mode segmented"));
     let help = binary().arg("--help").output().unwrap();
     assert!(String::from_utf8_lossy(&help.stdout).contains("--compiler-storage"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("[--resources]"));
 }

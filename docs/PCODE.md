@@ -326,8 +326,8 @@ This command compiles the selected SLEIGH source and emits
 command above remains available without compilation. The new report includes
 the original compiler specification and diagnostics, the language register file,
 and resolved locations indexed by source model/list positions. Its policy flags
-explicitly report that argument allocation, prototype rules, injection
-compilation and overlap resource groups are not implemented.
+report that argument allocation, prototype rules and injection compilation are
+not implemented; resource-group computation is opt-in as described below.
 
 `RegisterId` indexes `registers.registers`; each physical alias retains its
 actual space ID, byte offset and size. `resolved_storage` contains bindings,
@@ -338,7 +338,17 @@ most-significant-first order with explicit significance; floating logical-size
 extensions are marked conversions with no slice offset. Unsized parameter
 pool addresses stay unsized even when their maximum capacity is large.
 
-The command accepts exactly ROOT, LANGUAGE_ID and COMPILER_ID. Argument failures
+The command accepts ROOT, LANGUAGE_ID and COMPILER_ID, optionally followed by
+`--resources`. That flag adds a `resources` object to the version 1 report and
+sets `overlap_resource_groups_computed` true. Resource IDs are local to each
+model's input/output list. The pass keeps declared groups, overlapping aliases,
+exact matching join pieces and slot capacities separate from actual argument
+allocation. It has its own finite count/work budgets; it can reject an invalid
+resource layout even when basic storage inspection succeeds. Default JSON omits
+the object and retains the false policy flag. Duplicate/unknown flags are
+argument errors.
+
+Argument failures
 exit 2; discovery/compilation/resolution/output failures exit 1. Serialization
 is buffered under a 64 MiB cap including the final newline, so failed analysis
 does not print a partial JSON document. ABI construction bounds records, pieces,
@@ -346,3 +356,9 @@ names and work independently of compiler/parser budgets. A successfully resolved
 report does not mean its calling convention can allocate arguments or execute
 calls; source capture diagnostics remain visible. Initial real-source probes
 and further validation are recorded in [RUST_PORT.md](RUST_PORT.md).
+
+Named registers may occupy register-type or RAM-type spaces. Real-mode segmented
+spaces are currently rejected by catalog loading rather than reported with an
+incorrect flat range; compatible 32-bit byte-addressed protected spaces remain
+available. Spacebase-relative ranges still require a frame model and are not
+resolved by this overlay.

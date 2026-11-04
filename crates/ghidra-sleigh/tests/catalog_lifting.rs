@@ -41,6 +41,53 @@ const CONTEXT: &str = r#"<processor_spec><context_data>
 </context_data></processor_spec>"#;
 
 #[test]
+fn segmented_address_metadata_gates_unimplemented_address_domains() {
+    for kind in ["real", "", "future-mode"] {
+        let (_directory, definition) = recipe(
+            &format!(
+                r#"<processor_spec><segmented_address space="ram" type="{kind}"/></processor_spec>"#
+            ),
+            "",
+        );
+        assert!(
+            matches!(SleighLanguage::from_language(&definition, &BTreeMap::new()),
+            Err(Error::Unsupported(message)) if message.contains("real-mode segmented"))
+        );
+    }
+    let (directory, definition) = recipe(
+        r#"<processor_spec><segmented_address space="ram" type="protected"/></processor_spec>"#,
+        "",
+    );
+    let processor = definition.load_processor_spec().unwrap();
+    assert_eq!(
+        processor.segmented_address.as_ref().unwrap().kind,
+        "protected"
+    );
+    assert!(
+        processor
+            .unmodeled_elements
+            .iter()
+            .any(|e| e == "segmented_address")
+    );
+    let language = SleighLanguage::from_language(&definition, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        language
+            .spaces()
+            .iter()
+            .find(|s| s.id == language.code_space())
+            .unwrap()
+            .address_size,
+        4
+    );
+    let source = include_str!("fixtures/tiny.slaspec").replace("size=4 default", "size=8 default");
+    fs::write(directory.path().join("tiny.slaspec"), source).unwrap();
+    assert!(
+        matches!(SleighLanguage::from_language(&definition, &BTreeMap::new()),
+        Err(Error::Unsupported(message)) if message.contains("32-bit byte-addressed"))
+    );
+}
+
+#[test]
 fn code_space_ranges_overrides_and_commits_keep_their_precedence() {
     let (_directory, definition) = recipe(CONTEXT, "");
     let mut language = SleighLanguage::from_language(&definition, &BTreeMap::new()).unwrap();

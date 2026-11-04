@@ -44,6 +44,7 @@ pub use ldefs::{
 };
 pub use paths::DiscoveryOptions;
 pub use pspec::{
-    ContextSet, ProcessorSpec, Property, ResolvedValue, SetBlock, SetValue, TrackedSet, ValueOrigin,
+    ContextSet, ProcessorSpec, Property, ResolvedValue, SegmentedAddress, SetBlock, SetValue,
+    TrackedSet, ValueOrigin,
 };
 pub use xml::Limits;

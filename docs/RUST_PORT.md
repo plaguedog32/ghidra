@@ -166,13 +166,38 @@ formatting, ABI/desktop Clippy and rustdoc with warnings denied pass. The releas
 build succeeds, and Java-free release probes resolve x86-64 Windows and AArch64
 Go storage. The Windows probe also checks register order and its stack pool's
 offset 40 without assigning the pool's maximum capacity as a value width.
-Comprehensive ABI behavioral validation and independent review remain pending.
+The behavioral validation at `25d83be90d` adds 30 tests and four real-source
+probes, including independent normalization/alias models and mutation checks.
+Review at `e6cbc63357` returned **changes requested**: RAM-mapped registers were
+rejected, and real-mode segmented metadata could produce an incorrect flat
+range. Implementation fixes accept register/RAM aliases and reject unmodeled
+real segmentation; protected 32-bit spaces still load. All 20 formerly
+RAM-rejected language/compiler pairs now pass Java-free command probes.
+Global-style reversed ranges now swap bounds; unsupported spacebase-relative
+ranges are documented. Registry word/byte domains match Ghidra's bounds.
+These fixes require independent re-review.
 
-Resolution is not argument allocation or executable ABI behavior: resource groups,
-legal parameter-overlap nesting, justification, rule/merged-model evaluation,
+Optional `--resources` reports now derive declaration-ordered resource groups,
+containing aliases, join sharing and pool slot capacities. Eleven resource tests
+and six real compiler/language command probes pass; the work-budgeted pair scan
+can be quadratic and requires independent review. Resource planning preserves
+capacity metadata and does not allocate value extents.
+
+Resolution/resource planning are not argument allocation or executable ABI behavior:
+justification, output-part inference, rule/merged-model evaluation,
 injection compilation, type recovery and SSA call-effect integration remain.
-The preserved constant-propagation draft is still outside the integrated source;
-it must be recovered and verified before it can support simplification.
+Sparse conditional constant-propagation facts are integrated as a library at
+`596c39a505`: `PcodeConstants` uses def-use scheduling, exact-width values and
+augmented-graph feasibility. Undefined/reset/memory/opaque state stays unknown;
+faults do not prune paths. Its 22 supplied tests and mutation evidence need
+independent review before CLI/desktop integration. No IR rewrite, type recovery
+or structured output is claimed.
+
+The combined continuation passes 474 default workspace tests and ten doctests
+on Windows/Rust 1.99.1. Resource planning and the ABI review fixes are new
+implementation changes, not independently approved increments. Existing source
+compiler/lifter gaps, spacebase-relative ranges, segmented real-mode support
+and Rust 1.88/cross-platform validation remain open.
 
 ### Saved pause: expression inspection milestone
 

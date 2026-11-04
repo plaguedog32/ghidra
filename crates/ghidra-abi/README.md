@@ -5,14 +5,16 @@ registers and address spaces. It keeps signed stack addresses, register aliases
 and join significance explicit. It is a native Rust layer and uses no Java or
 Ghidra C++ process.
 
-Argument allocation, register resource groups, prototype-rule evaluation,
-injection compilation and type recovery remain separate stages. Successful
+Argument allocation, prototype-rule evaluation, injection compilation and type
+recovery remain separate stages. A separate resource-group pass is described
+below. Successful
 storage resolution does not mean that a calling convention is executable.
 
 ## API and ownership
 
 `RegisterFile::new(spaces, default_space, registers, limits)` owns an immutable
-physical register layout. Overlapping aliases are permitted; exact duplicate
+physical register layout, including named registers in RAM-type spaces.
+Overlapping aliases are permitted; exact duplicate
 register names, invalid spaces and overflowing extents are errors. Register IDs
 retain input order. Name lookup follows Ghidra's exact/lower/upper spelling
 policy for ASCII identifiers, with later case-variation collisions winning.
@@ -160,12 +162,7 @@ are:
   expectations. Only these six language/compiler pairs are proven to resolve;
   parsing every catalog `.cspec` is not proof that it resolves.
 
-Known divergences, pinned by tests named `divergence_*` so that changing them is
-deliberate:
-
-- Ghidra rejects address spaces with unit sizes outside 1..=8, or with more than
-  2^64 bytes. `RegisterFile` accepts them and caps the byte domain at 2^64. A
-  stack over such a domain is still rejected.
+Known identity divergence, pinned by a `divergence_*` test:
 - `RegisterBuilder` turns a register with an identical address and bit range
   into an alias of the earlier `Register`. Here each declaration keeps its own
   `RegisterId`; the two still overlap. No such pair occurs in the four compiled
@@ -173,11 +170,61 @@ deliberate:
 
 Other differences from Ghidra that are known and accepted: an empty register or
 space name is reported as `Limit("name length")` rather than as an invalid
-layout. Range bounds are normalized, and reversed ranges are rejected, which
-Ghidra's `restoreRangeXml` does not check. Parameter size bounds are checked
+layout. Range bounds are normalized. Reversed global, readonly, nohighptr and
+inferptrbounds ranges are swapped as Java's `AddressRangeImpl` does; local and
+parameter ranges are rejected. Ranges naming a compiler `<spacebase>` virtual
+frame are not modeled and fail with an unknown-space error; resolving the base
+register/backing space alone does not implement those relative ranges.
+Parameter size bounds are checked
 after the storage resolves, so a declaration with both problems reports the
 storage error first.
 
 Not yet validated: the MSRV toolchain, the other catalog compiler specs,
 big-endian AArch64/ARM probe layouts, and any behavior that depends on
 argument allocation or prototype-rule execution.
+
+Address spaces with word sizes outside 1..=8 or byte domains larger than 2^64
+are now rejected during registry construction, matching Ghidra's constructor.
+
+## Parameter resource groups
+
+`CompilerResources::new(Arc<CompilerStorage>, ResourceLimits)` derives separate
+input/output resource namespaces for each prototype. It shares the immutable
+overlay and owns the resulting groups, entry sites and slot capacities.
+`list(model, ParameterDirection)` borrows one list; counts and `build_work()`
+expose accounting. IDs are local to that list, not physical register IDs.
+
+The pass follows declaration order: explicit group members share their starting
+resource; a larger contiguous pool inherits resources from earlier contained
+pools, skipping already-overlapping entries; a join inherits the most recent
+exact earlier pool for each physical piece. At least one nonconstant piece
+must match. Constant padding does not supply resources. Group lists are sorted
+and retain repetitions, matching retained `ParamEntry` behavior. An aligned
+pool uses one group with several slots, not one group per slot. Capacity is
+logical metadata, including near an address-space boundary; it is never
+converted into an allocated value extent. Actual slice placement must still
+validate its address domain.
+
+Incomplete prototypes, reused/noncontiguous declared groups, indistinguishable
+members, joins inside explicit groups, non-nesting overlaps and unmatched joins
+fail explicitly. Comparisons use normalized mathematical byte coordinates and
+detect crossing partial overlaps; this is stricter than the retained
+`intersects` routine, which can miss a crossing pair. Wrapping arithmetic quirks
+of that routine are not reproduced.
+
+Models, entries, physical regions, resource groups, stored group references and
+work have separate limits, checked before protected growth. One budget covers
+all models/lists. Defaults include 100,000 entries/groups, one million regions
+and references, and 16 million work units. The initial algorithm scans earlier
+entries/pieces and can be quadratic; large otherwise-valid lists can exhaust
+work before count limits. Group-reference output and sorting are charged too.
+It has no recursion or allocation proportional to an address-space span.
+
+Eleven default resource tests include exact limits, a byte-set oracle over
+1,000 generated lists, explicit/overlapping groups, joins/padding and a bounded
+2,000-entry stress case. An opt-in test covers six real compiler/language pairs.
+The CLI exposes this pass with `--compiler-storage ... --resources`; default
+inspection still emits only resolved locations. This is resource sharing,
+not argument allocation, justification, output-part inference, rule execution
+or a complete calling-convention implementation. Independent review of this
+new pass remains pending.

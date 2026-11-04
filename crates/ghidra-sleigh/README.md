@@ -18,18 +18,42 @@ do not evaluate its `delay_slots` a second time. `spaces()`, `code_space()`,
 `registers()`, and `userops()` provide the storage identities needed by a
 consumer. Space IDs and byte offsets are preserved rather than renumbered.
 
-The adapter supports byte-addressed RAM/register/unique/constant spaces with
-addresses up to 64 bits. ROM permissions and word-addressed spaces are rejected
-explicitly. Unknown or analysis-only operations are rejected. In particular,
+The adapter uses byte-addressed instruction addresses. Non-default data/register
+spaces may have address units of 1..=8 bytes, including non-power-of-two sizes,
+when the full byte domain fits within 64 bits. Declared varnode offsets and
+widths stay in bytes; only LOAD/STORE pointers are in address units. The machine
+scales those pointers once. ROM permissions and word-addressed code spaces are
+still rejected explicitly. Unknown or analysis-only operations are rejected. In particular,
 the dependency's old `EXTRACT` opcode 71 is not reinterpreted as this checkout's
 `ZPULL` opcode 71; no `SPULL` support is invented. Same-width sign/zero extensions
 are normalized to their exact identity operation, `COPY`, while the strict
 `ghidra-pcode` validator remains unchanged. `CALLOTHER` and its declared userop
 ID are preserved; this does not implement that userop's execution semantics.
 
+The pinned lowerer has two remaining word-space limitations. Address-of a
+declared word-space register currently returns its byte offset without the
+native fixed-symbol conversion to address units. A bounded per-instruction AST
+audit rejects such address-of expressions, including resolved operand registers,
+instead of emitting that wrong literal. Expansion has lost the distinction
+between fixed symbols and operand handles, so dividing every resolved offset
+would not faithfully repair both forms. Byte-space address-of remains available.
+The extra audit admits at most 131,072 statement/expression nodes, uses an
+iterative worklist, and releases its source-shaped AST before the existing
+lowerer expands its own; byte-only languages keep their original lowering path.
+This bounds the additional audit, not the dependency's earlier AST expansion.
+
+Generic CSR exports in the RISC-V and NDS32 sources can still resolve a pointer
+at default-code width rather than their CSR space's width; those instructions
+fail explicitly during lowering. Selected RISC-V fixed CSR reads/writes and
+NDS32 word-pointer user-register reads/writes and fixed interrupt returns have
+real-source execution probes. NDS32's little-endian catalog variant also remains
+incompatible with its source's hardcoded big-endian declaration. None of this
+models CSR privilege, interrupt entry, or hardware side effects.
+
 Always-on tests compile self-contained source and includes, run adapted p-code
 in the Rust evaluator, and check context, delay slots, endian memory access,
-identity extensions, explicit unsupported address units, and the opcode-71
+identity extensions, word-space byte extents and pointer scaling, explicit
+unsupported code-address units, and the opcode-71
 boundary. Opt-in tests compile this checkout's x86-64, ARM7 LE/BE/mixed-endian,
 MIPS32 LE/BE, AArch64 BE64 and SH-2A sources. An ARM v8 probe compiles all seven
 catalog variants (A32/Thumb, LE/BE, little-instruction/big-data and v8-M),

@@ -3,12 +3,17 @@
 //! This foundation compiles `.slaspec` and included `.sinc` source directly.
 //! It neither invokes Java/C++ nor reads Ghidra's precompiled `.sla` format.
 //! Processor support is measured by tests, not inferred from successful parsing.
-//! Only byte-addressed spaces are admitted by this adapter. Catalog loading
-//! applies `.pspec` decode defaults; raw source loading requires caller defaults.
+//! Code addresses are byte-addressed; data spaces can use word addresses.
+//! Catalog loading applies `.pspec` decode defaults; raw source loading
+//! requires caller defaults.
 
 mod catalog;
+mod word_spaces;
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use ghidra_pcode::{
     AddressSpace, Endianness, Opcode, PcodeInstruction, PcodeOperation, SpaceId, SpaceKind, Varnode,
@@ -51,6 +56,7 @@ pub struct SleighLanguage {
     source_endianness: Endianness,
     explicit_context: BTreeMap<String, u64>,
     catalog_context: Option<catalog::CatalogContext>,
+    word_space_ids: BTreeSet<sleigh::SpaceId>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,9 +135,16 @@ impl SleighLanguage {
             .map_err(|error| Error::Context(error.to_string()))?;
         let mut spaces = Vec::new();
         for source in spec.spaces() {
-            if source.word_size() != 1 {
+            if source.id == spec.default_space() && source.word_size() != 1 {
                 return Err(Error::Unsupported(format!(
-                    "space {:?} has word size {}; this adapter admits only byte-addressed spaces",
+                    "default code space {:?} has word size {}; word-addressed instruction addresses are not yet modeled",
+                    source.name(),
+                    source.word_size()
+                )));
+            }
+            if !(1..=8).contains(&source.word_size()) {
+                return Err(Error::Unsupported(format!(
+                    "space {:?} has word size {}; source address units must be 1..=8 bytes",
                     source.name(),
                     source.word_size()
                 )));
@@ -157,10 +170,16 @@ impl SleighLanguage {
                 kind,
                 address_size: u8::try_from(source.address_size())
                     .map_err(|_| Error::Unsupported("address size exceeds u8".into()))?,
-                word_size: 1,
+                word_size: source.word_size() as u32,
                 endianness,
             };
             space.validate()?;
+            if byte_extent(&space) > 1_u128 << 64 {
+                return Err(Error::Unsupported(format!(
+                    "space {:?} has a byte domain wider than 64 bits",
+                    source.name()
+                )));
+            }
             spaces.push(space);
         }
         let code_space = space_id(spec.default_space())?;
@@ -169,6 +188,11 @@ impl SleighLanguage {
         }
         let userops = spec.pcode_ops().map(str::to_owned).collect();
         let context = ContextDatabase::new(&spec);
+        let word_space_ids = spec
+            .spaces()
+            .filter(|space| space.word_size() != 1)
+            .map(|space| space.id)
+            .collect();
         Ok(Self {
             spec,
             context,
@@ -178,6 +202,7 @@ impl SleighLanguage {
             source_endianness: endianness,
             explicit_context: overrides.clone(),
             catalog_context: None,
+            word_space_ids,
         })
     }
 
@@ -351,9 +376,13 @@ impl SleighLanguage {
         {
             return Err(Error::AddressOverflow);
         }
-        let raw = decoded
-            .pcode_ops()
-            .map_err(|error| Error::Lower(error.to_string()))?;
+        let raw = if !self.word_space_ids.is_empty() {
+            word_spaces::lower(&self.spec, &decoded, &self.word_space_ids)?
+        } else {
+            decoded
+                .pcode_ops()
+                .map_err(|error| Error::Lower(error.to_string()))?
+        };
         if raw.ops.len() > ghidra_pcode::model::MAX_OPS_PER_INSTRUCTION {
             return Err(Error::Unsupported(
                 "more than 16384 operations in one lifted instruction".into(),
@@ -458,12 +487,16 @@ impl SleighLanguage {
             // Use an extended exclusive end so an extent ending at u64::MAX
             // fits, while one extending beyond it is still rejected.
             let end = u128::from(source.offset) + u128::from(size);
-            if end > 1_u128 << (definition.address_size * 8) {
+            if end > byte_extent(definition) {
                 return Err(Error::AddressOverflow);
             }
         }
         Ok((space, source.offset, size))
     }
+}
+
+fn byte_extent(space: &AddressSpace) -> u128 {
+    (1_u128 << (space.address_size * 8)) * u128::from(space.word_size)
 }
 
 fn space_id(source: sleigh::SpaceId) -> Result<SpaceId, Error> {

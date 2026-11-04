@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use ghidra_pcode::{Endianness, Opcode, Value, machine::Machine};
-use ghidra_sleigh::SleighLanguage;
+use ghidra_sleigh::{Error, SleighLanguage};
 
 fn language(id: &str) -> SleighLanguage {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Ghidra/Processors");
@@ -328,4 +328,102 @@ fn upstream_arm8_catalog_modes_data_order_and_m_profile_guards_execute() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "compiles retained RV32/RV64 sources with word-addressed CSR storage"]
+fn upstream_riscv_fixed_csr_registers_keep_byte_offsets() {
+    // riscv.reg.sinc declares CSR names in bytes, stepping by XLEN.
+    // riscv.csr.sinc gives the FRCSR/FRRM/FSCSR encodings and COPY semantics.
+    for (id, width) in [("RISCV:LE:32:default", 4), ("RISCV:LE:64:default", 8)] {
+        let mut language = language(id);
+        let csr = language
+            .spaces()
+            .iter()
+            .find(|space| space.name == "csreg")
+            .unwrap();
+        assert_eq!(csr.word_size, width);
+        assert_eq!(
+            language.register("fcsr").unwrap().offset,
+            u64::from(3 * width)
+        );
+        assert_eq!(
+            language.register("frm").unwrap().offset,
+            u64::from(2 * width)
+        );
+        let code = language.code_space();
+        let mut machine = Machine::new(language.spaces().to_vec(), 65536).unwrap();
+        arm8_set(&mut machine, &language, "fcsr", 0x1234_5678);
+        arm8_set(&mut machine, &language, "frm", 3);
+        for (bytes, expected) in [
+            ([0xf3, 0x22, 0x30, 0x00], 0x1234_5678),
+            ([0xf3, 0x22, 0x20, 0x00], 3),
+        ] {
+            let instruction = language.decode(0x1000, &bytes).unwrap();
+            machine
+                .run(&[instruction.instruction], code, 0x1000, 100)
+                .unwrap();
+            assert_eq!(arm8_get(&machine, &language, "t0"), expected, "{id}");
+        }
+        arm8_set(&mut machine, &language, "t1", 0x8765_4321);
+        let exchange = language.decode(0x1000, &[0xf3, 0x12, 0x33, 0x00]).unwrap();
+        machine
+            .run(&[exchange.instruction], code, 0x1000, 100)
+            .unwrap();
+        assert_eq!(arm8_get(&machine, &language, "t0"), 0x1234_5678);
+        assert_eq!(arm8_get(&machine, &language, "fcsr"), 0x8765_4321);
+        // Generic CSR exports still have a default-code-width pointer in the
+        // dependency (4/8 bytes), rather than csreg's 2-byte pointer. Refuse it
+        // explicitly instead of guessing how to narrow a dynamic expression.
+        assert!(matches!(
+            language.decode(0x1000, &[0xf3, 0x12, 0x03, 0x30]),
+            Err(Error::Lower(_))
+        ));
+    }
+}
+
+#[test]
+#[ignore = "compiles retained NDS32 source and executes word-addressed user-register storage"]
+fn upstream_nds32_word_pointers_and_unaligned_fixed_registers_execute() {
+    // nds32.sinc UsrName pfmc1 exports address0x201, not byte0x201.
+    // ipc is separately DECLARED at byte0xa9; it is not word-aligned.
+    let mut language = language("NDS32:BE:32:default");
+    let csr = language
+        .spaces()
+        .iter()
+        .find(|space| space.name == "csreg")
+        .unwrap();
+    assert_eq!(csr.word_size, 4);
+    let csr = csr.id;
+    let code = language.code_space();
+    let ipc = language.register("ipc").unwrap();
+    assert_eq!(ipc.offset, 0xa9);
+    let mut machine = Machine::new(language.spaces().to_vec(), 65536).unwrap();
+    machine
+        .map_bytes(csr, 0x804, &[0x12, 0x34, 0x56, 0x78])
+        .unwrap();
+    let read = language.decode(0x1000, &[0x42, 0x00, 0x88, 0x20]).unwrap();
+    assert_eq!(read.text, "mfusr a0, pfmc1");
+    machine.run(&[read.instruction], code, 0x1000, 100).unwrap();
+    assert_eq!(arm8_get(&machine, &language, "a0"), 0x1234_5678);
+    arm8_set(&mut machine, &language, "a0", 0x8765_4321);
+    let write = language.decode(0x1000, &[0x42, 0x00, 0x88, 0x21]).unwrap();
+    machine
+        .run(&[write.instruction], code, 0x1000, 100)
+        .unwrap();
+    let stored = ghidra_pcode::Varnode {
+        space: csr,
+        offset: 0x804,
+        size: 4,
+    };
+    assert_eq!(
+        machine.read_varnode(&stored).unwrap().to_u64(),
+        Some(0x8765_4321)
+    );
+    arm8_set(&mut machine, &language, "ipc", 0x2000);
+    let ret = language.decode(0x1000, &[0x64, 0x00, 0x00, 0x04]).unwrap();
+    let report = machine.run(&[ret.instruction], code, 0x1000, 100).unwrap();
+    assert!(
+        matches!(report.stop, ghidra_pcode::machine::StopReason::ExternalTransfer { target: 0x2000, ref kind } if kind == "return")
+    );
 }

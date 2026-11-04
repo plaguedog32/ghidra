@@ -162,7 +162,7 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 792 default workspace tests and
+The current analysis/ABI/datatype/SSA tree passes 798 default workspace tests and
 22 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
@@ -222,6 +222,47 @@ datatype-driven signature allocation. The CI path filter now includes
 processor data changes so future source-only fixes run the native checks.
 This increment does not claim a new whole-workspace or cross-platform result;
 the earlier checkpoint evidence remains recorded separately.
+
+### Non-default word-addressed storage
+
+The SLEIGH adapter now preserves word sizes on non-default spaces instead of
+rejecting every language that declares them. Declared register/varnode offsets
+and sizes remain bytes; LOAD/STORE pointers remain address units for the
+machine to scale once. Byte extent checks include the final word. Source units
+must be 1..=8 bytes and the full byte domain must fit in 64 bits, matching the
+retained source-compiler bounds. The default code space must still be
+byte-addressed because semantic and disassembly instruction addresses need
+different conversions in word-addressed code.
+
+An independent source audit traced the native compiler, pinned Rust lowerer
+and machine. It found a remaining lowerer bug: address-of fixed word storage
+returns bytes without conversion to words. The expanded AST loses the original
+fixed-symbol versus operand-handle distinction, so an instruction-level audit
+refuses these expressions rather than guessing the missing conversion. The
+audit is iterative and capped at 131,072 statement/expression nodes; it uses
+one extra AST expansion for word-space languages and preserves the original
+lowerer for exact register bit ranges. Byte-only languages retain their old
+path. This increment still awaits independent implementation review.
+
+Synthetic checks cover units 1..8, both byte orders, fixed and indirect reads
+and writes, exported pointers, exact byte boundaries, dimensions, bit ranges
+and address-of refusals in memory/control/userop expressions. Real probes
+execute RV32/RV64 FRCSR, FRRM and FSCSR at the declared CSR byte offsets, and
+NDS32 BE MFUSR/MTUSR at word pointer 0x201 (byte 0x804) plus IRET through the
+unaligned fixed IPC register at byte 0xa9. Generic CSR exports still fail with
+the dependency's explicit pointer-width error. NDS32 LE's hardcoded BE source,
+CSR privilege and interrupt entry/side effects remain unmodeled. Selected
+source execution does not establish full processor or calling-convention support.
+
+Validation passes 798 default workspace tests and 22 doctests on stable and
+Rust 1.88.0, workspace/all-target Clippy and Rust 1.88 rustdoc with warnings
+denied, formatting and the Rust 1.88 optimized desktop build. All 28 default
+SLEIGH tests and eleven opt-in source tests also pass together in Rust 1.88
+release. Java-free command probes lift RV32, RV64 and NDS32 instructions,
+execute them to 0x12345678, then export verified SSA, expressions, constants and
+simplification while preserving the CSR word metadata and byte/word address
+forms. This is local Windows evidence; a new cross-platform result and the
+independent implementation review are still required.
 
 ### Minimum Rust version validation
 

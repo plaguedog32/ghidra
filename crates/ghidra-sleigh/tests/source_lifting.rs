@@ -233,7 +233,7 @@ fn big_endian_memory_semantics_execute_with_the_declared_byte_order() {
 }
 
 #[test]
-fn unimplemented_address_units_are_rejected_explicitly() {
+fn word_addressed_code_is_rejected_explicitly() {
     assert!(
         matches!(SleighLanguage::from_spec(&fixture("word_addressed.slaspec"), &BTreeMap::new()), Err(Error::Unsupported(message)) if message.contains("word size"))
     );

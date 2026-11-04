@@ -1082,6 +1082,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghidra-analysis"
+version = "0.3.0"
+dependencies = [
+ "ghidra-pcode",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ghidra-core"
 version = "0.3.0"
 dependencies = [

@@ -1,7 +1,7 @@
 //! Declaration-ordered parameter resources. This pass does not place values.
 use std::sync::Arc;
 
-use ghidra_languages::{ParamList, StorageClass};
+use ghidra_languages::{ParamList, StackGrowth, StorageClass};
 use ghidra_pcode::SpaceKind;
 use serde::Serialize;
 use thiserror::Error;
@@ -349,6 +349,14 @@ fn build_list(
             || entry.align.is_some_and(|a| a > i32::MAX as u32)
         {
             return Err(invalid("invalid parameter size/alignment"));
+        }
+        if storage.stack().growth == StackGrowth::Positive
+            && entry.alignment() != 0
+            && entry.max_size % entry.alignment() != 0
+        {
+            return Err(invalid(
+                "positive growth requires a whole number of pool slots",
+            ));
         }
         if let Some(group) = entry.group {
             if group >= source.group_count {

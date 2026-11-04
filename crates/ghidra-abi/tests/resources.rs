@@ -459,6 +459,35 @@ fn large_disjoint_lists_fail_at_a_work_budget_instead_of_running_unbounded() {
 }
 
 #[test]
+fn upward_growth_rechecks_alignment_even_if_a_caller_forces_complete_status() {
+    let mut source = spec("", "");
+    source.stack_pointer.as_mut().unwrap().growth = ghidra_languages::StackGrowth::Positive;
+    let mut entry = raw_entry(0, 10);
+    entry.align = Some(4);
+    source.prototypes[0].input.entries.push(entry);
+    source.prototypes[0].status = ModelStatus::Complete;
+    assert!(matches!(
+        CompilerResources::new(storage(source), Default::default()),
+        Err(ResourceError::Invalid {
+            site: BindingSite::Input { model: 0, entry: 0 },
+            reason: "positive growth requires a whole number of pool slots",
+        })
+    ));
+}
+
+#[test]
+fn signed_stack_containment_across_zero_uses_mathematical_coordinates() {
+    let resources = plan(
+        r#"<pentry minsize="1" maxsize="4"><addr space="stack" offset="0"/></pentry>
+<pentry minsize="1" maxsize="8"><addr space="stack" offset="-4"/></pentry>"#,
+    );
+    assert_eq!(
+        groups(&resources, ParameterDirection::Input),
+        [vec![0], vec![0]]
+    );
+}
+
+#[test]
 #[ignore = "compiles four full processor sources; run explicitly for real ABI resource probes"]
 fn real_compiler_resource_profiles_keep_expected_sharing() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Ghidra/Processors");

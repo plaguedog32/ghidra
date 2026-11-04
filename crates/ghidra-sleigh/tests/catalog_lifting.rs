@@ -88,6 +88,20 @@ fn segmented_address_metadata_gates_unimplemented_address_domains() {
 }
 
 #[test]
+fn retained_x86_real_mode_lifting_is_explicitly_unavailable() {
+    // The shared loader is also the entry point for desktop and CLI lifting,
+    // not just compiler-storage inspection. Do not silently emit flat-space
+    // P-code for the segmented language while its address model is missing.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Ghidra/Processors");
+    let catalog = Catalog::discover(&root).unwrap();
+    let definition = catalog.by_id("x86:LE:16:Real Mode").unwrap();
+    assert!(matches!(
+        SleighLanguage::from_language(definition, &BTreeMap::new()),
+        Err(Error::Unsupported(message)) if message.contains("real-mode segmented")
+    ));
+}
+
+#[test]
 fn code_space_ranges_overrides_and_commits_keep_their_precedence() {
     let (_directory, definition) = recipe(CONTEXT, "");
     let mut language = SleighLanguage::from_language(&definition, &BTreeMap::new()).unwrap();

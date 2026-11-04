@@ -159,8 +159,11 @@ are:
   registers, 88 bindings, 1 range and 88 pieces. MIPS32 BE has 471 registers,
   44 bindings, 4 ranges and 44 pieces. AArch64 Go has 633 registers, 157
   bindings, 1 range and 194 pieces. These are observations, not fixed
-  expectations. Only these six language/compiler pairs are proven to resolve;
-  parsing every catalog `.cspec` is not proof that it resolves.
+  expectations. These checked-in probes cover six pairs. A later independent
+  sweep at `fdb61172e6` resolved all 196 currently compiling pairs out of 296
+  and matched their input/output resource plans against a source-derived Java
+  oracle; the other 100 fail explicitly in compiler/address-space support.
+  This does not establish complete processor or calling-convention semantics.
 
 Known identity divergence, pinned by a `divergence_*` test:
 - `RegisterBuilder` turns a register with an identical address and bit range
@@ -208,9 +211,11 @@ validate its address domain.
 Incomplete prototypes, reused/noncontiguous declared groups, indistinguishable
 members, joins inside explicit groups, non-nesting overlaps and unmatched joins
 fail explicitly. Comparisons use normalized mathematical byte coordinates and
-detect crossing partial overlaps; this is stricter than the retained
-`intersects` routine, which can miss a crossing pair. Wrapping arithmetic quirks
-of that routine are not reproduced.
+detect crossing partial overlaps, including ones the retained `intersects`
+routine misses. Signed stack containment across zero is accepted; retained
+unsigned comparisons can instead reject that layout. These are deliberate
+mathematical-coordinate policies in both directions, not bit-for-bit emulation
+of wrapping/unsigned overlap quirks. No shipped pair in the review sweep differs.
 
 Models, entries, physical regions, resource groups, stored group references and
 work have separate limits, checked before protected growth. One budget covers
@@ -226,5 +231,8 @@ Eleven default resource tests include exact limits, a byte-set oracle over
 The CLI exposes this pass with `--compiler-storage ... --resources`; default
 inspection still emits only resolved locations. This is resource sharing,
 not argument allocation, justification, output-part inference, rule execution
-or a complete calling-convention implementation. Independent review of this
-new pass remains pending.
+or a complete calling-convention implementation. Independent review at
+`fdb61172e6` approved the pass. Its follow-up validation also rejects upward-
+growth pool sizes that are not a multiple of alignment, even when a caller
+manually marks an invalid prototype complete. Review evidence and remaining
+processor-loader limitations are recorded in `docs/RUST_PORT.md`.

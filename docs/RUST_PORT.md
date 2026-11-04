@@ -171,16 +171,24 @@ probes, including independent normalization/alias models and mutation checks.
 Review at `e6cbc63357` returned **changes requested**: RAM-mapped registers were
 rejected, and real-mode segmented metadata could produce an incorrect flat
 range. Implementation fixes accept register/RAM aliases and reject unmodeled
-real segmentation; protected 32-bit spaces still load. All 20 formerly
+real segmentation in the shared catalog loader; protected 32-bit spaces still
+load. This also disables catalog-based real-mode instruction lifting and
+function analysis, including desktop lifting, until segmented addresses are
+implemented. Raw source loading does not apply processor-spec metadata.
+All 20 formerly
 RAM-rejected language/compiler pairs now pass Java-free command probes.
 Global-style reversed ranges now swap bounds; unsupported spacebase-relative
 ranges are documented. Registry word/byte domains match Ghidra's bounds.
-These fixes require independent re-review.
+Independent re-review at `fdb61172e6` approved the fixes and resource pass.
 
 Optional `--resources` reports now derive declaration-ordered resource groups,
-containing aliases, join sharing and pool slot capacities. Eleven resource tests
-and six real compiler/language command probes pass; the work-budgeted pair scan
-can be quadratic and requires independent review. Resource planning preserves
+containing aliases, join sharing and pool slot capacities. The independent
+review's source-derived oracle matched input/output resource plans for all 196
+compiler/language pairs that currently compile, out of 296 pairs swept; the
+remaining 100 fail explicitly in source compilation/address-space support.
+This validates group planning, not complete processor semantics. The
+work-budgeted pair scan can be quadratic. A review follow-up now also checks
+upward-growth alignment on caller-built specs. Resource planning preserves
 capacity metadata and does not allocate value extents.
 
 Resolution/resource planning are not argument allocation or executable ABI behavior:
@@ -197,8 +205,8 @@ or an independent check of every arithmetic opcode. CLI/desktop integration is
 next. No IR rewrite, type recovery or structured output is claimed.
 
 The combined continuation passes 474 default workspace tests and ten doctests
-on Windows/Rust 1.99.1. Resource planning and the ABI review fixes are new
-implementation changes, not independently approved increments. Existing source
+on Windows/Rust 1.99.1 at `fdb61172e6`. The SCCP engine, resource pass and ABI
+review fixes have independent approvals. Existing source
 compiler/lifter gaps, spacebase-relative ranges, segmented real-mode support
 and Rust 1.88/cross-platform validation remain open.
 

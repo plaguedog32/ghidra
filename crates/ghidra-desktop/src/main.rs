@@ -12,7 +12,7 @@ fn main() -> eframe::Result {
     match first.as_deref().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --languages ROOT\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
+                "Ghidra Rust {} — native analysis workbench\n\nUsage:\n  ghidra-rs [BINARY_OR_PROJECT]\n  ghidra-rs --demo\n  ghidra-rs --analyze BINARY_OR_PROJECT\n  ghidra-rs --create-project SOURCE DESTINATION.ghrs\n  ghidra-rs --run-pcode PROGRAM.json\n  ghidra-rs --languages ROOT\n  ghidra-rs --compiler-spec ROOT LANGUAGE_ID COMPILER_ID\n  ghidra-rs --lift-language ROOT LANGUAGE_ID HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --lift-pcode SPEC HEX_ADDRESS HEX_BYTES [context=value ...]\n  ghidra-rs --version\n\nPE / ELF / Mach-O; x86 / x64 disassembly, recursive functions, linkage, and portable projects. No Java required.",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(());
@@ -85,6 +85,27 @@ fn main() -> eframe::Result {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
+            }
+            return Ok(());
+        }
+        Some("--compiler-spec") => {
+            let (Some(root), Some(language), Some(compiler)) =
+                (args.next(), args.next(), args.next())
+            else {
+                eprintln!("--compiler-spec requires ROOT LANGUAGE_ID COMPILER_ID");
+                std::process::exit(2);
+            };
+            if args.next().is_some() {
+                eprintln!("--compiler-spec accepts exactly three arguments");
+                std::process::exit(2);
+            }
+            if let Err(error) = pcode_cli::compiler_spec(
+                &PathBuf::from(root),
+                &language.to_string_lossy(),
+                &compiler.to_string_lossy(),
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
             }
             return Ok(());
         }

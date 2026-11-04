@@ -12,7 +12,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-project` | Portable projects, annotations, source integrity, bounded deserialization, and atomic saves |
 | `crates/ghidra-pcode` | Exact opcode model, bounded integer/software-float semantics, and concrete P-code execution |
 | `crates/ghidra-graph` | Bounded traversal, SCCs, dominators/frontiers, natural loops, and finite-exit-path post-dominators |
-| `crates/ghidra-languages` | Bounded `.ldefs` catalog discovery, asset resolution, and `.pspec` context/tracked settings |
+| `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
 | `object` | Rust PE, ELF, and Mach-O parsing |
@@ -118,15 +118,18 @@ The dedicated `.github/workflows/rust-desktop.yml` runs these checks and produce
 
 Local validation on Windows with Rust 1.99.1:
 
-- All 176 default workspace tests pass. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, catalog/XML/path handling, context precedence, per-token byte order, mixed-endian source lifting, compiled-source reuse, checked continuation and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window. Eight opt-in processor probes cover seven source configurations and the desktop worker's Thumb IT continuation.
+- All 210 default workspace tests pass. They cover binary formats/linkage, recursive discovery, project integrity/atomic replacement and version migration, asynchronous desktop state, restored processor settings, P-code integer/software-float semantics, execution bounds, language/processor/compiler XML data, context precedence, per-token byte order, mixed-endian source lifting, compiled-source reuse, checked continuation and stale-result rejection. The desktop tests also render every inspection view through egui without requiring a native window. Eight opt-in processor probes cover seven source configurations and the desktop worker's Thumb IT continuation.
 - The graph crate contributes 12 integration tests and one separately run doctest, including 1,600 fixed-seed oracle comparisons and a 100,000-node chain. Its post-dominators describe finite paths to explicit terminal exits; infinite paths are excluded. The crate is not yet connected to the P-code or desktop function graphs.
+- Typed compiler declarations cover all 107 distinct referenced `.cspec` files without diagnostics, including 178 prototype models. Register/space resolution, argument allocation, rule execution and injection compilation remain pending; parser coverage is not executable ABI support.
 - Formatting and Clippy with warnings denied pass; the optimized executable builds.
 - The executable analyzed the retained WinHelloCPP PE32 example, the retained `little.elf` example, and its own PE64 executable.
 - Analysis succeeds with `JAVA_HOME` empty and `PATH` restricted to Windows system files.
 - The same Java-free environment compiled this checkout's x86-64 SLEIGH source, lifted `MOV RAX,42`, and executed the resulting P-code to produce `RAX = 42`.
 - The catalog-based CLI also discovered 202 languages and lifted/executed that instruction without explicit context arguments in the same restricted environment.
 - Version 1 project migration and version 2 processor-configuration round trips also succeed in that Java-free environment, preserving the embedded image and unavailable language choices.
+- The same environment lifts and executes AArch64 BE64 `mov x0, #1`, and inspects the Windows x64 compiler specification with zero diagnostics.
 - Independent floating-point review verdict: "implementation approved; no P1/P2 findings."
+- Independent review of the graph/project increment returned "Verdict: approve." It added 21,200 graph-oracle comparisons, including irreducible/nested cycles and larger random graphs.
 - The desktop sample creates a responsive native window; its loaded modules contain no JVM. Automated visual and click-through verification was unavailable because the local Windows computer-use helper could not connect.
 
 The initial desktop commit passed all three host builds in [CI run 41733853407](https://github.com/plaguedog32/ghidra/actions/runs/41733853407), project/function/linkage in [CI run 41735800993](https://github.com/plaguedog32/ghidra/actions/runs/41735800993), P-code/SLEIGH commit `8829d3875d` in [CI run 41739187343](https://github.com/plaguedog32/ghidra/actions/runs/41739187343), the background P-code view in [CI run 41741071127](https://github.com/plaguedog32/ghidra/actions/runs/41741071127), and catalog lifting in [CI run 41743436295](https://github.com/plaguedog32/ghidra/actions/runs/41743436295). Later increments must pass their own runs before inheriting that cross-platform claim.

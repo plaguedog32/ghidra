@@ -23,6 +23,40 @@ pub fn list_languages(root: &Path) -> Result<(), String> {
     writeln!(writer).map_err(|e| e.to_string())
 }
 
+pub fn compiler_spec(root: &Path, language_id: &str, compiler_id: &str) -> Result<(), String> {
+    let catalog = ghidra_languages::Catalog::discover(root).map_err(|e| e.to_string())?;
+    let definition = catalog
+        .by_id(language_id)
+        .ok_or_else(|| format!("Unknown language ID: {language_id}"))?;
+    let spec = definition
+        .load_compiler_spec(compiler_id)
+        .map_err(|e| e.to_string())?;
+    #[derive(serde::Serialize)]
+    struct Output<'a> {
+        schema: &'static str,
+        schema_version: u32,
+        language_id: &'a str,
+        compiler_id: &'a str,
+        coverage: ghidra_languages::SpecCoverage,
+        specification: &'a ghidra_languages::CompilerSpec,
+    }
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    serde_json::to_writer_pretty(
+        &mut writer,
+        &Output {
+            schema: "ghidra-rs.compiler-spec",
+            schema_version: 1,
+            language_id,
+            compiler_id,
+            coverage: spec.coverage(),
+            specification: &spec,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(writer).map_err(|e| e.to_string())
+}
+
 pub fn lift_language(
     root: &Path,
     id: &str,

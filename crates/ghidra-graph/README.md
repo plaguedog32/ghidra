@@ -128,7 +128,8 @@ To impose a budget across several calls, the caller must bound the calls too.
 Every resource failure returns `Error::LimitExceeded { resource }`; there is
 no truncated success or partially exposed analysis. Errors do not mutate the
 graph or previously returned results. Budgets apply while consuming iterators,
-but cannot interrupt a caller's blocking/expensive `Iterator::next()`. A rejected
+but cannot interrupt a caller's blocking/expensive `Iterator::next()`. The work
+budget can be exhausted even when node/edge counts fit their limits. A rejected
 iterator may have yielded the first over-limit record. Limits bound logical
 sizes, not allocator overhead; normal Rust allocation failure is not converted
 to an analysis error. Callers must choose limits appropriate to available memory.

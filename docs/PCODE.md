@@ -26,7 +26,7 @@ The desktop P-code tab can inspect any selected file-backed executable address. 
 
 Processor defaults can vary by address. The adapter reads only context sets for the compiled language's code space, applies matching ranges in file order, and keeps tracked register values separate. Values exceeding the decoder's 64-bit context API are rejected. Explicit overrides win over processor and per-request defaults for both raw and catalog loading; recorded SLEIGH context commits sit above that baseline. The desktop resets commits for arbitrary selections so unrelated selections cannot change one another's decoding. **Next instruction** immediately lifts the next address with the displayed instruction's context, including when Follow selection is off. The worker checks the previous request ID, next address, program generation, and unchanged language settings; unavailable continuation state is an error. A failed decode breaks that chain. The view identifies continued versus independent context. Independent decoding can still require surrounding flow context, such as entry into a Thumb IT block. Full flow-aware disassembly analysis remains pending.
 
-`ghidra-languages` reads the real `.ldefs` and `.pspec` files in Rust. This checkout contains 202 language variants in 53 catalog files; all their processor specs parse without diagnostics. XML and file discovery are bounded, DTDs are rejected, and asset references stay within the chosen root without following symlinks or junctions. Missing and ambiguous assets are reported. Compiler specs are recorded as references; their calling-convention semantics are not implemented.
+`ghidra-languages` reads the real `.ldefs`, `.pspec`, and `.cspec` files in Rust. This checkout contains 202 language variants in 53 catalog files; all their processor specs parse without diagnostics. XML and file discovery are bounded, DTDs are rejected, and asset references stay within the chosen root without following symlinks or junctions. Missing and ambiguous assets are reported. Compiler declarations are now typed data; their calling-convention allocation and execution are not implemented.
 
 `ghidra-sleigh` compiles raw `.slaspec`/`.sinc` source using pinned `wazabin-sleigh` 0.1.15 and adapts operations explicitly to the native P-code model. It does not invoke Java, a Ghidra C++ compiler, or a precompiled `.sla` file. Catalog loading uses Ghidra's compatibility rule for the source's global storage order and the declared data/instruction orders. Instruction tokens may override the global order, as AArch64 BE does. `source_endianness()` reports the global declaration, not the order of every instruction token. RAM data order is set independently, preserving source register alias layout for mixed-endian variants. Catalog presence does not prove that a language compiles or has correct instruction semantics.
 
@@ -58,3 +58,16 @@ cargo test -p ghidra-desktop upstream_thumb_it -- --ignored
 ```
 
 These are bounded instruction probes, not processor-wide parity. The adapter rejects ROM and word-addressed spaces, catalog space truncation, changing defaults within a delay-slot bundle, and unsupported operations; current source/compiler coverage must be established per specification. The compiler dependency's older opcode 71 is not cast to the newer `ZPULL` opcode. Its same-width extensions are explicitly converted to identity `COPY` operations while retaining strict P-code validation.
+
+## Compiler specification data
+
+Inspect a compiler specification without opening a window:
+
+```sh
+cargo run -p ghidra-desktop -- --compiler-spec \
+  Ghidra/Processors x86:LE:64:default windows
+```
+
+The `ghidra-rs.compiler-spec` version 1 JSON contains the typed declarations and coverage diagnostics. It captures data organization, stack and return-address metadata, ordered parameter entries/groups/joins, prototype rules, aliases and merged models, clobbered/unaffected registers, and injection text. All 107 distinct referenced compiler specs parse with no diagnostics; 178 prototypes, 1551 entries, 230 rules, 28 groups and 92 join entries are captured. Those counts establish data coverage, not ABI correctness for native calls.
+
+Register names and address spaces remain unresolved. No parameter storage is allocated, model rule is evaluated, merged ABI is scored, or injection text is compiled/executed. Compiler context/tracked settings are captured but are not yet applied by the instruction lifter. `is_fully_modeled()` describes captured declarations, not an executable calling convention. The empty upstream emulator `mock.cspec` is rejected as malformed XML. ABI resolution, argument/return assignment, and integration with function analysis remain required.

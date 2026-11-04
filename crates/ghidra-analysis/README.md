@@ -163,7 +163,9 @@ to retain the original construction. `ssa().placement()` reports the actual
 mode. Sparse live-in pairs, phis and work have separate limits; exhaustion is
 an error, without falling back to another mode. This adapter does not perform
 constant propagation, pointer disambiguation, call resolution, type inference,
-or out-of-SSA conversion.
+or out-of-SSA conversion. Processor-defined `SEGMENTOP` also requires an
+explicit unknown-effect policy: its selector is metadata, and its injection
+semantics are not guessed from the base/offset operands.
 
 Adapter tests cover partial-register diamonds in both byte orders, memory-token
 versions, opaque clobbers, native re-entry versus internal backedges, merged
@@ -171,3 +173,84 @@ instruction/no-op boundaries, unreachable metadata, entry policies, exact work
 and count limits, a 10,000-instruction loop that fits a 100-phi cap with no dead
 temporary phis while retaining all native-entry resets, and semantic comparison of renamed
 aliases and loop phis against concrete machine traces.
+
+## Expressions over SSA
+
+`PcodeExpressions::new(Arc<PcodeSsa>, ExpressionLimits)` reconstructs typed
+expression terms from a verified native analysis snapshot. It retains that
+snapshot, so value identities, phi operands, control edges and opaque dependency
+lists stay associated with their source. It owns its output and is `Send + Sync`.
+
+```rust
+use std::sync::Arc;
+use ghidra_analysis::{AnalysisOptions, ExpressionDefinition, PcodeExpressions, PcodeSsa};
+use ghidra_cfg::{Cfg, CfgInput, ProgramPoint};
+use ghidra_pcode::machine::ExecutionInput;
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let input: ExecutionInput = serde_json::from_str(include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"), "/../../examples/pcode/alias-branch.json")))?;
+let cfg = Arc::new(Cfg::new(CfgInput::new(input.spaces, input.code_space,
+    input.entry, input.instructions), Default::default())?);
+let analysis = Arc::new(PcodeSsa::new(cfg, &[], AnalysisOptions::native(), Default::default())?);
+analysis.ssa().verify(analysis.raw())?;
+let terms = PcodeExpressions::new(analysis.clone(), Default::default())?;
+let source = analysis.cfg().points()[0];
+let statement = analysis.statement_id(ProgramPoint::new(source.address, source.operation_index)).unwrap();
+assert!(terms.operation(statement).is_some());
+for value in analysis.ssa().statement(statement)?.defs() {
+    assert!(matches!(terms.definition(*value)?, ExpressionDefinition::Expression(_)));
+}
+# Ok(())
+# }
+```
+
+Bit vectors and whole-space memory states have separate `ExpressionType`s.
+Scalar reads compose the exact SSA cells in significance order; writes extract
+the appropriate byte slices from the full operation result. Partial writes do
+not read or overwrite unmentioned cells. Direct memory varnodes retain **byte
+offsets**; LOAD/STORE pointers retain their address width and word scaling.
+Each memory read/write names the exact prior SSA memory version and the byte
+order of its own space, including mixed data/register byte orders.
+
+Arithmetic/logic terms retain their P-code opcode and widths. They are not
+evaluated or folded here: potentially trapping operations such as division by
+zero remain explicit. Control labels, selectors, userop IDs and numeric
+metadata retain distinct operand roles. A direct label is never a memory read.
+An explicit operation's `output` is its complete bit result before splitting
+aliases or updating memory; stores and control operations have none.
+
+Each SSA value's `definition()` is an entry declaration, phi identity,
+expression root, undefined instruction reset, or opaque statement output.
+Phi inputs and full-domain havoc uses are shared from the original SSA rather
+than copied or approximated. Opaque output definitions name their source
+statement and definition slot; `operation().output` is `None` for these. Resets
+remain undefined, never literal zero. Unreachable statements have no expression
+operations, and no-op/reset statements remain available in the original snapshot.
+
+Expression-node edges point to earlier nodes; SSA leaves can refer to cyclic
+definitions without expanding them. Construction is iterative, with no
+per-value scan of the program. It makes linear passes over values, graph nodes,
+reachable statements and operand pieces, with logarithmic address-space and
+per-operation write lookups. This does not perform pointer disambiguation,
+calling-convention recovery, value propagation, type inference or C generation.
+
+Separate limits bound graph nodes, SSA values, reachable statements, expression
+nodes, stored references, literal bytes and reconstruction work. Count/overflow
+checks precede protected growth. Literal bytes count each owned literal's
+declared width, including repeats. References count operation operand slots,
+node edges (including SSA leaves and memory versions), operation result/memory
+version slots, and expression-definition roots; shared phi/opaque operands
+stay charged to the upstream SSA budget. Work charges allocation slots,
+visited records, references, literal bytes and logarithmic map operations.
+`reference_count()`, `constant_bytes()` and `build_work()` expose the totals.
+Running out returns an explicit error, with no partial result or fallback.
+Ordinary Rust allocation failure is not caught.
+
+Behavior tests compare reconstructed terms with the native concrete Machine
+after every defined scalar/memory result in 400 generated programs, across both
+byte orders and all four word sizes. They also cover 512-byte aliases, metadata
+roles, opaque dependencies, undefined resets, phi cycles, exact limits,
+deterministic IDs and 25k/50k straight-line scaling. The arithmetic evaluator
+itself is shared with the already-tested P-code core; these tests establish the
+reconstruction's binding and state semantics, not a fresh arithmetic proof.

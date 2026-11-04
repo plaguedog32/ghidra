@@ -309,6 +309,7 @@ enum Role {
     RelativeOrDirect,
     Direct,
     Space,
+    SegmentSpace,
     Userop,
     Reference,
     Constant,
@@ -320,6 +321,7 @@ fn role(opcode: Opcode, index: usize) -> Role {
         (Branch | Cbranch, 0) => Role::RelativeOrDirect,
         (Call, 0) => Role::Direct,
         (Load | Store, 0) => Role::Space,
+        (Segmentop, 0) => Role::SegmentSpace,
         (Callother, 0) => Role::Userop,
         (Subpiece, 1) | (Ptradd, 2) | (Insert, 2 | 3) | (Zpull | Spull, 1 | 2) => Role::Constant,
         (Indirect, 1) => Role::Reference,
@@ -332,7 +334,7 @@ fn effect_class(opcode: Opcode) -> EffectClass {
         Opcode::Call | Opcode::Callind => EffectClass::Call,
         Opcode::Callother => EffectClass::Userop,
         Opcode::Cpoolref | Opcode::New => EffectClass::Runtime,
-        Opcode::Multiequal | Opcode::Indirect => EffectClass::AnalysisContext,
+        Opcode::Multiequal | Opcode::Indirect | Opcode::Segmentop => EffectClass::AnalysisContext,
         Opcode::Unimplemented => EffectClass::Unimplemented,
         _ => EffectClass::Explicit,
     }
@@ -385,7 +387,7 @@ fn check_role(
             }
             check_range(definition, node, 1)?;
         }
-        Role::Space => {
+        Role::Space | Role::SegmentSpace => {
             if definition.kind != SpaceKind::Constant {
                 return Err(StorageError::Invalid(
                     "space selector must be constant".into(),
@@ -514,7 +516,9 @@ impl StorageLayout {
                 for (index, node) in op.inputs.iter().copied().enumerate() {
                     budget.map(map.len())?;
                     let operand_role = role(op.opcode, index);
-                    if let Some(target) = check_role(&map, operand_role, node)? {
+                    if let Some(target) = check_role(&map, operand_role, node)?
+                        && matches!(operand_role, Role::Space)
+                    {
                         if op.inputs[1].size != u32::from(space(&map, target)?.address_size) {
                             return Err(StorageError::Invalid(
                                 "LOAD/STORE pointer width differs from target space".into(),
@@ -730,6 +734,9 @@ impl StorageLayout {
                 Role::Userop => InputBinding::Userop(node.offset),
                 Role::Reference => InputBinding::OperationReference(node),
                 Role::Constant => InputBinding::ConstantMetadata(node),
+                Role::SegmentSpace => {
+                    InputBinding::SpaceSelector(target.expect("validated segment space"))
+                }
                 Role::Space => {
                     let target = target.expect("validated space selector");
                     if operation.inputs[1].size

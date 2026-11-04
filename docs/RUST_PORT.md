@@ -14,7 +14,7 @@ The goal is a Ghidra replacement that builds and runs without Java. The current 
 | `crates/ghidra-graph` | Bounded traversal, SCCs, dominators/frontiers, natural loops, and finite-exit-path post-dominators |
 | `crates/ghidra-cfg` | Raw P-code control flow, operation identities, instruction-entry provenance, calls and explicit terminal outcomes |
 | `crates/ghidra-ssa` | Bounded generic unpruned/liveness-pruned SSA construction and independent reaching-definition verification |
-| `crates/ghidra-analysis` | Alias-aware scalar storage, abstract memory dependencies, temporary lifetimes, opaque effects and P-code-to-SSA adaptation |
+| `crates/ghidra-analysis` | Alias-aware storage, memory dependencies, temporary lifetimes, opaque effects, P-code-to-SSA adaptation and typed expression reconstruction |
 | `crates/ghidra-languages` | Bounded catalog discovery, asset resolution, processor context/tracked settings, and typed compiler/ABI declarations |
 | `crates/ghidra-sleigh` | Raw SLEIGH source compilation, context-aware decoding, and explicit P-code adaptation |
 | `crates/ghidra-desktop` | Native desktop UI, file selection, navigation, and a headless JSON analysis command |
@@ -177,7 +177,23 @@ cases. The next decompiler stages are expression reconstruction/inspection,
 dataflow simplification, ABI/storage resolution, type propagation and structured output.
 The full replacement goal remains active and unfinished.
 
-This continuation passes 361 default workspace tests, six doctests, formatting
+`PcodeExpressions` now reconstructs typed terms from an owned SSA snapshot:
+scalar joins/slices, literal and SSA operands, versioned memory reads/writes,
+control metadata, undefined resets, phi identities and opaque results. It keeps
+loops as SSA references and has finite expression/reference/literal/work limits.
+Fourteen expression tests include 400 concrete-machine comparisons of generated
+alias/memory programs, mixed byte orders, all four memory word sizes, 512-byte
+aliases, exact limits and 25k/50k scaling. Processor-defined `SEGMENTOP` now
+requires an explicit opaque-effect policy rather than assuming injection semantics.
+
+The current source passes 386 default workspace tests, eight doctests, formatting,
+workspace Clippy, analysis rustdoc with warnings denied, and the release build.
+Java-free release checks preserve the earlier sample counts and now accept the
+two retained INT3-containing functions `40170E` and `40475A`. The expression
+library still needs independent review and desktop/JSON integration; it does
+not yet propagate values, infer types or generate structured source.
+
+The earlier `ea14839619` checkpoint passed 361 default tests, six doctests, formatting
 and workspace Clippy with warnings denied. The release executable builds and
 reports verified pruned SSA with `JAVA_HOME` empty and `PATH` restricted to
 Windows System32. `alias-branch.json` retains its one live phi. The retained

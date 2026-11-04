@@ -182,10 +182,27 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 The full replacement goal has resumed after the saved checkpoint below.
 Prioritize extraction of the shared application/document/job service and
 migration of the existing UI operations, then build native MCP control and
-protected multi-instance discovery on that API. Independent review is still
-required for the integrated compiler provenance repair (`da2b34ea83`) and
-native one-value fallback allocator (`48c91d72ac`). Their passing tests do not
-establish approval. Structuring and ELF RELR work remain separate open gates.
+protected multi-instance discovery on that API. Independent review approved
+the native one-value fallback allocator (`48c91d72ac`) with no required
+changes. Its six additional probes include 4,466 arithmetic comparisons and
+65 multi-span budget/rollback cases. The compiler provenance review found
+one adapter integration gap: direct destinations were checked as storage
+extents. The address-only fix and its three regressions require a fresh
+re-check. Structuring and ELF RELR work remain separate open gates.
+
+The address-boundary correction passes 871 default workspace tests and 24
+doctests on stable and Rust 1.88, formatting and workspace all-target Clippy.
+All 11 opt-in source probes pass in Rust 1.88 release. The optimized executable
+still produces byte-identical Java-free raw/function analysis baselines,
+including WinHelloCPP's 9,305,623-byte simplified report and 6,237,526-byte
+default report. Auxiliary branch destinations retain their spaces/widths,
+and cross-space execution/CFG requests still fail explicitly.
+
+The official Rust MCP SDK 3.8.0 compiles in an isolated Rust 1.88 Windows
+probe, with selected modern/legacy stdio and HTTP exchanges passing. Its
+Origin policy must be enabled explicitly, and SDK channel bounds alone do
+not bound all in-flight work. The [SDK evaluation](MCP_SDK_EVALUATION.md)
+records these deployment gates; no application MCP endpoint exists yet.
 
 ### Paused checkpoint: 2026-11-04
 

@@ -133,6 +133,8 @@ requires a separately tested compatibility adapter; do not mix its handshake
 or session rules into modern requests. See the official
 [versioning specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
 and [server discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover).
+The [SDK evaluation](MCP_SDK_EVALUATION.md) records a Rust 1.88 candidate and
+additional transport/admission limits required around the SDK.
 
 Use standard stdio and Streamable HTTP framing, errors and cancellation for
 each supported revision. In modern HTTP, request-stream closure cancels that

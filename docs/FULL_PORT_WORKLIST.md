@@ -100,15 +100,16 @@ and per-member actions remain governed by the source-derived
 [native allocation contract](NATIVE_MEMBER_ALLOCATION.md).
 Native one-value fallback allocation and its shared budget/journal kernel are
 integrated locally at `48c91d72ac`, with native floor-alignment and failure
-ordering. Independent review remains pending; this is not rule dispatch or
-whole-signature allocation.
+ordering. Independent review approved it without required changes; this is
+not rule dispatch or whole-signature allocation.
 ELF RELR metadata inspection remains pending under its
 [loader contract](ELF_RELR_PORT_CONTRACT.md); relocations are not applied.
 
-The local combined checkpoint passes 868 workspace tests and 24 doctests on
+The local combined checkpoint passes 871 workspace tests and 24 doctests on
 Windows with stable 1.99.1 and Rust 1.88.0. The earlier approved checkpoint's
-846 tests, 23 doctests and release executable also passed; the combined tree
-has not received a new release/Java-free or cross-platform validation claim.
+846 tests, 23 doctests and release executable also passed. The combined tree
+now has fresh Rust 1.88 Windows release/source-probe and Java-free report
+identity evidence, but has no fresh cross-platform validation claim.
 MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
 CI run 41839264716 passed the locked Rust 1.88 tests/doc examples and stable
 checks/source probes/release builds on Windows, Linux and macOS at source

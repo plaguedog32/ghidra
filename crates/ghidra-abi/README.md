@@ -1660,6 +1660,13 @@ the dual-class spill's error mapping are caught by the unchanged dual-class
 tests. Moving the consumed test after the class test is not observable (both
 only skip an entry), so it has no mutation.
 
+Independent review approved `48c91d72ac` at the integrated `259f6159da`
+checkpoint, with no required changes. It reran the default ABI tests and
+both real native-fallback probes, then added six external probes covering
+4,466 arithmetic comparisons, all nine storage classes, word-size/endian
+boundaries and 65 multi-span budget/rollback cases. This is source-derived
+review evidence, not execution against the native C++ decompiler.
+
 ### Remaining work
 
 The per-member action itself is not implemented: extraction gates, raw-width

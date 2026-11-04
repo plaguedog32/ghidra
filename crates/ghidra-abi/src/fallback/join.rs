@@ -298,7 +298,11 @@ struct Tile {
 /// Remove `excess` bytes from one placed single-range piece
 /// (`AssignAction::justifyPieces`). The result stays inside the placed range,
 /// which already fits its address domain.
-fn crop(piece: &mut PlacedPiece, excess: u32, from_start: bool) -> Result<(), &'static str> {
+pub(super) fn crop(
+    piece: &mut PlacedPiece,
+    excess: u32,
+    from_start: bool,
+) -> Result<(), &'static str> {
     if piece.role == PieceRole::Padding {
         return Err("justification would truncate constant padding");
     }
@@ -323,7 +327,7 @@ fn crop(piece: &mut PlacedPiece, excess: u32, from_start: bool) -> Result<(), &'
 /// Native getAddrBySlot's rejection checks with status -1, before any
 /// address construction. A consumed stack group remains unsupported when
 /// native code would allocate, but it must not mask a guaranteed NoFit.
-fn consumed_stack_rejection(
+pub(super) fn consumed_stack_rejection(
     declared: &ghidra_languages::ParamEntry,
     size: u32,
     type_align: u32,
@@ -887,14 +891,15 @@ impl AllocationState {
     }
 
     /// `entry.front().getSpace()->isBigEndian()` over the per-space model.
-    fn list_big_endian(
+    /// Shared with `<join_dual_class>`; every error converts one-to-one.
+    pub(super) fn list_big_endian(
         &self,
         storage: &CompilerStorage,
         first: BindingSite,
         budget: &mut Budget,
-    ) -> Result<bool, JoinError> {
+    ) -> Result<bool, FallbackError> {
         budget.lookup(storage.bindings().len())?;
-        let binding = storage.binding(first).ok_or(JoinError::StateMismatch)?;
+        let binding = storage.binding(first).ok_or(FallbackError::StateMismatch)?;
         let file = storage.register_file();
         let id = match &binding.storage {
             ResolvedStorage::Single(range) => match range.address.space {
@@ -908,7 +913,8 @@ impl AllocationState {
             ResolvedStorage::Join { .. } => file.default_space(),
         };
         budget.lookup(file.spaces().len())?;
-        let space = file.space(id).ok_or(JoinError::Unsupported {
+        let space = file.space(id).ok_or(FallbackError::Unsupported {
+            request: 0,
             site: first,
             reason: "unknown address space",
         })?;

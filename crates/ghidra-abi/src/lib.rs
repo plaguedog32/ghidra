@@ -4,9 +4,10 @@
 //! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
 //! evaluated separately, over either the Java datatype view or the converted
 //! native decompiler view (`NativeTypeGraph`). Selected-pool assignments,
-//! ordered resource effects and the native `<join>` action support rule
-//! execution; the full rule dispatcher and signature allocator remain
-//! unimplemented. See the crate README for those boundaries.
+//! ordered resource effects, the native `<join>` action and the
+//! graph-driven `<join_dual_class>` action support rule execution; the full
+//! rule dispatcher and signature allocator remain unimplemented. See the
+//! crate README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
@@ -29,13 +30,15 @@ pub use compiler::{
 };
 pub use error::{AbiError, AbiLimits, AbiResult};
 pub use fallback::{
-    AllocationState, ClassMatch, DeclaredRules, EffectBatch, EffectContext, EffectError,
-    EffectLimits, EffectOutcome, EffectUsage, FallbackAssignment, FallbackBatch, FallbackError,
-    FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest, FallbackUsage, GroupState,
-    JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig, JoinError, JoinLimits, JoinNoFit,
-    JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind, JoinStorage, JoinUsage,
-    OccupiedExtent, PoolAssignment, PoolRequest, SlotRange, StackThresholdIndexing,
-    UnexecutedDeclarations,
+    AllocationState, ClassMatch, DeclaredRules, DualClass, DualJoinAllocation, DualJoinAssignment,
+    DualJoinAttributes, DualJoinConfig, DualJoinError, DualJoinLimits, DualJoinNoFit,
+    DualJoinOutcome, DualJoinStep, DualJoinStepKind, DualJoinUsage, DualTileRejection, EffectBatch,
+    EffectContext, EffectError, EffectLimits, EffectOutcome, EffectUsage, FallbackAssignment,
+    FallbackBatch, FallbackError, FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest,
+    FallbackUsage, GroupState, JoinAllocation, JoinAssignment, JoinAttributes, JoinConfig,
+    JoinError, JoinLimits, JoinNoFit, JoinOutcome, JoinPiece, JoinRequest, JoinStep, JoinStepKind,
+    JoinStorage, JoinUsage, OccupiedExtent, PoolAssignment, PoolRequest, SlotRange,
+    StackThresholdIndexing, UnexecutedDeclarations,
 };
 pub use native_alignments::{
     NativeAlignmentError, NativeAlignmentLimits, NativeAlignmentMap, NativeAlignmentOrigin,

@@ -8,7 +8,7 @@ Ghidra C++ process.
 Whole-signature allocation, complete prototype-rule dispatch, injection
 compilation and type recovery remain separate stages. Resource-group planning, placement in
 an explicitly selected pool, the retained declaration-ordered *fallback*
-primitive and the native `<join>` rule action are described below. Successful storage resolution, or a successful
+primitive and the native `<join>` and `<join_dual_class>` rule actions are described below. Successful storage resolution, or a successful
 fallback batch, does not mean that a calling convention is executable.
 
 ## API and ownership
@@ -1083,10 +1083,339 @@ probed. The five probes ran in about 3 s after a release build. These checks
 cover the action, not the rule filters or dispatch.
 
 Still required, for a full calling convention: rule matching and dispatch,
-`pointermax`, hidden returns, `sharestack`, dual-class and per-member joins,
-datatype-driven requests from the native graph, output-trial recovery
+`pointermax`, hidden returns, `sharestack`, per-member joins, datatype-driven
+`<join>` requests from the native graph, output-trial recovery
 (`fillinOutputMap`) and SSA call effects. A source oracle for join tiles,
 which upstream nests, is also missing.
+
+## Native dual-class join action
+
+`AllocationState::assign_dual_join(resources, &DualJoinAttributes,
+Arc<NativeTypeGraph>, NativeTypeId, DualJoinLimits)` runs one native
+`<join_dual_class>` rule action (`MultiSlotDualAssign`,
+modelrules.cc:1213-1470) on an input or output state. It is the first
+allocation operation driven by the converted native datatype graph: the raw
+size (`getSize`), alignment (`getAlignment`) and primitives
+(`PrimitiveExtractor`) all come from the graph, never from a caller-supplied
+width or from P-code. `DualJoinAttributes::from_action` adapts a parsed
+`RuleAction::JoinDualClass`. No rule filter, precondition or prototype is
+consulted; this is not rule dispatch.
+
+```rust
+use std::sync::Arc;
+use ghidra_abi::*;
+use ghidra_languages::{CompilerSpec, DataOrganization};
+use ghidra_pcode::{AddressSpace, Endianness, SpaceId, SpaceKind};
+use ghidra_types::{Composite, Field, MinimumAlignment, Packing, TypeDefinition, TypeId,
+    TypeKind, TypeLayouts};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let space = |id, name: &str, kind| AddressSpace { id: SpaceId(id), name: name.into(),
+    kind, address_size: 4, word_size: 1, endianness: Endianness::Little };
+let registers = [("r0", 0), ("d0", 0x10), ("sp", 0x20)].iter().map(|&(name, offset)|
+    RegisterDefinition { name: name.into(), space: SpaceId(1), offset, size: 8 }).collect();
+let file = Arc::new(RegisterFile::new(vec![space(0, "ram", SpaceKind::Ram),
+    space(1, "register", SpaceKind::Register)], SpaceId(0), registers,
+    Default::default())?);
+let spec = CompilerSpec::parse_str(r#"<compiler_spec>
+<stackpointer register="sp" space="ram"/><default_proto>
+<prototype name="p" extrapop="0" stackshift="0"><input>
+<pentry minsize="1" maxsize="8" storage="float"><register name="d0"/></pentry>
+<pentry minsize="1" maxsize="8"><register name="r0"/></pentry>
+<rule><datatype name="any" maxsize="16"/><join_dual_class/></rule>
+</input><output/></prototype></default_proto></compiler_spec>"#,
+    None, &Default::default())?;
+let action = DualJoinAttributes::from_action(&spec.prototypes[0].input.rules[0].action)
+    .expect("a <join_dual_class> action");
+let storage = CompilerStorage::new(Arc::new(spec), file, Default::default())?;
+let resources = CompilerResources::new(Arc::new(storage), Default::default())?;
+// struct { double d; long l; }, decoded as the native decompiler sees it.
+let pair = Composite { fields: vec![Field::new("d", TypeId(0)), Field::new("l", TypeId(1))],
+    packing: Packing::Default, minimum_alignment: MinimumAlignment::Default };
+let layouts = Arc::new(TypeLayouts::new(vec![
+    TypeDefinition::new("double", TypeKind::Float { bytes: 8 }),
+    TypeDefinition::new("long", TypeKind::Integer { bytes: 8, signed: true }),
+    TypeDefinition::new("pair", TypeKind::Structure(pair)),
+].into(), DataOrganization::default().resolve(4), Default::default())?);
+let map = NativeAlignmentMap::from_organization(layouts.organization(), Default::default())?;
+let graph = Arc::new(NativeTypeGraph::new(layouts, &map, Default::default(),
+    Default::default())?);
+let mut state = AllocationState::new(&resources, 0, ParameterDirection::Input,
+    Default::default())?;
+let result = state.assign_dual_join(&resources, &action, graph.clone(),
+    graph.native(TypeId(2))?, Default::default())?;
+let DualJoinOutcome::Assigned(allocation) = &result.outcome else { unreachable!() };
+let JoinStorage::Pieces(pieces) = &allocation.storage else { unreachable!() };
+// The double's window took d0 and the long's took r0. Little endian lists the
+// most significant piece (r0) first.
+let layout: Vec<_> = pieces.iter().map(|p| (p.piece.storage.address.offset,
+    p.piece.lsb_byte)).collect();
+assert_eq!(layout, [(0, 8), (0x10, 0)]);
+assert!(Arc::ptr_eq(&result.graph, &graph));
+# Ok(())
+# }
+```
+
+### Configuration and initialization
+
+`DualJoinAssignment::config` reports the resolved fields. The constructor
+defaults are a `General` base class, a `Float` alternate class, no stack spill
+for input *and* output lists (unlike `<join>`), and no fill-alternate.
+Most-significant-first consumption and right justification default to the
+list byte order, which is the same first-entry policy and shared helper as
+`<join>`. `reversejustify` and `reversesignif` toggle only when declared
+`true`. `storage` and `a` are synonyms. When both are present, the
+`ghidra-languages` parser keeps `storage`, while native decode keeps the later
+attribute. That is a parser policy outside this crate.
+
+`initializeEntries` runs in one scan. Each tile list holds the exclusion
+entries of exactly its class that have exactly one resource group, in
+declaration order (`extractTiles`). Equal base and alternate classes put an
+entry in both lists. Zero or over-`i32::MAX` tile widths are
+`InvalidDeclaration` during the scan, as for `<join>`. Then come `NoTiles`
+(the base class is checked first) and `TileSizeMismatch`, which compares only
+the *first* base and alternate widths and records `tile_size`. Last is
+`MissingStack`, raised only with spill enabled when the last entry is not an
+aligned stack pool (`getStackEntry`; `align == maxsize` decodes to an
+exclusion entry, which is not a pool). These are errors in that source order,
+raised before any datatype work.
+
+### Datatype and primitives
+
+The root is extracted with `PrimitiveExtractor(dt, false, false, 0, 1024)`.
+Unions are legal, arrays are expanded and 1,024 primitives per context is the
+semantic maximum. An invalid extraction (including the 1,025th primitive),
+then an empty one, then one with holes is a `NoFit` that carries the
+extractor's reason. None of these is a fabricated layout or an error. As in
+the source, `containsUnknown` and `aligned` are not tested. In the native
+extractor an unaligned structure field always also makes a hole, so an
+unaligned primitive is accepted only where a union dropped its member's
+flags. Non-byte bitfields are invisible and leave holes; byte-range bitfields
+are ordinary primitives. Extraction runs on the remaining shared work budget,
+with its own live-primitive and depth limits.
+
+The result keeps the `Arc<NativeTypeGraph>` it was given (compared by
+identity), the root ID and the extracted primitives with their native IDs and
+offsets, so every ID in a result or `NoFit` reason stays interpretable.
+Unknown IDs and failed conversions are `DualJoinError::Type`.
+
+### Windows and tiles
+
+The loop walks windows of exactly `tile_size` bytes from offset
+`typeSize - sizeLeft`. `getTileClass` fails (`DualJoinNoFit::Window`) when no
+primitive is left, when the next primitive starts before the window, when a
+primitive's *raw* extent (`getSize`, not the aligned size) crosses the window
+end, or when no primitive starts inside the window. A window is alternate only
+if every primitive in it maps to the alternate class under
+`metatype2typeclass`: `Float` is float, `Ptr` is ptr, and everything else,
+including Unknown, Code, Bool, enums and integers, is general. With
+`fillalternate`, an alternate window must also hold exactly one primitive
+whose raw size equals `tile_size`.
+
+The window's class is chosen before its list is searched. `getFirstUnused`
+keeps one cursor per list and skips any nonzero status, positive slot cursors
+included, without changing it. A shared group consumed through one list, as in
+MIPS64's float/general `<group>` pairs, is therefore skipped in the other.
+Each chosen tile is consumed (its group to -1) at its full declared width, and
+the offset advances by that width. Later tiles may be narrower or wider than
+`tile_size`, since the source checks only the first widths. This is modeled
+exactly: windows keep `tile_size`, so a wider tile can leave the next
+primitive before the window (`StartsBeforeWindow`). Step provenance
+(`first_primitive..primitive_end`) is the window's classification, not
+physical containment.
+
+### Exhaustion, spill, excess and order
+
+If the chosen class has no unused tile, the action is `DualJoinNoFit::Exhausted`
+without spill. With spill it does not switch classes: the *entire* remaining
+suffix goes to the stack pool. The stack uses the datatype's own alignment
+(not one) and the action's justification. Native `getAddrBySlot` floor
+division is reproduced for the slot waste, so an alignment that is not a
+power of two wastes exactly the native slots. (`<join>` uses exact congruence;
+the two agree for power-of-two alignments.) A stack minimum or capacity
+rejection is `DualJoinNoFit::Stack`. A consumed first stack group keeps the reviewed
+`<join>` priority: native rejection with the actual -1 cursor first, then an
+`Unsupported` refusal if native code would allocate from it.
+
+Excess bytes arise only when the tiles overrun the value without a spill.
+`justifyPieces` removes them from the first piece when justifying right, else
+from the last, starting `excess` bytes in iff `big_endian ^
+consume_most_significant ^ justify_right`. Unlike `<join>` there is no
+floating-extension shortcut: a 4-byte float in an 8-byte float tile is a 4-byte
+slice of that register. Pieces are reported most significant first
+(`assignAddressFromPieces`), reusing `JoinPiece` and `JoinStorage`; steps are
+in consumption order with class, list position, offset, value bytes and the
+stack slot range.
+
+### Transactions and stricter policies
+
+Success commits every status change and held extent; `NoFit` and every error
+restore the state through a bounded journal, never a cloned state. The
+following are refused with no partial allocation. The refusals run only when
+the action would otherwise succeed, so they never mask a source `NoFit`.
+
+- **Held storage.** A tile holds its whole declared pool, not just the cropped
+  bytes, and the spill holds its used slots. Resource groups alone do not
+  prevent physical aliasing: two join tiles sharing a register, or a tile
+  whose bytes an aligned pool already holds, have distinct groups. Returning
+  such storage is `Overlap`; a used non-first stack group is `GroupInUse`.
+- **Join-pool tiles** contribute their own physical pieces in place, with
+  constant padding kept as unheld padding. Truncating a join tile, a join
+  tile narrower than its join storage, and a floating-extension join tile
+  inside a compound or truncated value are `Unsupported`. An exact single
+  floating-extension tile is that recorded conversion. Excess at least as
+  large as the justified piece, possible only with narrower later tiles, is
+  `Unsupported` rather than a zero or wrapped width.
+- **Native ints.** A window or primitive end beyond `i32::MAX`, or stack slot
+  arithmetic beyond it, is a refusal, never a wrapped value.
+- **Snapshot.** The state must belong to the same `CompilerResources`
+  overlay (`StateMismatch`). A graph whose layouts declare a byte order other
+  than the language's default space is `ByteOrderMismatch`; its byte-range
+  bitfield offsets would describe another byte order. The native decompiler
+  has one architecture, so it cannot mismatch here.
+
+### Bounds and cost
+
+`DualJoinLimits` bounds tiles in both lists together (default 100,000),
+examined entries (4 million), `getTileClass` primitive visits (4 million),
+group references (8 million), journaled group updates (1 million), nested
+placements (65,536), output pieces (65,536), occupied extents held after the
+call (65,536), source pieces per nested placement (1,024), extraction live
+primitives (1 million), extraction depth (100,000) and work (64 million).
+Each limit is `DualJoinError::Limit(name)` with the field's resource name, a
+nested output-piece limit as `"pieces"` and extraction limits as `"extraction
+live primitives"`/`"extraction depth"`. Already-held extents are bounded on
+entry. Other error classes are separate variants.
+
+Work charges, with `lookup(n) = bits(n) + 1`, are:
+
+- 1 for the header, 1 for the datatype, a space lookup when the graph declares
+  a byte order, and a binding and a space lookup for the list byte order.
+- 1 per scanned entry plus 1 per list membership; a binding lookup checks the
+  stack when spilling.
+- The nested extraction's own work.
+- 1 per window, 1 per primitive visit, 2 per tile visit (entry plus status
+  read) and 1 per status write.
+- For the spill: 1 status read, 1 for the native cursor (or -1 rejection), the
+  nested placement and 1 write.
+- For each tile: the nested placement, a binding lookup, the join-piece count
+  for a join pool, the held-span charges and an occupied lookup per span.
+- For the spill's safeguards: 1 per stack group, its spans and lookups.
+- 1 per output piece for ordering and significance.
+
+The action is iterative and allocates nothing per payload byte. Its vectors
+(tiles, choices, steps, pieces) are bounded by checked counts before growth.
+Work is linear in entries, tiles, windows and primitive visits, plus
+logarithmic lookups.
+
+### Validation evidence
+
+`tests/dual_join_action.rs` has 23 directed tests with hand-derived
+expectations, covering:
+
+- Defaults, true-only toggles and parsed `storage`/`a`/`b` attributes, and
+  independent base and alternate cursors over mixed scalar structures.
+- Every `metatype2typeclass` class: pointer as base or as the alternate,
+  Unknown, Bool, enum, Code and aliases, with containsUnknown accepted. Union
+  refinement, and an unaligned packed member accepted through a union.
+- Fill-alternate on counts and on the raw size, and raw versus aligned sizes
+  with a 10-byte float (16-byte tiles crop 6 bytes; 12-byte windows accept
+  what the aligned extent would cross).
+- Holes from a non-byte bitfield, empty, void, empty and incompatible unions,
+  and exactly 1,024 versus 1,025 primitives.
+- All four window rejections, and later tiles narrower and wider than
+  `tile_size`.
+- The 8-way byte-order, significance and justification matrix, the first
+  entry's byte order in a mixed-endian layout, and the graph byte-order
+  mismatch.
+- Independent class exhaustion with the whole suffix spilled, and window
+  failures that precede exhaustion.
+- MIPS-style shared groups, kept positive cursors and double ownership.
+- Stack minimum, capacity, type alignment 16 and a native floor-division
+  alignment of 12, and four consumed-cursor cases (minimum, refusal, and
+  alignment-driven exhaustion).
+- Join and padding tiles, floating-extension tiles and a shared-register
+  overlap, plus initialization, ID, conversion and state errors.
+- Rollback after partial success.
+- Absolute work pins derived by hand: 78 for `{double, long}` over d0/x0 and
+  115 for `{double, long, long}` spilling one doubleword. Every smaller work
+  budget fails with the state unchanged.
+- Every limit at its usage and one below, including extraction live/depth
+  and nested source pieces, and the held-extent cap on entry.
+- 4x scaling (200 to 800 tiles and primitives) within 4x-5x work, plus
+  determinism, thread safety and graph identity.
+
+`tests/dual_join_oracle.rs` transcribes `PrimitiveExtractor` (recursively,
+with `handleUnion`, `commonRefinement` and `checkOverlap`, over the public
+graph accessors), `initializeEntries`, `getFirstUnused`, `getTileClass`,
+`assignAddress`, `justifyPieces`, `extractTiles`, `getStackEntry`,
+`getAddrBySlot` (native floor division) and `assignAddressFromPieces` over
+`int4` statuses. It also independently models held extents and the refusal
+order. It never calls the production extractor, placement or the action's
+helpers. Over 8,000 generated layouts it compared 35,776 calls. The layouts
+cover both byte orders, input and output lists, both growth directions,
+MIPS-style declared pairs, aligned pools with seeded cursors and random graphs
+of scalars, structures, packed structures, arrays, unions, aliases and
+bitfields. The results include 12,800 assignments (242 with both classes,
+2,005 with heterogeneous widths, 1,087 spills, 6,287 crops, 690
+fill-alternate demotions, 87 shared-group skips and 290 positive-cursor
+skips). They also include every window rejection, both exhaustion classes,
+stack no-fits, invalid/empty/holey extractions, initialization errors, 54
+invalid justifications, 195 overlaps and 1,049 datatype errors. Primitives,
+pieces, steps, statuses and held extents are compared after every call.
+
+Forty-six compiling mutations of `dual.rs` were run against `dual_join_action`
+and `dual_join_oracle`; the source was restored and hash-checked after each
+run, and 45 were caught. The caught mutations cover:
+
+- Defaults and toggles, `metatype2typeclass`, the four window checks, raw
+  versus aligned sizes, the fill-alternate size test and empty windows.
+- The initial class, positive cursors, independent list cursors and advancing
+  by the tile's own width.
+- Stack alignment (including native floor division versus exact congruence),
+  the consumed-cursor alignment, and the stack cursor and justification.
+- Cropping, ordering and rollback.
+- Extraction options and the 1,024 maximum, the hole gate, an added unknown
+  gate, whole-suffix spill, tile eligibility and initialization errors.
+- Held extents, work charges, the byte-order check, provenance and the
+  held-extent cap.
+
+The survivor changes fill-alternate's `count > 1` to `count > 2`, and it is
+equivalent. `decodeField` drops a field that starts before the previous raw
+end, array strides are aligned sizes and refinement never overlaps. So a
+window whose first primitive has raw size `tile_size` holds exactly one
+primitive, and any window with two primitives already fails the size test.
+
+`tests/dual_join_real.rs` is ignored by default; run
+`cargo test --release -p ghidra-abi --test dual_join_real -- --ignored`. It
+compiles real SLEIGH register files, pins the parsed `<join_dual_class>`
+attributes to the `.cspec` text, and converts C declarations with each spec's
+own data organization:
+
+- x86-64 GCC `__stdcall` (bare `<join_dual_class/>`). `{double, long}` is
+  XMM0_Qa then RDI, and `{float, float, int, int}` is XMM1_Qa then RSI.
+  `{float, int}` is RDX, `{float}` is the low four bytes of XMM2_Qa, and
+  `{long, double}` is RCX then XMM3_Qa. `{long double}` crosses the first
+  eightbyte and is a `NoFit`. A value that exhausts XMM0-7 is a `NoFit` that
+  changes nothing. Outputs use XMM0_Qa/XMM1_Qa and RAX/RDX.
+- MIPS64 BE and LE `__stdcall` (`stackspill`, `fillalternate`, BE
+  `reversejustify`). `{double, long}` is f12 then a1, because f12 consumed
+  a0's group. `{float, float}` is general under fill-alternate. `{int}` and
+  `{float}` use a0's first four bytes: the most significant half on big
+  endian, the least significant on little. Nine doubles are f12-f19 plus 8
+  stack bytes at offset 0, and ten longs are a0-t3 plus 16 stack bytes.
+
+Expected registers come from retained entry order, `<group>` structure and
+compiled offsets, and byte significance from the declared byte order. The
+results match the SysV x86-64 eightbyte classification and the MIPS N64 rule
+for these types. The probes run in about 1.3 s after a release build. They
+cover only the listed pairs and types, not processor-wide parity or rule
+dispatch.
+
+Still required for a full calling convention: output-trial recovery
+(`fillinOutputMap`), rule matching and dispatch with preconditions and side
+effects, `pointermax`, hidden returns, per-member joins
+(`join_per_primitive`), whole-signature allocation, `sharestack`, SSA call
+effects and desktop exports. This action has had no independent review yet.
 
 ## Native primitive alignment
 
@@ -1385,8 +1714,9 @@ external test harnesses add no Java or C++ runtime dependency to the library.
 
 ## Native gaps and remaining work
 
-- Nothing consumes these APIs yet: no rule dispatcher, join/member actions,
-  signature allocation, SSA call effects, CLI or desktop flow.
+- Only the `<join_dual_class>` action consumes the graph and extractor so
+  far. There is no rule dispatcher, per-member join action, signature
+  allocation, SSA call effect, CLI or desktop flow.
 - `TypeFactory` names, native IDs, core-type caches and interning; typedef
   formats; pointer typedef settings and relative pointers; string and unicode
   transports; spacebase and partial types; variable-length and native

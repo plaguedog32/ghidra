@@ -18,8 +18,14 @@ use crate::{
     PlacementOutcome, PlacementRequest, ResolvedStorage, ResourceId, StorageRange, place_parameter,
 };
 
+mod dual;
 mod effects;
 mod join;
+pub use dual::{
+    DualClass, DualJoinAllocation, DualJoinAssignment, DualJoinAttributes, DualJoinConfig,
+    DualJoinError, DualJoinLimits, DualJoinNoFit, DualJoinOutcome, DualJoinStep, DualJoinStepKind,
+    DualJoinUsage, DualTileRejection,
+};
 pub use effects::{
     EffectBatch, EffectContext, EffectError, EffectLimits, EffectOutcome, EffectUsage,
     StackThresholdIndexing,

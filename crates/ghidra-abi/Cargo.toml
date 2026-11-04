@@ -1,0 +1,18 @@
+[package]
+name = "ghidra-abi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native compiler storage resolution against language registers and spaces"
+publish = false
+
+[dependencies]
+ghidra-languages = { path = "../ghidra-languages" }
+ghidra-pcode = { path = "../ghidra-pcode" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+ghidra-sleigh = { path = "../ghidra-sleigh" }
+serde_json = "1"

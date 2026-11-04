@@ -1082,6 +1082,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghidra-abi"
+version = "0.3.0"
+dependencies = [
+ "ghidra-languages",
+ "ghidra-pcode",
+ "ghidra-sleigh",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ghidra-analysis"
 version = "0.3.0"
 dependencies = [

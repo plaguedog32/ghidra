@@ -3512,17 +3512,36 @@ impl Reader {
                         "b",
                     ],
                 );
-                if el.attr("storage").is_some() && el.attr("a").is_some() {
-                    let msg = "<join_dual_class> has both `storage` and `a` (synonyms)".into();
-                    self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+                // MultiSlotDualAssign::decode reads both aliases in document
+                // order. Every value must decode, including an earlier one
+                // replaced by a later attribute.
+                let mut storage_a = None;
+                let mut class_from = None;
+                let mut ok = true;
+                for (key, value) in &el.attrs {
+                    if !matches!(key.as_str(), "storage" | "a") {
+                        continue;
+                    }
+                    if let Some(prev) = class_from {
+                        let msg = format!(
+                            "<join_dual_class> has both `{prev}` and `{key}`; the later `{key}` wins like Ghidra"
+                        );
+                        self.warn(DiagnosticKind::DuplicateEntry, el.line, msg);
+                    }
+                    class_from = Some(key);
+                    match StorageClass::parse(value) {
+                        Some(class) => storage_a = Some(class),
+                        None => {
+                            self.invalid(el, key, value, "a storage class");
+                            ok = false;
+                        }
+                    }
                 }
-                let a_attr = if el.attr("storage").is_some() {
-                    "storage"
-                } else {
-                    "a"
-                };
+                if !ok {
+                    return None;
+                }
                 RuleAction::JoinDualClass {
-                    storage_a: self.storage_class_attr(el, a_attr).ok()?,
+                    storage_a,
                     storage_b: self.storage_class_attr(el, "b").ok()?,
                     reverse_justify: self.bool_attr(el, "reversejustify"),
                     reverse_significance: self.bool_attr(el, "reversesignif"),

@@ -388,30 +388,37 @@ fn type_class(meta: MetaType) -> StorageClass {
     }
 }
 
-/// Native getAddrBySlot's alignment waste for a nonnegative cursor, with its
-/// floor division (`(slotnum*alignment) % typeAlign`) kept exact.
-fn native_aligned_cursor(
-    cursor: u64,
+/// Native getAddrBySlot's arithmetic before its capacity check. Keep floor
+/// division for alignment waste and refuse int4 overflow even when wide
+/// placement arithmetic would subsequently report SlotsExhausted.
+fn native_spill_cursor(
+    mut cursor: u64,
     alignment: u32,
     type_align: u32,
+    size: u32,
 ) -> Result<u64, &'static str> {
-    if type_align <= alignment {
-        return Ok(cursor);
-    }
     let int = u64::from(i32::MAX as u32);
-    let bytes = cursor
-        .checked_mul(u64::from(alignment))
-        .filter(|n| *n <= int)
-        .ok_or("stack cursor bytes exceed the native int range")?;
-    let remainder = bytes % u64::from(type_align);
-    if remainder == 0 {
-        return Ok(cursor);
+    if cursor > int {
+        return Err("stack cursor exceeds the native int range");
     }
-    let next = cursor + (u64::from(type_align) - remainder) / u64::from(alignment);
-    if next > int {
-        return Err("aligned stack cursor exceeds the native int range");
+    if type_align > alignment {
+        let bytes = cursor
+            .checked_mul(u64::from(alignment))
+            .filter(|n| *n <= int)
+            .ok_or("stack cursor bytes exceed the native int range")?;
+        let remainder = bytes % u64::from(type_align);
+        if remainder != 0 {
+            cursor += (u64::from(type_align) - remainder) / u64::from(alignment);
+            if cursor > int {
+                return Err("aligned stack cursor exceeds the native int range");
+            }
+        }
     }
-    Ok(next)
+    let slots = u64::from(size).div_ceil(u64::from(alignment));
+    if cursor + slots > int {
+        return Err("stack cursor plus value slots exceeds the native int range");
+    }
+    Ok(cursor)
 }
 
 #[derive(Clone, Copy)]
@@ -472,14 +479,14 @@ fn tile_class(
     budget: &mut Budget,
 ) -> Result<Result<DualClass, DualTileRejection>, DualJoinError> {
     budget.work(1)?;
-    if *index >= primitives.len() {
-        return Ok(Err(DualTileRejection::NoPrimitiveLeft));
-    }
     let end = u64::from(offset) + u64::from(config.tile_size);
     if end > u64::from(i32::MAX as u32) {
         return Err(DualJoinError::NativeIntRange(
             "tile window end exceeds the native int range",
         ));
+    }
+    if *index >= primitives.len() {
+        return Ok(Err(DualTileRejection::NoPrimitiveLeft));
     }
     let first_size = primitives[*index].size;
     let mut class = DualClass::Alternate;
@@ -889,8 +896,13 @@ impl AllocationState {
                         Err(NoFit::BelowMinimum)
                     } else {
                         Ok(
-                            native_aligned_cursor(*used_slots, declared.alignment(), align)
-                                .map_err(unsupported)?,
+                            native_spill_cursor(
+                                *used_slots,
+                                declared.alignment(),
+                                align,
+                                uncovered,
+                            )
+                            .map_err(DualJoinError::NativeIntRange)?,
                         )
                     }
                 }

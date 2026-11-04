@@ -1825,3 +1825,77 @@ fn results_are_deterministic_thread_safe_and_retain_the_graph() {
     assert_ne!(a, first.0);
     assert_eq!(a.outcome, first.0.outcome);
 }
+
+#[test]
+fn spill_native_int_overflow_precedes_capacity_rejection_and_rolls_back() {
+    let mut t = Source::default();
+    let double = t.float(8);
+    let value = t.structure(&[double, double, double]);
+    let g = graph(&t, false);
+    let r = plan(
+        &(reg("d0", 8, "float") + &reg("x0", 8, "general") + &stack(1, i32::MAX as u32, 1, 0)),
+        LE,
+    );
+    let mut state = fresh(&r, IN);
+    state
+        .assign_pool(
+            &r,
+            PoolRequest {
+                entry: 2,
+                size: i32::MAX as u32 - 7,
+                alignment: 1,
+                justification: Justification::Default,
+            },
+            Default::default(),
+        )
+        .unwrap();
+    let before = snapshot(&state);
+    // The first double uses d0. The remaining 16 bytes spill from the
+    // aligned cursor 2147483640. fspec.cc evaluates cursor + slotsused
+    // before checking capacity, so wide-arithmetic NoFit would hide overflow.
+    assert!(matches!(
+        state.assign_dual_join(&r, &spill(), g, nid(value), Default::default()),
+        Err(DualJoinError::NativeIntRange(
+            "stack cursor plus value slots exceeds the native int range"
+        ))
+    ));
+    assert_eq!(snapshot(&state), before);
+}
+
+#[test]
+fn window_native_int_overflow_precedes_primitive_exhaustion_and_rolls_back() {
+    let mut t = Source::default();
+    let value = t.int(2_147_483_640, false);
+    let g = graph(&t, false);
+    assert_eq!(g.get(nid(value)).unwrap().size, 2_147_483_640);
+    let list =
+        r#"<pentry minsize="1" maxsize="2147483647"><addr space="register" offset="0"/></pentry>"#
+            .to_string()
+            + r#"<pentry minsize="1" maxsize="1"><addr space="register" offset="0x80000000"/></pentry>"#
+            + r#"<pentry minsize="1" maxsize="2147483647" storage="float"><addr space="register" offset="0x100000000"/></pentry>"#;
+    let r = plan(&list, LE);
+    let mut state = fresh(&r, IN);
+    state
+        .assign_pool(
+            &r,
+            PoolRequest {
+                entry: 0,
+                size: 1,
+                alignment: 1,
+                justification: Justification::Default,
+            },
+            Default::default(),
+        )
+        .unwrap();
+    let before = snapshot(&state);
+    // The first window ends exactly at i32::MAX, classifies the sole
+    // primitive, then takes the later one-byte tile. The next window must
+    // check 1 + i32::MAX before returning NoPrimitiveLeft (modelrules.cc:1262).
+    assert!(matches!(
+        state.assign_dual_join(&r, &attrs(), g, nid(value), Default::default()),
+        Err(DualJoinError::NativeIntRange(
+            "tile window end exceeds the native int range"
+        ))
+    ));
+    assert_eq!(snapshot(&state), before);
+}

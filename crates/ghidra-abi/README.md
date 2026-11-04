@@ -1163,9 +1163,8 @@ for input *and* output lists (unlike `<join>`), and no fill-alternate.
 Most-significant-first consumption and right justification default to the
 list byte order, which is the same first-entry policy and shared helper as
 `<join>`. `reversejustify` and `reversesignif` toggle only when declared
-`true`. `storage` and `a` are synonyms. When both are present, the
-`ghidra-languages` parser keeps `storage`, while native decode keeps the later
-attribute. That is a parser policy outside this crate.
+`true`. `storage` and `a` are synonyms. The `ghidra-languages` parser follows
+native decode: the later attribute wins, and every declared value must decode.
 
 `initializeEntries` runs in one scan. Each tile list holds the exclusion
 entries of exactly its class that have exactly one resource group, in
@@ -1176,8 +1175,9 @@ entry in both lists. Zero or over-`i32::MAX` tile widths are
 the *first* base and alternate widths and records `tile_size`. Last is
 `MissingStack`, raised only with spill enabled when the last entry is not an
 aligned stack pool (`getStackEntry`; `align == maxsize` decodes to an
-exclusion entry, which is not a pool). These are errors in that source order,
-raised before any datatype work.
+exclusion entry, which is not a pool). These initialization errors retain that
+source order. The API first validates the supplied datatype ID, conversion and
+byte order; extraction follows initialization.
 
 ### Datatype and primitives
 
@@ -1266,7 +1266,9 @@ the action would otherwise succeed, so they never mask a source `NoFit`.
   large as the justified piece, possible only with narrower later tiles, is
   `Unsupported` rather than a zero or wrapped width.
 - **Native ints.** A window or primitive end beyond `i32::MAX`, or stack slot
-  arithmetic beyond it, is a refusal, never a wrapped value.
+  arithmetic beyond it, is a refusal, never a wrapped value. Window-end
+  arithmetic precedes primitive exhaustion, and stack cursor addition precedes
+  capacity rejection, matching the order in which native code evaluates them.
 - **Snapshot.** The state must belong to the same `CompilerResources`
   overlay (`StateMismatch`). A graph whose layouts declare a byte order other
   than the language's default space is `ByteOrderMismatch`; its byte-range
@@ -1309,7 +1311,7 @@ logarithmic lookups.
 
 ### Validation evidence
 
-`tests/dual_join_action.rs` has 23 directed tests with hand-derived
+`tests/dual_join_action.rs` has 25 directed tests with hand-derived
 expectations, covering:
 
 - Defaults, true-only toggles and parsed `storage`/`a`/`b` attributes, and

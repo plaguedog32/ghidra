@@ -987,3 +987,52 @@ fn pentry_synonyms_follow_document_order() {
     assert!(e.is_none());
     assert_eq!(errors(&spec), [DiagnosticKind::InvalidAttribute]);
 }
+
+#[test]
+fn dual_class_synonyms_follow_document_order_and_validate_every_value() {
+    use ghidra_languages::StorageClass::{Float, General, Ptr};
+
+    let read = |attrs: &str| {
+        parse(&rule(&format!(
+            r#"<datatype name="any"/><join_dual_class {attrs}/>"#
+        )))
+    };
+    for (attrs, expected, duplicate) in [
+        ("", None, false),
+        (r#"a="float""#, Some(Float), false),
+        (r#"storage="ptr""#, Some(Ptr), false),
+        (r#"storage="float" a="general""#, Some(General), true),
+        (r#"a="general" storage="float""#, Some(Float), true),
+        (r#"storage="ptr" a="ptr""#, Some(Ptr), true),
+    ] {
+        let spec = read(attrs);
+        assert!(spec.is_fully_modeled(), "{attrs}: {:#?}", spec.diagnostics);
+        assert!(matches!(
+            spec.prototypes[0].input.rules[0].action,
+            RuleAction::JoinDualClass { storage_a, .. } if storage_a == expected
+        ));
+        assert_eq!(
+            kinds(&spec, Severity::Warning),
+            if duplicate {
+                vec![DiagnosticKind::DuplicateEntry]
+            } else {
+                vec![]
+            },
+            "{attrs}"
+        );
+        if duplicate {
+            assert!(spec.diagnostics[0].message.contains("the later"));
+        }
+    }
+    for attrs in [
+        r#"storage="bogus" a="float""#,
+        r#"a="bogus" storage="float""#,
+        r#"storage="float" a="bogus""#,
+        r#"a="float" storage="bogus""#,
+    ] {
+        let spec = read(attrs);
+        assert!(spec.prototypes[0].input.rules.is_empty(), "{attrs}");
+        assert!(!spec.is_fully_modeled(), "{attrs}");
+        assert_eq!(errors(&spec), [DiagnosticKind::InvalidAttribute], "{attrs}");
+    }
+}

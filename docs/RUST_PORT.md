@@ -162,8 +162,8 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The current analysis/ABI/datatype/SSA tree passes 810 default workspace tests and
-22 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
+The current analysis/ABI/datatype/SSA tree passes 837 default workspace tests and
+23 doctests on stable and Rust 1.88.0, formatting, workspace Clippy and
 Rust 1.88 rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
@@ -181,6 +181,13 @@ review's guard-specific test gap is fixed. Opt-in typed expression
 simplification/export has independent approval. Parallel-copy and phi
 lowering APIs have independent approval. Native general ABI join allocation
 has been reviewed, and its stack-rejection-order finding is fixed.
+Native dual-class ABI join allocation now consumes the converted native
+datatype graph, classifies primitive windows and allocates across two register
+classes with optional stack spill. Its initial review found two native-int
+evaluation-order gaps; both have regression fixes and are undergoing a fresh
+independent review. Compiler `storage`/`a` aliases now follow document order
+and validate both values. Eight opt-in native general/dual-class join probes
+pass in a Rust 1.88 release build, including x86-64 GCC and MIPS64 LE/BE.
 Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
@@ -825,9 +832,44 @@ separate evidence. The combined tree passes 792 tests and 22 doctests on both
 local toolchains, workspace Clippy and Rust 1.88 rustdoc with warnings denied.
 The Rust 1.88 release build and all five opt-in real-profile probes also pass.
 
-This action is not full calling-convention allocation. Native datatype-driven
-requests, rule dispatch, pointer conversion, hidden returns, shared stacks,
-dual-class/member joins, output recovery and SSA call effects remain required.
+This action is not full calling-convention allocation. Rule dispatch, pointer
+conversion, hidden returns, shared stacks, member joins, output recovery and
+SSA call effects remain required. Datatype-driven dual-class joins are a
+separate action described below.
+
+### Native dual-class ABI join allocation
+
+`AllocationState::assign_dual_join` now implements `MultiSlotDualAssign` over
+an owned `Arc<NativeTypeGraph>`. It uses the native extractor's fixed
+1,024-primitive maximum, classifies fixed-size windows by raw primitive sizes,
+and consumes exact-class single-group tiles from two independent lists.
+Shared groups remain shared across the lists. Class exhaustion can spill the
+entire suffix onto a final aligned stack pool, using the datatype's alignment
+and native floor division. Defaults, fill-alternate, heterogeneous later tile
+widths, cropping and piece significance follow the retained native source.
+Every NoFit/error restores previous statuses and occupied extents; unsafe
+overlap and unmodeled layouts remain explicit refusals.
+
+The first independent review at `43550e25d5` requested two fixes: signed-int
+spill cursor addition must be checked before capacity rejection, and window
+end arithmetic before primitive exhaustion. `51850a14ba` fixes both in source
+evaluation order and adds regressions that preserve the complete prior state.
+A fresh review is pending. It also corrects compiler-spec `storage`/`a`
+precedence: later aliases win, but invalid earlier values still fail.
+
+The combined tree passes 837 default tests and 23 doctests on stable and Rust
+1.88, formatting, workspace Clippy and Rust 1.88 rustdoc with warnings denied,
+and both Windows release builds. The 25 directed action tests include exact
+work/limit boundaries and the two large-number regressions without allocation
+per payload byte. The builder's source-derived reference checks 35,776 calls
+across 8,000 layouts; these bounded tests are separate from independent review.
+Eight general/dual join real-profile probes pass in Rust 1.88 release, including
+x86-64 GCC and MIPS64 LE/BE dual-class register sharing, justification and spill.
+Existing Java-free raw/function simplification outputs remain byte-identical.
+CI now runs the three dual-class compiled-source profiles explicitly.
+
+This supplies one datatype-driven rule action, not whole-signature allocation,
+rule dispatch, call effects or a desktop calling-convention workflow.
 
 ### Saved pause: expression inspection milestone
 

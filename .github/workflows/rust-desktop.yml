@@ -108,6 +108,8 @@ jobs:
         run: cargo test --locked -p ghidra-desktop upstream_x86_function -- --ignored
       - name: Verify reduced function inspection and export
         run: cargo test --locked -p ghidra-desktop upstream_winhello_reduced -- --ignored
+      - name: Verify native dual-class ABI allocation on retained languages
+        run: cargo test --locked -p ghidra-abi --test dual_join_real -- --ignored --test-threads=1
       - name: Build native release
         run: cargo build --locked --release -p ghidra-desktop
       - name: Upload Windows executable

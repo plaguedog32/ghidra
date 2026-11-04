@@ -104,6 +104,80 @@ not establish legal nesting of parameter overlaps, derive resource groups,
 allocate/justify arguments, evaluate model rules or merged-model scores,
 compile injection bodies, initialize tracked registers, recover types or
 apply call effects to SSA. These are required follow-on stages for the full
-Rust replacement. The initial tests cover aliases, exact registry limits,
-signed/unsigned extent normalization and join significance; comprehensive
-behavioral validation and independent review remain pending.
+Rust replacement.
+
+## Validation evidence
+
+Expected values in the tests come from retained Ghidra sources, retained
+`.sinc`/`.cspec` text or small independent models, not from replaying this
+crate. `tests/basics.rs` is the original regression set. The behavioral suites
+are:
+
+- `registry.rs`: rejected layouts with their specific reasons (space count,
+  width/unit/name, duplicate IDs and names, default-space kind, register space,
+  zero or overflowing extents, empty and over-long names). Case-variant lookup
+  is checked against a model of `RegisterBuilder`'s put order, including
+  generated collisions. Alias overlap is checked against explicit byte sets in
+  little- and big-endian spaces, the big-endian MIPS FPU pair layout, and
+  extents ending at `u64::MAX`. Count, name-length, name-byte and work budgets
+  are checked at their exact size and one below. A 4x larger register file costs
+  4x the name bytes and less than 6x the work.
+- `normalization.rs`: a reference model transcribed from
+  `AbstractAddressSpace` (constructor and `makeValidOffset`) plus the documented
+  whole-extent rule. It is compared with ram, stack and constant spaces of
+  1/2/4/8-byte addresses and 1/2/4/8-byte units (more than 3,000 cases). Other
+  checks cover accepted Java-long negatives, out-of-domain rejection, signed
+  stack bounds, extents that would wrap, stack geometry (no-pointer fallback,
+  minimum of pointer and backing width, backing units, growth/justification,
+  `OTHER` backing, domains over 64 bits), default sizes, labels truncated on a
+  character boundary, and standalone budgets at their exact thresholds.
+- `joins.rs`: mixed-width significance, declaration order, and the nine join
+  declarations taken from the retained `AARCH64_golang.cspec` text. Also float
+  extensions in both directions, the native single-constant-piece exception,
+  every invalid variant, a byte total of exactly `u32::MAX` versus overflow, and
+  1,024 versus 1,025 pieces. The piece count is checked before any name is
+  resolved.
+- `compiler.rs`: every `BindingSite` kind at its source position. Also group,
+  alignment, class and extension constraints; an unsized 500-byte stack pool;
+  `TooSmall` exactly at the storage width, including a float extension's
+  logical width; inherited, explicit and empty return addresses; open, signed
+  and register ranges; space bases and dead-code delays; errors attributed to
+  their site; shared `Arc` inputs; construction budgets at their exact size and
+  one below; and linear overlay scaling.
+- `real_catalog.rs` (ignored by default): run
+  `cargo test --release -p ghidra-abi --test real_catalog -- --ignored`. It
+  compiles each retained source once and resolves x86-64 `windows`, `gcc` and
+  `golang`, ARMv7 `default`, MIPS32 BE `default` and AArch64 `golang`. Register
+  offsets, inputs, groups, stack pools, local ranges, return-address fallback
+  and Go join order are compared with the retained text. Binding, range, piece,
+  space-base and delay counts are recomputed from the parsed declarations. On
+  Windows, after a release build, the four probes ran in about 2 s. Observed
+  output: x86-64 has 1,440 registers; its `windows`, `gcc` and `golang` specs
+  produce 71/83/214 bindings, 6/4/3 ranges and 72/84/216 pieces. ARMv7 has 153
+  registers, 88 bindings, 1 range and 88 pieces. MIPS32 BE has 471 registers,
+  44 bindings, 4 ranges and 44 pieces. AArch64 Go has 633 registers, 157
+  bindings, 1 range and 194 pieces. These are observations, not fixed
+  expectations. Only these six language/compiler pairs are proven to resolve;
+  parsing every catalog `.cspec` is not proof that it resolves.
+
+Known divergences, pinned by tests named `divergence_*` so that changing them is
+deliberate:
+
+- Ghidra rejects address spaces with unit sizes outside 1..=8, or with more than
+  2^64 bytes. `RegisterFile` accepts them and caps the byte domain at 2^64. A
+  stack over such a domain is still rejected.
+- `RegisterBuilder` turns a register with an identical address and bit range
+  into an alias of the earlier `Register`. Here each declaration keeps its own
+  `RegisterId`; the two still overlap. No such pair occurs in the four compiled
+  probe layouts.
+
+Other differences from Ghidra that are known and accepted: an empty register or
+space name is reported as `Limit("name length")` rather than as an invalid
+layout. Range bounds are normalized, and reversed ranges are rejected, which
+Ghidra's `restoreRangeXml` does not check. Parameter size bounds are checked
+after the storage resolves, so a declaration with both problems reports the
+storage error first.
+
+Not yet validated: the MSRV toolchain, the other catalog compiler specs,
+big-endian AArch64/ARM probe layouts, and any behavior that depends on
+argument allocation or prototype-rule execution.

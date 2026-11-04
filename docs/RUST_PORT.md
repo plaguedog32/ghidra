@@ -176,8 +176,8 @@ Native primitive alignment has directed and independent oracle coverage.
 The converted native datatype graph, native primitive extraction and native
 filter/qualifier/HFA evaluation are integrated as separate APIs, with
 independent review approval. Bitfield value reads and numeric formatting now
-have directed and independent-bigint evidence; their cross-lab review is
-pending. Source changes
+have directed and independent-bigint evidence and cross-lab approval. The
+review's guard-specific test gap is fixed. Source changes
 are committed on `rust-desktop`; the minimum-version validation below applies
 to this integrated checkpoint.
 
@@ -587,16 +587,20 @@ Hex/decimal/binary/octal and boolean representations follow the retained
 datatype routines; bounded padding works beyond the old Java helper's fixed
 64-zero limit.
 
-Ten behavioral tests and one doctest cover signed and width boundaries,
+Eleven behavioral tests and one doctest cover signed and width boundaries,
 33-byte input components, aggregate offsets and ordinary layout integration.
 A u128 reference checks 11,616 reads and their numeric formats; a separate
 Python-bigint oracle matches 58,944 component and 58,944 aggregate reads,
-117,440 short-buffer failures and 471,552 numeric format checks. All 16
+117,440 short-buffer failures and 471,552 numeric format checks. All 19
 compiling semantic mutations are caught. Current
 Windows workspace gates pass on stable and Rust 1.88: 710 tests, 18 doctests,
 formatting, workspace Clippy and Rust 1.88 rustdoc with warnings denied. The
 Rust 1.88 release build and Java-free CLI sample runs also pass.
-Cross-lab review is pending. This API has no program-memory/UI consumer yet;
+Cross-lab review approved `5ab87b9564`, including 3.4 million malformed-layout
+probes, 857,690 library-built members and a separate 120,000-case bigint
+oracle. Its test-gap finding is fixed with isolated guard cases and three
+additional compiling mutations; the value suite passes on Rust 1.88. This
+API has no program-memory/UI consumer yet;
 enum names/masks, character encodings, settings and editing are still open.
 
 ### Saved pause: expression inspection milestone

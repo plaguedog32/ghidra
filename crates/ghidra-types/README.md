@@ -337,11 +337,16 @@ component reads, 58,944 aggregate reads, 117,440 short-buffer failures and
 471,552 numeric representations with no mismatches. It includes every declared
 width/offset/endian/signed combination, wide integer edges, 576 components of
 33 bytes and 21,408 base-truncated cases. This is separate test evidence, not a
-Python runtime dependency. Sixteen compiling semantic mutations are caught by
+Python runtime dependency. Nineteen compiling semantic mutations are caught by
 the value tests, including byte order, offset/sign handling, wide storage,
 integer boundaries, invalid public layouts, wrapped aggregate extents and
-formatting. Independent cross-lab review of this value-access increment is
-still pending.
+formatting. Independent cross-lab review approved `5ab87b9564` with no code
+defects. Its low test-gap finding is fixed by cases satisfying every rule
+except the selected width/base/offset guard, including the overflow and
+oversized-read examples; removal of each guard now fails a test. The reviewer
+also checked 3.4 million public layouts without a panic, 857,690 library-built
+bitfield members and 120,000 cases against a separate bigint oracle. That
+review used Windows stable; local compatibility checks include Rust 1.88.
 
 Enum names and masks, character encodings, settings persistence, program-memory
 providers and datatype editing/encoding are not implemented here. The retained

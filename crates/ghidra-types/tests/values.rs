@@ -343,6 +343,70 @@ fn aggregate_offsets_are_checked_without_wrapping() {
 }
 
 #[test]
+fn layout_guards_reject_cases_that_satisfy_the_other_rules() {
+    // Each of the first three cases would pass every later equality check if
+    // its own guard disappeared. These cannot be masked by another rule.
+    let only_width = BitfieldLayout {
+        declared_bits: 256,
+        effective_bits: 8,
+        base_bytes: 1,
+        storage_bytes: 1,
+        bit_offset: 0,
+    };
+    let only_base = BitfieldLayout {
+        declared_bits: 0,
+        effective_bits: 0,
+        base_bytes: 0,
+        storage_bytes: 1,
+        bit_offset: 0,
+    };
+    let only_offset = BitfieldLayout {
+        bit_offset: 8,
+        storage_bytes: 3,
+        ..layout(13, 2, 3)
+    };
+    let overflow_without_width_guard = BitfieldLayout {
+        declared_bits: u32::MAX,
+        effective_bits: u32::MAX,
+        base_bytes: u64::MAX,
+        storage_bytes: 536_870_912,
+        bit_offset: 1,
+    };
+    let oversized_without_offset_guard = BitfieldLayout {
+        declared_bits: 255,
+        effective_bits: 255,
+        base_bytes: 32,
+        storage_bytes: 64,
+        bit_offset: 255,
+    };
+    for spec in [
+        only_width,
+        only_base,
+        only_offset,
+        overflow_without_width_guard,
+        oversized_without_offset_guard,
+    ] {
+        assert!(matches!(
+            spec.read_value(&[0xFF; 64], Endianness::Little, false),
+            Err(Error::InvalidLayout(_))
+        ));
+    }
+    // An enormous base does not cause an allocation or a read of its extent;
+    // only the validated minimal component storage is read.
+    let wide_base = BitfieldLayout {
+        base_bytes: u64::MAX,
+        ..layout(255, 32, 7)
+    };
+    assert_eq!(
+        wide_base
+            .read_value(&[0xFF; 33], Endianness::Big, true)
+            .unwrap()
+            .to_i64(),
+        Some(-1)
+    );
+}
+
+#[test]
 fn native_integer_reference_checks_reads_formats_and_conversions() {
     // This oracle uses whole u128 shifts and the standard integer formatter,
     // independent of the production per-bit reader and byte-array division.

@@ -149,7 +149,9 @@ are:
 - `real_catalog.rs` (ignored by default): run
   `cargo test --release -p ghidra-abi --test real_catalog -- --ignored`. It
   compiles each retained source once and resolves x86-64 `windows`, `gcc` and
-  `golang`, ARMv7 `default`, MIPS32 BE `default` and AArch64 `golang`. Register
+  `golang`, ARMv7 `default`, MIPS32 BE `default`, AArch64 `golang` and SH-2A
+  `default`. The SH-2A probe includes its 40,960-byte `resbank_base`, whose
+  metadata is independent of the evaluator's value-width limit. Register
   offsets, inputs, groups, stack pools, local ranges, return-address fallback
   and Go join order are compared with the retained text. Binding, range, piece,
   space-base and delay counts are recomputed from the parsed declarations. On
@@ -159,7 +161,7 @@ are:
   registers, 88 bindings, 1 range and 88 pieces. MIPS32 BE has 471 registers,
   44 bindings, 4 ranges and 44 pieces. AArch64 Go has 633 registers, 157
   bindings, 1 range and 194 pieces. These are observations, not fixed
-  expectations. These checked-in probes cover six pairs. A later independent
+  expectations. These checked-in probes now cover seven pairs. A prior independent
   sweep at `fdb61172e6` resolved all 196 currently compiling pairs out of 296
   and matched their input/output resource plans against a source-derived Java
   oracle; the other 100 fail explicitly in compiler/address-space support.
@@ -295,9 +297,9 @@ Fourteen default placement tests cover these policies, exact and one-below
 limits, every smaller work budget, 1,000-piece scaling and a million-byte value
 without a byte buffer. An expanded byte-address oracle checks over 12,000
 partial join selections across both default/physical byte orders. Eight
-compiling mutations were caught in an isolated package. The four opt-in real
-source probes now also check 791 concrete pool placements across x86-64 Windows,
-GCC and Go, ARMv7 AAPCS, MIPS32 BE and AArch64 Go, including aligned-pool tail
+compiling mutations were caught in an isolated package. The five opt-in real
+source probes now also check 827 concrete pool placements across x86-64 Windows,
+GCC and Go, ARMv7 AAPCS, MIPS32 BE, AArch64 Go and SH-2A, including aligned-pool tail
 rejections. This new placement pass still requires independent review.
 
 This primitive does not select a model or pool from a datatype, consume shared

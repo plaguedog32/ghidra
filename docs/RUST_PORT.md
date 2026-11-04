@@ -231,6 +231,21 @@ review fixes have independent approvals. Existing source
 compiler/lifter gaps, spacebase-relative ranges, segmented real-mode support
 and Rust 1.88/cross-platform validation remain open.
 
+### Wide register metadata continuation
+
+SLEIGH register inspection no longer validates declaration widths as executable
+P-code values. `register_metadata(name)` and `registers()` preserve nonzero
+`u32` widths and check physical extents without allocating register contents.
+The executable `register(name)` and instruction lifting retain the 512-byte
+value bound. SH-2A's 40,960-byte bank register now reaches native compiler-
+storage/resource inspection: the Java-free release command reports 51 registers,
+23 bindings, one range and 24 pieces. Its ordinary NOP also lifts. Five real
+ABI probes pass across seven pairs, including 827 concrete pool placements.
+This is additional SH-2A metadata evidence, not a fresh sweep of all 296 pairs
+or complete instruction semantics. The source compiler still has an overflow
+when a declaration ends at the final 64-bit byte address; adapter extent tests
+cover that boundary directly, without claiming that the compiler can parse it.
+
 ### Saved pause: expression inspection milestone
 
 Work was paused at the user's request. The integrated native desktop can open

@@ -183,6 +183,17 @@ fn check_value_placements(storage: &CompilerStorage) {
     eprintln!("{checked} concrete parameter-pool value placements checked");
 }
 
+#[test]
+#[ignore = "compiles the retained SH-2A source with its 40960-byte bank register"]
+fn sh2a_banked_register_metadata_resolves_without_executable_width_truncation() {
+    let sh = compile("SuperH:BE:32:SH-2A");
+    assert_eq!(sh.at("resbank_base"), (0x10000, 40960));
+    let storage = sh.resolve("default");
+    let resources =
+        ghidra_abi::CompilerResources::new(Arc::new(storage), Default::default()).unwrap();
+    assert!(resources.entry_count() > 0);
+}
+
 fn pieces(storage: &Storage) -> usize {
     match storage {
         Storage::Join { pieces, .. } => pieces.len(),

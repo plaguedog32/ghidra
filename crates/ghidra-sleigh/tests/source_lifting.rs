@@ -238,3 +238,26 @@ fn unimplemented_address_units_are_rejected_explicitly() {
         matches!(SleighLanguage::from_spec(&fixture("word_addressed.slaspec"), &BTreeMap::new()), Err(Error::Unsupported(message)) if message.contains("word size"))
     );
 }
+
+#[test]
+fn wide_register_metadata_is_independent_of_executable_value_limits() {
+    let mut language =
+        SleighLanguage::from_spec(&fixture("wide_registers.slaspec"), &BTreeMap::new()).unwrap();
+    let bank = language.register_metadata("bank").unwrap().unwrap();
+    assert_eq!((bank.offset, bank.size), (0x1000, 40960));
+    assert_eq!(language.register_metadata("missing").unwrap(), None);
+    let registers = language.registers().unwrap();
+    assert!(registers.contains(&bank));
+    let low = language.register_metadata("bank_low").unwrap().unwrap();
+    assert_eq!(
+        (low.space, low.offset, low.size),
+        (bank.space, bank.offset, 4)
+    );
+    assert_eq!(language.register("bank"), None);
+    assert!(language.decode(0x1000, &[0]).is_ok());
+    assert!(matches!(
+        language.decode(0x1000, &[1]),
+        Err(Error::Pcode(ghidra_pcode::Error::InvalidSize(40960)))
+    ));
+    assert!(ghidra_pcode::Value::from_u64(40960, 0).is_err());
+}

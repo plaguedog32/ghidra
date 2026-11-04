@@ -1,0 +1,9 @@
+define endian=little;
+define space ram type=ram_space size=8 default;
+define space register type=register_space size=8;
+define register offset=0 size=4 [ r0 r1 ];
+define register offset=0x1000 size=40960 [ bank other_bank ];
+define register offset=0x1000 size=4 [ bank_low ];
+define token instruction_byte(8) op=(0,7);
+:small is op=0 { r0 = r0 + 1; }
+:wide is op=1 { bank = other_bank; }

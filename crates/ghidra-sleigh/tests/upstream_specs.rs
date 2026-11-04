@@ -14,6 +14,24 @@ fn language(id: &str) -> SleighLanguage {
 }
 
 #[test]
+#[ignore = "compiles the retained SH-2A source including its wide bank declaration"]
+fn upstream_sh2a_wide_metadata_and_ordinary_instruction_lifting_coexist() {
+    let mut language = language("SuperH:BE:32:SH-2A");
+    let bank = language.register_metadata("resbank_base").unwrap().unwrap();
+    assert_eq!((bank.offset, bank.size), (0x10000, 40960));
+    assert!(language.registers().unwrap().contains(&bank));
+    assert!(language.register("resbank_base").is_none());
+    assert!(language.register("r0").is_some());
+    let nop = language.decode(0x1000, &[0x00, 0x09]).unwrap();
+    assert_eq!(nop.length, 2);
+    assert!(
+        nop.text.to_ascii_lowercase().starts_with("nop"),
+        "{}",
+        nop.text
+    );
+}
+
+#[test]
 #[ignore = "compiles the full retained x86-64 SLEIGH specification"]
 fn upstream_x86_64_source_compiles_and_lifts() {
     let mut language = language("x86:LE:64:default");

@@ -77,8 +77,9 @@ pub struct DelaySlot {
     pub text: String,
 }
 
-/// One declared register alias in the processor specification.
-#[derive(Debug, Clone)]
+/// One declared register alias in the processor specification. Metadata widths
+/// can exceed the concrete P-code evaluator's value limit; this is not a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedRegister {
     pub name: String,
     pub space: SpaceId,
@@ -200,15 +201,29 @@ impl SleighLanguage {
         &self.userops
     }
 
-    /// Declared register storage, including overlapping aliases.
+    /// An executable-width register varnode, including overlapping aliases.
+    /// For wider declaration metadata use `register_metadata` or `registers`.
     pub fn register(&self, name: &str) -> Option<Varnode> {
         let register = self.spec.register(name)?;
         let varnode = self.spec.register_varnode(register.id)?;
         self.adapt_varnode(varnode).ok()
     }
 
-    /// Enumerate all declared registers, preserving overlapping aliases.
-    /// An unsupported register width is reported rather than silently omitted.
+    /// Inspect a declared register without imposing the concrete value-width
+    /// limit. Unknown names return None; malformed extents remain errors.
+    pub fn register_metadata(&self, name: &str) -> Result<Option<NamedRegister>, Error> {
+        let Some(register) = self.spec.register(name) else {
+            return Ok(None);
+        };
+        let source = self.spec.register_varnode(register.id).ok_or_else(|| {
+            Error::Unsupported(format!("register {} has no storage", register.name()))
+        })?;
+        self.adapt_register(register.name(), source).map(Some)
+    }
+
+    /// Enumerate all declared register metadata, preserving overlapping aliases
+    /// and widths larger than the concrete evaluator supports. No register
+    /// payload is allocated. Zero widths and invalid extents are errors.
     pub fn registers(&self) -> Result<Vec<NamedRegister>, Error> {
         self.spec
             .registers()
@@ -216,13 +231,7 @@ impl SleighLanguage {
                 let source = self.spec.register_varnode(register.id).ok_or_else(|| {
                     Error::Unsupported(format!("register {} has no storage", register.name()))
                 })?;
-                let varnode = self.adapt_varnode(source)?;
-                Ok(NamedRegister {
-                    name: register.name().into(),
-                    space: varnode.space,
-                    offset: varnode.offset,
-                    size: varnode.size,
-                })
+                self.adapt_register(register.name(), source)
             })
             .collect()
     }
@@ -412,7 +421,28 @@ impl SleighLanguage {
         })
     }
 
+    fn adapt_register(&self, name: &str, source: sleigh::Varnode) -> Result<NamedRegister, Error> {
+        let (space, offset, size) = self.adapt_extent(source)?;
+        Ok(NamedRegister {
+            name: name.into(),
+            space,
+            offset,
+            size,
+        })
+    }
+
     fn adapt_varnode(&self, source: sleigh::Varnode) -> Result<Varnode, Error> {
+        let (space, offset, size) = self.adapt_extent(source)?;
+        let result = Varnode {
+            space,
+            offset,
+            size,
+        };
+        result.validate()?;
+        Ok(result)
+    }
+
+    fn adapt_extent(&self, source: sleigh::Varnode) -> Result<(SpaceId, u64, u32), Error> {
         let space = space_id(source.space)?;
         let definition = self
             .spaces
@@ -421,22 +451,18 @@ impl SleighLanguage {
             .ok_or_else(|| Error::Unsupported(format!("unknown varnode space {}", space.0)))?;
         let size = u32::try_from(source.size)
             .map_err(|_| Error::Unsupported("varnode size overflows u32".into()))?;
-        let result = Varnode {
-            space,
-            offset: source.offset,
-            size,
-        };
-        result.validate()?;
+        if size == 0 {
+            return Err(Error::Unsupported("zero-width storage declaration".into()));
+        }
         if definition.kind != SpaceKind::Constant {
-            let end = source
-                .offset
-                .checked_add(u64::from(size))
-                .ok_or(Error::AddressOverflow)?;
-            if definition.address_size < 8 && end > 1u64 << (definition.address_size * 8) {
+            // Use an extended exclusive end so an extent ending at u64::MAX
+            // fits, while one extending beyond it is still rejected.
+            let end = u128::from(source.offset) + u128::from(size);
+            if end > 1_u128 << (definition.address_size * 8) {
                 return Err(Error::AddressOverflow);
             }
         }
-        Ok(result)
+        Ok((space, source.offset, size))
     }
 }
 
@@ -552,5 +578,51 @@ mod tests {
             adapt_opcode(sleigh::Opcode::Extract),
             Err(Error::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn metadata_extents_check_nonzero_width_and_inclusive_space_end_without_payloads() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wide_registers.slaspec");
+        let mut language = SleighLanguage::from_spec(&path, &BTreeMap::new()).unwrap();
+        let register = language.spec.register("r0").unwrap();
+        let mut source = language.spec.register_varnode(register.id).unwrap();
+        source.offset = u64::MAX;
+        source.size = 1;
+        assert_eq!(language.adapt_extent(source).unwrap().1, u64::MAX);
+        assert_eq!(language.adapt_varnode(source).unwrap().offset, u64::MAX);
+        source.size = 2;
+        assert!(matches!(
+            language.adapt_extent(source),
+            Err(Error::AddressOverflow)
+        ));
+        source.size = 0;
+        assert!(matches!(
+            language.adapt_extent(source),
+            Err(Error::Unsupported(_))
+        ));
+        let id = space_id(source.space).unwrap();
+        language
+            .spaces
+            .iter_mut()
+            .find(|s| s.id == id)
+            .unwrap()
+            .address_size = 4;
+        source.offset = u64::from(u32::MAX);
+        source.size = 1;
+        assert!(language.adapt_extent(source).is_ok());
+        source.size = 2;
+        assert!(matches!(
+            language.adapt_extent(source),
+            Err(Error::AddressOverflow)
+        ));
+        if let Ok(oversized) = usize::try_from(u64::from(u32::MAX) + 1) {
+            source.offset = 0;
+            source.size = oversized;
+            assert!(matches!(
+                language.adapt_extent(source),
+                Err(Error::Unsupported(_))
+            ));
+        }
     }
 }

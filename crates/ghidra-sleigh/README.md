@@ -30,9 +30,14 @@ ID are preserved; this does not implement that userop's execution semantics.
 Always-on tests compile self-contained source and includes, run adapted p-code
 in the Rust evaluator, and check context, delay slots, endian memory access,
 identity extensions, explicit unsupported address units, and the opcode-71
-boundary. Five opt-in tests compile this checkout's x86-64, ARM7 LE/BE, and
-MIPS32 LE/BE sources. These probes have passed; they exercise selected
-instructions and do not establish full processor or 150-specification parity.
+boundary. Opt-in tests compile this checkout's x86-64, ARM7 LE/BE/mixed-endian,
+MIPS32 LE/BE, AArch64 BE64 and SH-2A sources. An ARM v8 probe compiles all seven
+catalog variants (A32/Thumb, LE/BE, little-instruction/big-data and v8-M),
+executes LDA/LDAB and both VSELEQ outcomes, and checks that VPNOT executes only
+in the M variants. The retained ARMv8 source has a redundant nested VERSION_8M
+guard removed; closing it at EOF instead would incorrectly hide VSEL from
+non-M variants. These probes cover selected instructions, not full ISA semantics,
+memory-ordering behavior, or processor-wide parity.
 
 ```sh
 cargo test --locked -p ghidra-sleigh

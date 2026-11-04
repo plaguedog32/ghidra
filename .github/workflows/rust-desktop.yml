@@ -8,6 +8,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - crates/**
+      - Ghidra/Processors/**
       - examples/**
       - scripts/Enter-NativeBuild.ps1
       - .github/workflows/rust-desktop.yml
@@ -17,6 +18,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - crates/**
+      - Ghidra/Processors/**
       - examples/**
       - scripts/Enter-NativeBuild.ps1
       - .github/workflows/rust-desktop.yml

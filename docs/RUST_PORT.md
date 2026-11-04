@@ -35,7 +35,7 @@ The root Cargo workspace builds the Rust crates and their native platform helper
 | --- | --- | --- |
 | Native desktop | Rust window, linked inspection views, background instruction lifting and function Dataflow inspection | Full docking/workspace system, accessibility and workflow refinement |
 | Binary formats | PE, ELF, and single-architecture Mach-O inspection | Additional formats, universal/fat Mach-O selection, richer loader semantics and relocations |
-| Processor support | x86/x64 listing; 202 catalog definitions; processor defaults and checked Next-instruction context; lifting probes for x86-64, ARM7 LE/BE/mixed-endian, MIPS32 LE/BE, AArch64 BE64 and Thumb IT | Automatic binary-to-language matching, full flow-aware context analysis, broader semantic coverage, architecture-neutral function recovery |
+| Processor support | x86/x64 listing; 202 catalog definitions; processor defaults and checked Next-instruction context; lifting probes for x86-64, ARM7, all seven ARM v8 variants, MIPS32 LE/BE, AArch64 BE64, SH-2A and Thumb IT | Automatic binary-to-language matching, full flow-aware context analysis, broader semantic coverage, architecture-neutral function recovery |
 | Metadata | Entry point, sections, symbols, ASCII strings, imports/exports, relocation records | Remaining linkage formats, relocation application, debug information and types |
 | Code analysis | Linear listing and bounded recursive discovery from entry points, symbols and direct calls; reachable basic blocks | Indirect targets, jump tables, exception paths, speculative discovery, data/code separation |
 | Navigation | Addresses, functions, discovered incoming references, labels, comments, bookmarks and linked binary views | Rich search, full cross-reference model and workflow refinement |
@@ -194,6 +194,34 @@ behavior. Restore the desktop helper and verify binary opening, navigation,
 disassembly and Dataflow inspection in the real window before closing that
 milestone gate. Rust 1.88 and stable CI validation on Windows, Linux and
 macOS is now recorded below.
+
+### ARM v8 source coverage
+
+The retained `ARMv8.sinc` opened `VERSION_8M` twice before VPNOT and closed
+it once before the later NEON block. Removing the redundant second opening
+repairs compilation without moving VSEL under the M-profile condition. An
+independent source audit checked the include chain, original change and
+conditional nesting; the Rust preprocessor is unchanged.
+
+The new opt-in source test compiles all seven v8 catalog variants. It executes
+A32/Thumb LDA and LDAB with LE, BE and mixed instruction/data byte order,
+checks both VSELEQ outcomes after the repaired block, and complements only
+VPR's low 16 bits with VPNOT in the two v8-M variants. The same Thumb encoding
+does not decode as VPNOT in the five other variants. Encodings and expected
+effects come from the retained constructors and token fields. These selected
+P-code checks do not validate hardware memory ordering or the full ISA.
+
+On Windows, the new test passes in stable debug and Rust 1.88 release builds.
+All 22 default SLEIGH tests and all nine opt-in source tests pass together
+under Rust 1.88 release. Stable crate tests, all-target Clippy with warnings
+denied, formatting and workflow actionlint also pass. The existing Rust 1.88
+release command resolves compiler storage and resource groups for all 17
+compiler/language pairs in these seven variants with `JAVA_HOME` empty and
+`PATH` restricted to System32. This is storage-resolution evidence, not
+datatype-driven signature allocation. The CI path filter now includes
+processor data changes so future source-only fixes run the native checks.
+This increment does not claim a new whole-workspace or cross-platform result;
+the earlier checkpoint evidence remains recorded separately.
 
 ### Minimum Rust version validation
 

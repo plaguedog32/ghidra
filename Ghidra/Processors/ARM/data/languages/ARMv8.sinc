@@ -2179,8 +2179,6 @@ psize28: val  is thv_c2828 [ val = 8 << thv_c2828;] { export *[const]:1 val; }
 
 
 
-@if defined(VERSION_8M)
-
 # C2.4.426 VPNOT
 :vpnot is $(TMODE_F) & thv_c1627=0xe31 & thv_c0015=0x0f4d {
 	local p0:2 = $(VPR_P0);

@@ -204,3 +204,128 @@ fn upstream_aarch64_big_data_little_instruction_tokens_execute() {
         Some(0x123456789abcdef0)
     );
 }
+
+/// Encode the canonical A32 word, or the two Thumb halfwords in fetch order.
+/// Thumb's little-endian token fields swap halfwords in ARMinstructions.sinc.
+fn arm8_bytes(word: u32, thumb: bool, big: bool) -> [u8; 4] {
+    if big {
+        word.to_be_bytes()
+    } else if thumb {
+        word.rotate_left(16).to_le_bytes()
+    } else {
+        word.to_le_bytes()
+    }
+}
+
+fn arm8_set(machine: &mut Machine, language: &SleighLanguage, name: &str, value: u64) {
+    let register = language.register(name).unwrap();
+    machine
+        .write_varnode(&register, &Value::from_u64(register.size, value).unwrap())
+        .unwrap();
+}
+
+fn arm8_get(machine: &Machine, language: &SleighLanguage, name: &str) -> u64 {
+    machine
+        .read_varnode(&language.register(name).unwrap())
+        .unwrap()
+        .to_u64()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "compiles all seven retained ARM v8 catalog variants and executes selected semantics"]
+fn upstream_arm8_catalog_modes_data_order_and_m_profile_guards_execute() {
+    // Source-derived encodings: ARMv8.sinc LDA/LDAB, VSEL and VPNOT;
+    // ARMinstructions.sinc A32/Thumb token fields; ARM.sinc VPR_P0.
+    // A duplicate VERSION_8M guard previously left ARMv8.sinc unbalanced.
+    // VSEL is after that block, so adding an endif at EOF is not a valid fix.
+    for (id, thumb, instruction_big, data_big, m_profile) in [
+        ("ARM:LE:32:v8", false, false, false, false),
+        ("ARM:BE:32:v8", false, true, true, false),
+        ("ARM:LEBE:32:v8LEInstruction", false, false, true, false),
+        ("ARM:LE:32:v8T", true, false, false, false),
+        ("ARM:BE:32:v8T", true, true, true, false),
+        ("ARM:LE:32:v8-m", true, false, false, true),
+        ("ARM:BE:32:v8-m", true, true, true, true),
+    ] {
+        let mut language = language(id);
+        let code = language.code_space();
+        let mut machine = Machine::new(language.spaces().to_vec(), 65536).unwrap();
+        arm8_set(&mut machine, &language, "r1", 0x2000);
+        machine
+            .map_bytes(code, 0x2000, &[0x80, 0x23, 0x45, 0x67])
+            .unwrap();
+        for (word, mnemonic, expected) in [
+            (
+                if thumb { 0xe8d1_0faf } else { 0xe191_0c9f },
+                "lda r0,[r1]",
+                if data_big { 0x8023_4567 } else { 0x6745_2380 },
+            ),
+            (
+                if thumb { 0xe8d1_0f8f } else { 0xe1d1_0c9f },
+                "ldab r0,[r1]",
+                0x80,
+            ),
+        ] {
+            language.reset_context();
+            let lifted = language
+                .decode(0x1000, &arm8_bytes(word, thumb, instruction_big))
+                .unwrap();
+            assert_eq!(lifted.text, mnemonic, "{id}");
+            assert_eq!((lifted.length, lifted.next_address), (4, 0x1004), "{id}");
+            machine
+                .run(&[lifted.instruction], code, 0x1000, 1000)
+                .unwrap();
+            assert_eq!(arm8_get(&machine, &language, "r0"), expected, "{id}");
+        }
+
+        // This non-M instruction must remain outside the repaired M guard.
+        language.reset_context();
+        let select = language
+            .decode(0x1000, &arm8_bytes(0xfe01_0a02, thumb, instruction_big))
+            .unwrap();
+        assert!(
+            select.text.starts_with("vseleq.f32"),
+            "{id}: {}",
+            select.text
+        );
+        arm8_set(&mut machine, &language, "s2", 0x1122_3344);
+        arm8_set(&mut machine, &language, "s4", 0x5566_7788);
+        for (zero, expected) in [(0, 0x5566_7788), (1, 0x1122_3344)] {
+            arm8_set(&mut machine, &language, "ZR", zero);
+            machine
+                .run(
+                    std::slice::from_ref(&select.instruction),
+                    code,
+                    0x1000,
+                    1000,
+                )
+                .unwrap();
+            assert_eq!(arm8_get(&machine, &language, "s0"), expected, "{id}");
+        }
+
+        // VPNOT is inside the repaired guard. Inspect it in Thumb mode even
+        // for the A32-default languages, so the negative test checks the ISA
+        // feature gate rather than merely selecting a different instruction set.
+        language.reset_context();
+        let invert = language.decode_with_defaults(
+            0x1000,
+            &arm8_bytes(0xfe31_0f4d, true, instruction_big),
+            &BTreeMap::from([("TMode".into(), 1)]),
+        );
+        if m_profile {
+            let invert = invert.unwrap();
+            assert_eq!(invert.text, "vpnot", "{id}");
+            arm8_set(&mut machine, &language, "vpr", 0x1122_5678);
+            machine
+                .run(&[invert.instruction], code, 0x1000, 1000)
+                .unwrap();
+            assert_eq!(arm8_get(&machine, &language, "vpr"), 0x1122_a987, "{id}");
+        } else {
+            assert!(
+                !matches!(invert, Ok(ref instruction) if instruction.text == "vpnot"),
+                "{id}"
+            );
+        }
+    }
+}

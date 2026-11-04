@@ -5,8 +5,8 @@ registers and address spaces. It keeps signed stack addresses, register aliases
 and join significance explicit. It is a native Rust layer and uses no Java or
 Ghidra C++ process.
 
-Whole-signature allocation, prototype-rule actions, injection compilation and
-type recovery remain separate stages. Resource-group planning, placement in
+Whole-signature allocation, complete prototype-rule dispatch, injection
+compilation and type recovery remain separate stages. Resource-group planning, placement in
 an explicitly selected pool and the retained declaration-ordered *fallback*
 primitive are described below. Successful storage resolution, or a successful
 fallback batch, does not mean that a calling convention is executable.
@@ -511,7 +511,7 @@ the bypassed rules would assign differently: Windows `pointermax`, GCC
 `consume_extra`. AArch64 Go input and SH-2A declare no rules, so the default
 policy runs. The five probes took about 2 s after a release build.
 
-Remaining required work: model-rule actions and `pointermax`, hidden-return
+Remaining required work: complete model-rule dispatch/actions and `pointermax`, hidden-return
 handling, `this` and hidden-parameter ordering, output strategy and
 `sharestack` semantics, merged-model selection, datatype-driven requests, and
 call effects in SSA. The refused layouts above, a survey of every compiling
@@ -729,9 +729,87 @@ bytes are not substituted. Wrapper alignment is the declared base's natural
 alignment, including enum alignment that differs from its integer counterpart.
 Normalized bit metadata remains available through the owner's field in the
 shared layout. Adjacent wrappers can share bytes, as in the source extractor.
+In particular, a trailing zero-width wrapper can start at the owner's byte
+length and extend one byte beyond it. Future member actions must retain the
+source's negative-padding failure for that case rather than clamp the wrapper.
 Sixteen compiling mutations across predicate budget/range checks, refinement,
 wrapper storage and widened bitfield comparisons are caught. The probes exposed
 a missing raw-versus-aligned refinement regression; the new directed test now
 pins that difference explicitly.
+Independent review approved the extraction and bitfield integration at
+`3299780b59`, with about 3.28 million valid release reference comparisons,
+327,000 rejections and 225,000 bitfield pieces. Its low-severity trailing-empty-
+member finding is fixed: traversal now carries widened offsets, and converts
+only when emitting a primitive. A zero-size tail at the exclusive end 2^64
+therefore succeeds when it emits nothing. A collapsed zero-array wrapper or
+zero-width bitfield there still fails because it emits a real piece outside
+the address domain. Directed tests cover empty arrays, structures, aliases,
+unions and both nested-array modes.
+
 No join/member action,
 signature allocation, CLI or desktop flow uses this extractor yet.
+
+## Allocation operations for rule actions
+
+`AllocationState::assign_pool(resources, PoolRequest, limits)` assigns a
+specific pentry without searching other entries or checking storage class.
+The request supplies size, alignment and justification explicitly; actions
+choose raw or aligned size as their source contract requires. The state
+supplies the current cursor. Exclusion/group consumption, physical overlap
+checks, occupied extents and nested placement accounting use the same path
+as fallback. `NoFit` retains alignment holes; an error restores all changes.
+No list rule or `pointermax` is dispatched by this explicit operation.
+
+`AllocationState::apply_effects(resources, effects, context, indexing, limits)`
+executes parsed `RuleSideEffect` values in order. Its context carries raw size,
+alignment and the representative result space, independently of datatype
+predicates. This is usable for either a staged precondition list or a committed
+side-effect list:
+
+- `ConsumeExtra` visits exact-class, exclusion, single-group tiles in declaration
+  order, skipping every nonzero status. Default `matchsize=true` counts down raw
+  bytes; false consumes at most one untouched tile. Nonpositive raw sizes consume
+  none. Exhaustion is successful even if the requested size is not covered.
+- `ConsumeRemaining` consumes every untouched eligible tile, independently of
+  the datatype size. Missing eligible tiles is an error for both operations,
+  including a zero-size request, as in upstream action initialization.
+- `ExtraStack` selects only the final aligned stack pentry. An already-stack
+  representative suppresses it; a join containing a stack piece does not.
+  A positive threshold sums full declared pool widths for matching nonzero
+  statuses, without deduplicating shared groups. Missing/negative/zero thresholds
+  are unconditional. It reserves raw size/alignment, ignores the generated
+  address, and leaves occupied value extents unchanged. `StackReserved` reports
+  both cursor values and whether placement fit; a no-fit can retain alignment
+  holes, matching upstream's unconditional success response.
+
+Threshold indexing is mandatory and explicit. `NativeGroup` follows C++
+`modelrules.cc` by indexing each pentry's first resource group. `JavaEntry`
+reproduces the Java loop's pentry-index behavior, which can count different
+resources for grouped alternatives; an out-of-range status index returns
+`ThresholdIndex` instead of Java's array exception. Neither policy is silently
+selected for the caller. Counters use checked arithmetic rather than signed
+Java overflow. A nonpositive/oversized stack width, consumed stack group or
+address-domain escape fails explicitly. These are checked refusals of upstream
+invalid-address success cases, not invented storage.
+
+The batch uses one work budget, including stack placement, and bounds effects,
+entry visits, group reads and journaled group writes before protected growth.
+It scans at most effects × pentries; no byte-sized allocation or recursion is
+used. Outcomes are owned, state remains tied to its original compiler overlay,
+and every actual error rolls back the entire batch. Effects consume logical
+resources rather than creating value extents. The future rule dispatcher must
+separately preserve upstream's filter/precondition/action/commit/effect ordering.
+
+Twelve directed tests pin raw sizing, justification, representative-space
+checks, threshold order, exact work charges, every lower work budget and error
+rollback. Five independent oracle tests compare 5,184 executions over fixture-
+owned declaration/group maps in both source policies, with grouped alternatives,
+alias pools, aligned pools, exhaustion and all effect budgets.
+Fourteen compiling semantic/accounting mutations are caught. The first run
+exposed a positive-cursor test gap: an exclusion tile sharing an aligned pool's
+nonzero cursor must be skipped. A new explicit regression pins that behavior.
+
+Complete rule matching/dispatch, pointer synthesis, hidden-return control flow,
+join/member/dual composition and shared-stack signatures remain required.
+These operations are not yet connected to datatype-driven signature allocation,
+SSA call effects, the CLI or desktop.

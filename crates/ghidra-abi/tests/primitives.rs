@@ -587,6 +587,88 @@ fn unsigned_byte_offsets_allow_exclusive_space_end_and_reject_wrap() {
 }
 
 #[test]
+fn empty_trailing_members_can_start_at_the_exclusive_address_end() {
+    let p = predicates(vec![
+        int(4),
+        def(TypeKind::Array {
+            element: TypeId(0),
+            count: 0,
+        }),
+        def(TypeKind::Structure(Composite::default())),
+        def(TypeKind::Structure(aggregate(&[0, 1]))),
+        def(TypeKind::Structure(aggregate(&[0, 2]))),
+        def(TypeKind::Union(aggregate(&[2]))),
+        def(TypeKind::Structure(aggregate(&[0, 5]))),
+        def(TypeKind::Alias(TypeId(2))),
+        def(TypeKind::Structure(aggregate(&[0, 7]))),
+    ]);
+    for nested in [false, true] {
+        for owner in [3, 4, 6, 8] {
+            assert_eq!(
+                p.layouts().layout(TypeId(owner)).unwrap().geometry.size,
+                Some(4)
+            );
+            let options = ExtractionOptions {
+                offset: u64::MAX - 3,
+                nested_arrays_are_primitives: nested,
+                ..Default::default()
+            };
+            let result =
+                PrimitiveExtraction::new(p.clone(), TypeId(owner), options, Default::default());
+            if owner == 3 && nested {
+                // A collapsed nested zero array is a real one-byte wrapper.
+                assert_eq!(result.unwrap_err(), ExtractionError::Overflow);
+            } else {
+                let result = result.unwrap();
+                assert_eq!(
+                    pieces(&result),
+                    [(PrimitiveSource::Type(TypeId(0)), u64::MAX - 3, 4, 4)]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_real_zero_width_bitfield_wrapper_cannot_start_outside_the_address_domain() {
+    let layouts = TypeLayouts::new_with_endianness(
+        vec![
+            int(4),
+            def(TypeKind::Structure(Composite {
+                fields: vec![
+                    Field::new("value", TypeId(0)),
+                    Field::bitfield("zero", TypeId(0), 0),
+                ],
+                ..Default::default()
+            })),
+        ]
+        .into(),
+        DataOrganization::default().resolve(8),
+        ghidra_types::Endianness::Little,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(layouts.layout(TypeId(1)).unwrap().geometry.size, Some(4));
+    let p = from_layouts(layouts);
+    for nested in [false, true] {
+        assert_eq!(
+            PrimitiveExtraction::new(
+                p.clone(),
+                TypeId(1),
+                ExtractionOptions {
+                    offset: u64::MAX - 3,
+                    nested_arrays_are_primitives: nested,
+                    ..Default::default()
+                },
+                Default::default()
+            )
+            .unwrap_err(),
+            ExtractionError::Overflow
+        );
+    }
+}
+
+#[test]
 fn owned_extraction_keeps_its_exact_snapshot_and_is_thread_safe() {
     let p = predicates(vec![int(4)]);
     let result = extract(&p, 0);

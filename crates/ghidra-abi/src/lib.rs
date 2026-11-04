@@ -2,8 +2,9 @@
 //!
 //! Storage resolution, per-pool placement and bare declaration-ordered fallback
 //! allocation are distinct APIs. Datatype predicates and rule qualifiers can be
-//! evaluated separately; rule actions and complete signature allocation remain
-//! unimplemented. See the crate README for those boundaries.
+//! evaluated separately. Selected-pool assignments and ordered resource effects
+//! support rule execution; the full rule dispatcher and signature allocator
+//! remain unimplemented. See the crate README for those boundaries.
 #![doc = include_str!("../README.md")]
 
 mod compiler;
@@ -22,9 +23,11 @@ pub use compiler::{
 };
 pub use error::{AbiError, AbiLimits, AbiResult};
 pub use fallback::{
-    AllocationState, ClassMatch, DeclaredRules, FallbackAssignment, FallbackBatch, FallbackError,
+    AllocationState, ClassMatch, DeclaredRules, EffectBatch, EffectContext, EffectError,
+    EffectLimits, EffectOutcome, EffectUsage, FallbackAssignment, FallbackBatch, FallbackError,
     FallbackLimits, FallbackOutcome, FallbackPolicy, FallbackRequest, FallbackUsage, GroupState,
-    OccupiedExtent, SlotRange, UnexecutedDeclarations,
+    OccupiedExtent, PoolAssignment, PoolRequest, SlotRange, StackThresholdIndexing,
+    UnexecutedDeclarations,
 };
 pub use placement::{
     Justification, NoFit, PieceRole, PlacedPiece, PlacedStorage, PlacedValue, Placement,

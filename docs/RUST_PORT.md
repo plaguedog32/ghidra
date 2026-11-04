@@ -148,13 +148,16 @@ The initial desktop commit passed all three host builds in [CI run 41733853407](
 
 ### Current verification checkpoint
 
-The integrated source at `3299780b59` passes 627 default workspace tests and
+The current allocation-operation tree passes 646 default workspace tests and
 15 doctests, formatting, workspace Clippy and rustdoc with warnings denied,
 and the optimized Windows build. Java-free release probes still cover raw
 P-code analysis and the recovered WinHelloCPP `401E46` function. Bitfield
 storage, compiler datatype predicates and primitive/union extraction are
-integrated; independent review of the latest extraction and bitfield fixes
-is pending. These increments are committed locally and have not been pushed.
+integrated. Independent review approved the extraction and bitfield fixes;
+its trailing-empty-member boundary finding is addressed below. The newer
+selected-pool assignment and resource-effect operations await independent
+review. These increments
+are committed locally and have not been pushed.
 
 Native visual and click-through verification was attempted again on
 2026-11-04. The computer-use helper returned `Computer Use native pipe is
@@ -403,8 +406,12 @@ these rules, errors, bounds, 100,000 nested structures, 20,000 union contexts
 and huge arrays without payload allocation. Mutation probes exposed a missing
 raw-versus-aligned union case, now pinned. All 16 compiling mutations across
 predicate accounting, extraction and the bitfield fix are caught. General
-extraction and its consumer integration still need independent review. Rule
-actions, complete signature allocation, native decompiler type views and SSA
+extraction and its bitfield integration received independent approval at
+`3299780b59`, including about 3.28 million valid release comparisons against a
+separate reference. A low-severity exclusive-address-end finding is fixed:
+empty tails can be traversed at 2^64 without emitting an unrepresentable piece;
+real collapsed wrappers there remain errors. Rule
+dispatch, complete signature allocation, native decompiler type views and SSA
 call effects remain required; there is no C output or inferred signature yet.
 
 The combined bitfield/extraction tree passes 627 default workspace tests and
@@ -412,6 +419,33 @@ The combined bitfield/extraction tree passes 627 default workspace tests and
 release build on Windows/Rust 1.99.1. Java-free raw-example and WinHelloCPP
 analysis probes retain their prior results. Rust 1.88, cross-platform execution
 and native GUI click-through remain unverified by this increment.
+
+### Resource operations for compiler rules
+
+Allocation state now supports explicit selected-pentry assignment, preserving
+caller-selected raw/aligned width and justification, plus ordered
+`consume_extra`, `consume_remaining` and `extra_stack` effects. These use the
+existing resource/group state and bounded placement engine. Exhaustion and
+alignment-hole no-fit remain distinct from actual errors; actual errors roll
+back the whole operation batch. Effects change logical resources without
+creating value extents or modifying the parameter's result.
+
+Raw-size countdown, exact tile classes and declaration order follow the
+retained action implementations. Stack thresholds offer explicit Java
+pentry-index and native C++ group-index policies, including a checked error
+for Java's out-of-range grouped-alternative case. Twelve directed tests and
+5,184 independent reference executions cover both policies and resource
+limits. Full model-rule dispatch, compound joins, pointer transformation,
+hidden-return/shared-stack signatures and datatype-driven call effects remain
+required; these APIs are not yet desktop or CLI signature inference.
+
+All 646 default workspace tests and 15 doctests pass, as do formatting,
+workspace Clippy/rustdoc with warnings denied and the release build. Fourteen
+compiling semantic/accounting mutations fail behavioral tests. One initial
+survivor exposed a test gap around positive cursors shared with exclusion
+tiles; the new directed regression closes it. Java-free release example and
+WinHelloCPP analysis reports retain their prior results. Rust 1.88,
+cross-platform and native GUI verification remain open.
 
 ### Saved pause: expression inspection milestone
 

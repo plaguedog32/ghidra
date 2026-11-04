@@ -2,7 +2,8 @@
 //! output list: `ParamListStandard::assignAddressFallback` applied to a batch
 //! of explicit requests. This is not prototype or signature allocation; model
 //! rules, `pointermax`, hidden returns, implicit parameters and injections are
-//! never executed here.
+//! never dispatched by the fallback batch. Explicit pool/effect operations below
+//! provide the state primitives for a later rule dispatcher.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -16,6 +17,38 @@ use crate::{
     NoFit, ParameterDirection, PlacedStorage, PlacedValue, PlacementError, PlacementLimits,
     PlacementOutcome, PlacementRequest, ResolvedStorage, ResourceId, StorageRange, place_parameter,
 };
+
+mod effects;
+pub use effects::{
+    EffectBatch, EffectContext, EffectError, EffectLimits, EffectOutcome, EffectUsage,
+    StackThresholdIndexing,
+};
+
+/// Explicit assignment to one list entry, as required by stack and compound
+/// rule actions. Size is supplied by the action: it is not rounded here.
+#[derive(Clone, Copy, Debug)]
+pub struct PoolRequest {
+    pub entry: usize,
+    pub size: u32,
+    pub alignment: u32,
+    pub justification: Justification,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PoolAssignment {
+    /// A single assignment or NoFit; never NotAttempted.
+    pub outcome: FallbackOutcome,
+    pub usage: FallbackUsage,
+}
+
+#[derive(Clone, Copy)]
+enum Selection {
+    Fallback(ClassMatch),
+    Pool {
+        entry: usize,
+        justification: Justification,
+    },
+}
 
 /// One value to place. The caller has already chosen its storage width and
 /// class; no datatype graph or rule is consulted.
@@ -235,6 +268,8 @@ pub enum FallbackError {
     },
     #[error("allocation state belongs to another compiler overlay or list")]
     StateMismatch,
+    #[error("unknown parameter entry {0}")]
+    UnknownEntry(usize),
     #[error(
         "model {model} {direction:?} list declares {rules} rule(s) and pointermax {pointer_max:?}; fallback does not execute them"
     )]
@@ -448,16 +483,108 @@ impl AllocationState {
         let mut journal = Vec::new();
         let result = self.run(resources, requests, policy, limits, &mut journal);
         if result.is_err() {
-            for undo in journal.into_iter().rev() {
-                match undo {
-                    Undo::Group(index, old) => self.groups[index] = old,
-                    Undo::Extent(key) => {
-                        self.occupied.remove(&key);
-                    }
+            self.rollback(journal);
+        }
+        result
+    }
+
+    fn rollback(&mut self, journal: Vec<Undo>) {
+        for undo in journal.into_iter().rev() {
+            match undo {
+                Undo::Group(index, old) => self.groups[index] = old,
+                Undo::Extent(key) => {
+                    self.occupied.remove(&key);
                 }
             }
         }
-        result
+    }
+
+    fn source_list<'a>(
+        &self,
+        resources: &'a CompilerResources,
+    ) -> Result<(&'a crate::ListResources, &'a ghidra_languages::ParamList), FallbackError> {
+        if !Arc::ptr_eq(resources.storage(), &self.storage) {
+            return Err(FallbackError::StateMismatch);
+        }
+        let list = resources
+            .list(self.model, self.direction)
+            .ok_or(FallbackError::StateMismatch)?;
+        let prototype = resources
+            .storage()
+            .source()
+            .prototypes
+            .get(self.model)
+            .ok_or(FallbackError::StateMismatch)?;
+        let source = match self.direction {
+            ParameterDirection::Input => &prototype.input,
+            ParameterDirection::Output => &prototype.output,
+        };
+        if list.group_count != self.groups.len() || source.entries.len() != list.entries.len() {
+            return Err(FallbackError::StateMismatch);
+        }
+        Ok((list, source))
+    }
+
+    /// Assign only the selected pool, ignoring its class filter and list rules.
+    /// NoFit retains alignment holes, like getAddrBySlot; Err restores the state.
+    /// The caller must stage this state if a later rule failure should undo it.
+    pub fn assign_pool(
+        &mut self,
+        resources: &CompilerResources,
+        request: PoolRequest,
+        limits: FallbackLimits,
+    ) -> Result<PoolAssignment, FallbackError> {
+        let (list, source) = self.source_list(resources)?;
+        if request.entry >= list.entries.len() {
+            return Err(FallbackError::UnknownEntry(request.entry));
+        }
+        if limits.max_requests == 0 {
+            return Err(FallbackError::Limit("requests"));
+        }
+        if self.occupied.len() > limits.max_occupied_extents {
+            return Err(FallbackError::Limit("occupied extents"));
+        }
+        if request.size == 0 || request.alignment == 0 {
+            return Err(FallbackError::InvalidRequest {
+                request: 0,
+                reason: "size and alignment must be positive",
+            });
+        }
+        let mut budget = Budget {
+            limits,
+            usage: FallbackUsage {
+                requests: 1,
+                occupied_extents: self.occupied.len(),
+                ..Default::default()
+            },
+        };
+        budget.work(2)?;
+        let mut journal = Vec::new();
+        let result = self.assign_one(
+            0,
+            FallbackRequest::new(request.size, request.alignment, StorageClass::General),
+            Selection::Pool {
+                entry: request.entry,
+                justification: request.justification,
+            },
+            &list.entries,
+            source,
+            &mut budget,
+            &mut journal,
+        );
+        match result {
+            Ok(outcome) => {
+                budget.usage.occupied_extents = self.occupied.len();
+                Ok(PoolAssignment {
+                    outcome,
+                    usage: budget.usage,
+                })
+            }
+            Err(error) => {
+                self.rollback(journal);
+                Err(error)
+            }
+        }
     }
 
     fn run(
@@ -539,7 +666,7 @@ impl AllocationState {
             let outcome = self.assign_one(
                 index,
                 *request,
-                policy.class_match,
+                Selection::Fallback(policy.class_match),
                 &list.entries,
                 source,
                 &mut budget,
@@ -567,7 +694,7 @@ impl AllocationState {
         &mut self,
         request: usize,
         r: FallbackRequest,
-        class_match: ClassMatch,
+        selection: Selection,
         entries: &[EntryResources],
         source: &ghidra_languages::ParamList,
         budget: &mut Budget,
@@ -575,7 +702,12 @@ impl AllocationState {
     ) -> Result<FallbackOutcome, FallbackError> {
         let storage = self.storage.clone();
         let mut candidates = 0;
-        for (index, entry) in entries.iter().enumerate() {
+        let range = match selection {
+            Selection::Fallback(_) => 0..entries.len(),
+            Selection::Pool { entry, .. } => entry..entry + 1,
+        };
+        for index in range {
+            let entry = &entries[index];
             budget.examine()?;
             budget.references(1)?;
             let site = entry.site;
@@ -595,7 +727,8 @@ impl AllocationState {
             };
             let declared = &source.entries[index];
             let class = declared.storage_class;
-            if r.storage_class != class
+            if let Selection::Fallback(class_match) = selection
+                && r.storage_class != class
                 && (class_match == ClassMatch::Exact || class != StorageClass::General)
             {
                 continue;
@@ -608,7 +741,10 @@ impl AllocationState {
                     size: r.size,
                     used_slots: cursor,
                     type_alignment: r.alignment,
-                    justification: Justification::Default,
+                    justification: match selection {
+                        Selection::Fallback(_) => Justification::Default,
+                        Selection::Pool { justification, .. } => justification,
+                    },
                 },
                 budget.nested_limits(),
             )

@@ -129,7 +129,7 @@ impl PrimitiveExtraction {
             stats: ExtractionStats::default(),
             live: 0,
         };
-        let initial = enter(root, options.offset, 0, 1, &mut budget)?;
+        let initial = enter(root, u128::from(options.offset), 0, 1, &mut budget)?;
         let mut contexts = vec![Context::new(initial)];
         let (primitives, contains_unknown) = loop {
             let task = contexts
@@ -244,7 +244,7 @@ impl PrimitiveExtraction {
                         continue;
                     }
                     let at = offset
-                        .checked_add(next.checked_mul(stride).ok_or(ExtractionError::Overflow)?)
+                        .checked_add(u128::from(next) * u128::from(stride))
                         .ok_or(ExtractionError::Overflow)?;
                     let child = enter(
                         element,
@@ -279,7 +279,7 @@ impl PrimitiveExtraction {
                         continue;
                     };
                     let at = offset
-                        .checked_add(field.offset)
+                        .checked_add(u128::from(field.offset))
                         .ok_or(ExtractionError::Overflow)?;
                     let child = enter_field(
                         &predicates,
@@ -307,7 +307,7 @@ impl PrimitiveExtraction {
                     if let Some(field) = layout.fields.get(union.next) {
                         let at = union
                             .offset
-                            .checked_add(field.offset)
+                            .checked_add(u128::from(field.offset))
                             .ok_or(ExtractionError::Overflow)?;
                         let child = enter_field(
                             &predicates,
@@ -414,10 +414,12 @@ impl Context {
 }
 
 enum Task {
+    // Traversal can reach an empty trailing member at the exclusive end 2^64.
+    // Only emitted primitives need a representable u64 starting offset.
     BitField(Primitive),
     Enter {
         ty: TypeId,
-        offset: u64,
+        offset: u128,
         depth: usize,
         nesting: usize,
     },
@@ -425,7 +427,7 @@ enum Task {
         element: TypeId,
         count: u64,
         next: u64,
-        offset: u64,
+        offset: u128,
         stride: u64,
         depth: usize,
         nesting: usize,
@@ -433,7 +435,7 @@ enum Task {
     Structure {
         ty: TypeId,
         next: usize,
-        offset: u64,
+        offset: u128,
         depth: usize,
         nesting: usize,
     },
@@ -442,7 +444,7 @@ enum Task {
 struct Union {
     ty: TypeId,
     next: usize,
-    offset: u64,
+    offset: u128,
     nesting: usize,
     common: Option<Vec<Primitive>>,
 }
@@ -478,7 +480,7 @@ impl Budget {
 
 fn enter(
     ty: TypeId,
-    offset: u64,
+    offset: u128,
     depth: usize,
     nesting: usize,
     budget: &mut Budget,
@@ -500,7 +502,7 @@ fn enter_field(
     predicates: &DatatypePredicates,
     owner: TypeId,
     index: usize,
-    offset: u64,
+    offset: u128,
     depth: usize,
     nesting: usize,
     budget: &mut Budget,
@@ -524,7 +526,7 @@ fn enter_field(
                 field: index,
                 base: field.ty,
             },
-            offset,
+            offset: u64::try_from(offset).map_err(|_| ExtractionError::Overflow)?,
             meta_type: MetaType::Unknown,
             length: i128::from(bits.storage_bytes),
             aligned_length: i128::from(bits.storage_bytes),
@@ -547,7 +549,7 @@ fn append_type(
     context: &mut Context,
     predicates: &DatatypePredicates,
     ty: TypeId,
-    offset: u64,
+    offset: u128,
     meta: MetaType,
     budget: &mut Budget,
 ) -> Result<()> {
@@ -570,7 +572,7 @@ fn append_type(
         context,
         Primitive {
             source: PrimitiveSource::Type(ty),
-            offset,
+            offset: u64::try_from(offset).map_err(|_| ExtractionError::Overflow)?,
             meta_type: meta,
             length,
             aligned_length,

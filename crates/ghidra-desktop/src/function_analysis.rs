@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, Mutex, mpsc},
 };
 
-use ghidra_analysis::{AnalysisOptions, PcodeExpressions, PcodeSsa, UnknownEffectPolicy};
+use ghidra_analysis::{
+    AnalysisOptions, PcodeConstants, PcodeExpressions, PcodeSsa, UnknownEffectPolicy,
+};
 use ghidra_cfg::{Cfg, CfgInput};
 use ghidra_core::{
     BinaryImage,
@@ -86,17 +88,23 @@ pub(crate) fn execute(
         havoc_unknown: arguments.havoc_unknown,
     };
     let result = Compiler::default().analyze(&request)?;
+    // The document was assembled within `MAX_DOCUMENT`, so the final newline
+    // keeps stdout within the 64 MiB cap.
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(result.json.as_bytes())
         .map_err(|e| e.to_string())?;
-    writeln!(stdout).map_err(|e| e.to_string())
+    writeln!(stdout).map_err(|e| e.to_string())?;
+    stdout.flush().map_err(|e| e.to_string())
 }
 
 pub(crate) const MAX_FUNCTION_INSTRUCTIONS: usize = 5_000;
 const MAX_FUNCTION_OPERATIONS: usize = 100_000;
 const MAX_DISASSEMBLY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_JSON: usize = 64 * 1024 * 1024;
+/// The document without the command's final newline, so stdout stays within
+/// `MAX_JSON` bytes and the desktop copy uses the same limit.
+const MAX_DOCUMENT: usize = MAX_JSON - 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestKey {
@@ -134,6 +142,11 @@ pub(crate) struct FunctionView {
     /// Statements with expression operations, in node/statement order, so the
     /// UI can virtualize operation rows without rescanning every frame.
     pub expression_operations: Vec<ghidra_ssa::StatementId>,
+    /// Sparse conditional constant facts built on the worker from the same
+    /// `expressions` allocation. Feasibility is conservative and static.
+    pub constants: Arc<PcodeConstants>,
+    /// Values proven constant, ascending, collected once for virtual rows.
+    pub constant_values: Vec<ghidra_ssa::ValueId>,
     pub json: String,
 }
 
@@ -433,6 +446,7 @@ fn lift_function(
         .verify(analysis.raw())
         .map_err(|e| e.to_string())?;
     let expressions = Arc::new(crate::expression_report::build(analysis.clone())?);
+    let constants = Arc::new(crate::constant_report::build(expressions.clone())?);
     let definition = request
         .config
         .definition
@@ -465,9 +479,13 @@ fn lift_function(
     })
     .map_err(|e| e.to_string())?;
     let dataflow = crate::analysis_cli::symbolic_json(&analysis)?;
-    let json = function_json(&metadata, &dataflow, MAX_JSON, |remaining| {
-        crate::expression_report::json(&expressions, remaining, FUNCTION_TOO_LARGE)
-    })?;
+    let json = function_json(
+        &metadata,
+        &dataflow,
+        MAX_DOCUMENT,
+        |remaining| crate::expression_report::json(&expressions, remaining, FUNCTION_TOO_LARGE),
+        |remaining| crate::constant_report::json(&constants, remaining, FUNCTION_TOO_LARGE),
+    )?;
     Ok(FunctionView {
         entry: function.entry,
         name: function.name.clone(),
@@ -475,8 +493,10 @@ fn lift_function(
         language_id: definition.id.clone(),
         native,
         expression_operations: expressions.operations().map(|o| o.statement).collect(),
+        constant_values: constants.constants().map(|(id, _)| id).collect(),
         analysis,
         expressions,
+        constants,
         json: String::from_utf8(json).map_err(|e| e.to_string())?,
     })
 }
@@ -486,15 +506,18 @@ const FUNCTION_PREFIX: &[u8] =
     br#"{"schema":"ghidra-rs.function-analysis","schema_version":1,"function":"#;
 const ANALYSIS_KEY: &[u8] = br#","analysis":"#;
 const EXPRESSIONS_KEY: &[u8] = br#","expressions":"#;
+const CONSTANTS_KEY: &[u8] = br#","constants":"#;
 
-/// Assembles `{prefix function, analysis, expressions}` within `maximum`
-/// bytes. The expression report is serialized into exactly the remaining
-/// budget, and the final buffer is reserved once at its exact size.
+/// Assembles `{prefix function, analysis, expressions, constants}` within
+/// `maximum` bytes. Each report is serialized into exactly the budget left by
+/// the fixed parts and earlier reports, and the final buffer is reserved once
+/// at its exact size.
 fn function_json(
     metadata: &[u8],
     dataflow: &[u8],
     maximum: usize,
     expressions: impl FnOnce(usize) -> Result<Vec<u8>, String>,
+    constants: impl FnOnce(usize) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
     let fixed = [
         FUNCTION_PREFIX.len(),
@@ -502,6 +525,7 @@ fn function_json(
         ANALYSIS_KEY.len(),
         dataflow.len(),
         EXPRESSIONS_KEY.len(),
+        CONSTANTS_KEY.len(),
         1,
     ]
     .into_iter()
@@ -509,8 +533,13 @@ fn function_json(
     .ok_or("Function JSON size overflow")?;
     let remaining = maximum.checked_sub(fixed).ok_or(FUNCTION_TOO_LARGE)?;
     let expressions = expressions(remaining)?;
-    let size = fixed
-        .checked_add(expressions.len())
+    let remaining = remaining
+        .checked_sub(expressions.len())
+        .ok_or(FUNCTION_TOO_LARGE)?;
+    let constants = constants(remaining)?;
+    let size = [fixed, expressions.len(), constants.len()]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
         .filter(|&n| n <= maximum)
         .ok_or(FUNCTION_TOO_LARGE)?;
     let mut json = Vec::with_capacity(size);
@@ -520,6 +549,8 @@ fn function_json(
     json.extend_from_slice(dataflow);
     json.extend_from_slice(EXPRESSIONS_KEY);
     json.extend_from_slice(&expressions);
+    json.extend_from_slice(CONSTANTS_KEY);
+    json.extend_from_slice(&constants);
     json.push(b'}');
     debug_assert_eq!(json.len(), size);
     Ok(json)

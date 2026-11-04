@@ -13,22 +13,23 @@ use ghidra_ssa::{StatementId, ValueId, ValueOrigin};
 pub(super) const MAX_ITEMS: usize = 8;
 /// Literal hexadecimal digits shown before eliding the remainder.
 pub(super) const MAX_HEX_DIGITS: usize = 16;
-const MAX_DETAIL_ROWS: usize = 16;
+pub(super) const MAX_DETAIL_ROWS: usize = 16;
 
 // show_rows requires every row to have exactly this height, excluding spacing.
 // Compact buttons remove vertical padding; the explicit font and minimum size
 // keep the contract independent of the application's normal button padding.
-fn row_height(ui: &egui::Ui) -> f32 {
+pub(super) fn row_height(ui: &egui::Ui) -> f32 {
     ui.text_style_height(&egui::TextStyle::Monospace)
         .ceil()
         .max(22.0)
 }
 
-fn selectable_row(
+/// One compact, single-line, selectable virtual row of exactly `row_height`.
+pub(super) fn selectable_row(
     ui: &mut egui::Ui,
     selection: &mut usize,
     index: usize,
-    tone: Tone,
+    color: Color32,
     text: String,
 ) -> egui::Response {
     let text = text.replace(['\r', '\n'], " ");
@@ -37,7 +38,7 @@ fn selectable_row(
             *selection == index,
             RichText::new(text)
                 .text_style(egui::TextStyle::Monospace)
-                .color(tone.color()),
+                .color(color),
         )
         .small()
         .wrap_mode(egui::TextWrapMode::Extend)
@@ -71,7 +72,7 @@ pub(super) enum Tone {
 }
 
 impl Tone {
-    fn color(self) -> Color32 {
+    pub(super) fn color(self) -> Color32 {
         match self {
             Self::Plain => Color32::from_rgb(214, 222, 232),
             Self::Undefined | Self::Opaque => GOLD,
@@ -207,7 +208,7 @@ pub(super) fn term(e: &PcodeExpressions, spaces: &[AddressSpace], id: Expression
 }
 
 /// Direct children of a term, in operand order, at most `MAX_ITEMS`.
-fn children(kind: &ExpressionKind) -> (Vec<ExpressionId>, usize) {
+pub(super) fn children(kind: &ExpressionKind) -> (Vec<ExpressionId>, usize) {
     let all: Vec<ExpressionId> = match kind {
         ExpressionKind::Constant(_) | ExpressionKind::SsaValue(_) => vec![],
         ExpressionKind::Join(pieces) => pieces.iter().take(MAX_ITEMS).map(|p| p.value).collect(),
@@ -398,7 +399,7 @@ pub(super) fn operation_row(
 }
 
 /// The native instruction that produced `value`, where there is one.
-fn source_address(e: &PcodeExpressions, value: ValueId) -> Option<u64> {
+pub(super) fn source_address(e: &PcodeExpressions, value: ValueId) -> Option<u64> {
     match e.definition(value).ok()? {
         ExpressionDefinition::Undefined { instruction, .. } => Some(*instruction),
         ExpressionDefinition::Opaque { statement, .. } => {
@@ -647,7 +648,7 @@ pub(super) fn panel(
                 .show_rows(&mut columns[0], height, count, |ui, rows| {
                     for id in rows {
                         let (tone, text) = value_row(e, spaces, id);
-                        selectable_row(ui, &mut selection.value, id, tone, text);
+                        selectable_row(ui, &mut selection.value, id, tone.color(), text);
                     }
                 });
             if count > 0 {
@@ -668,7 +669,7 @@ pub(super) fn panel(
                 .show_rows(&mut columns[0], height, statements.len(), |ui, rows| {
                     for index in rows {
                         let (tone, text) = operation_row(e, spaces, statements[index]);
-                        selectable_row(ui, &mut selection.operation, index, tone, text);
+                        selectable_row(ui, &mut selection.operation, index, tone.color(), text);
                     }
                 });
             if let Some(&statement) = statements.get(selection.operation) {
@@ -766,7 +767,7 @@ mod tests {
                                             ui,
                                             &mut selection,
                                             id,
-                                            *tone,
+                                            tone.color(),
                                             text.clone(),
                                         );
                                         assert!((response.rect.height() - height).abs() < 0.01);

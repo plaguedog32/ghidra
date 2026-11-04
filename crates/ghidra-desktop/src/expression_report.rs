@@ -162,7 +162,7 @@ fn endian(endianness: Endianness) -> &'static str {
 }
 
 /// Literal bit pattern as unsigned hexadecimal; `bytes` carries the width.
-struct Hex<'a>(&'a Value);
+pub(crate) struct Hex<'a>(pub &'a Value);
 impl Serialize for Hex<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(&format_args!("0x{:x}", self.0.bits()))

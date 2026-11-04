@@ -22,6 +22,7 @@ pub(crate) struct CommandOptions {
     instruction_uniques: bool,
     havoc_unknown: bool,
     expressions: bool,
+    constants: bool,
 }
 
 impl CommandOptions {
@@ -34,6 +35,7 @@ impl CommandOptions {
                 }
                 Some("--havoc-unknown") if !result.havoc_unknown => result.havoc_unknown = true,
                 Some("--expressions") if !result.expressions => result.expressions = true,
+                Some("--constants") if !result.constants => result.constants = true,
                 _ => {
                     return Err(format!(
                         "Unknown or duplicate P-code analysis option: {}",
@@ -58,12 +60,14 @@ impl CommandOptions {
     }
 }
 
+/// Writes the complete buffered document, including its final newline, only
+/// after analysis and serialization have both succeeded.
 pub(crate) fn execute(path: &Path, options: CommandOptions) -> Result<(), String> {
     let input = crate::pcode_cli::read_program(path)?;
     let json = analyze(input, options)?;
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(&json).map_err(|e| e.to_string())?;
-    writeln!(stdout).map_err(|e| e.to_string())
+    stdout.flush().map_err(|e| e.to_string())
 }
 
 pub(crate) fn limits() -> AnalysisLimits {
@@ -96,6 +100,7 @@ fn analyze(input: ExecutionInput, options: CommandOptions) -> Result<Vec<u8>, St
     analyze_within(input, options, MAX_OUTPUT)
 }
 
+/// The complete stdout document, newline included, within `maximum` bytes.
 fn analyze_within(
     input: ExecutionInput,
     options: CommandOptions,
@@ -103,14 +108,35 @@ fn analyze_within(
 ) -> Result<Vec<u8>, String> {
     let (analysis, initializers) = verified_snapshot(input, options)?;
     // Terms are reconstructed from the verified snapshot only on request, so
-    // the default report keeps its existing shape and cost.
-    let expressions = if options.expressions {
-        Some(crate::expression_report::build(analysis.clone())?)
+    // the default report keeps its existing shape and cost. Constants imply
+    // terms, because their facts are indexed by term IDs.
+    let expressions = if options.expressions || options.constants {
+        Some(Arc::new(crate::expression_report::build(analysis.clone())?))
     } else {
         None
     };
-    write_report(&analysis, initializers, expressions.as_ref(), maximum)
+    let constants = match (&expressions, options.constants) {
+        (Some(expressions), true) => Some(crate::constant_report::build(expressions.clone())?),
+        _ => None,
+    };
+    let mut output = LimitedOutput::new(maximum, OUTPUT_TOO_LARGE);
+    write_report(
+        &analysis,
+        initializers,
+        expressions.as_deref(),
+        constants.as_ref(),
+        &mut output,
+    )?;
+    output
+        .write_all(
+            b"
+",
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(output.into_bytes())
 }
+
+const OUTPUT_TOO_LARGE: &str = "P-code analysis JSON exceeds 64 MiB";
 
 /// Expressions for a supplied program, built by the command's own path.
 #[cfg(test)]
@@ -123,6 +149,7 @@ pub(crate) fn expressions_for(
         instruction_uniques,
         havoc_unknown,
         expressions: true,
+        constants: false,
     };
     let (analysis, _) = verified_snapshot(input, options).unwrap();
     crate::expression_report::build(analysis).unwrap()
@@ -218,6 +245,9 @@ struct Report<'a> {
     /// Additive `--expressions` field using `ghidra-rs.expressions` v1.
     #[serde(skip_serializing_if = "Option::is_none")]
     expressions: Option<crate::expression_report::Report<'a>>,
+    /// Additive `--constants` field using `ghidra-rs.constants` v1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    constants: Option<crate::constant_report::Report<'a>>,
 }
 
 #[derive(Serialize)]
@@ -382,12 +412,20 @@ fn write_report(
     analysis: &PcodeSsa,
     initializers: Initializers,
     expressions: Option<&ghidra_analysis::PcodeExpressions>,
-    maximum: usize,
-) -> Result<Vec<u8>, String> {
+    constants: Option<&ghidra_analysis::PcodeConstants>,
+    output: &mut LimitedOutput,
+) -> Result<(), String> {
     if let Some(expressions) = expressions
         && !std::ptr::eq(expressions.analysis().as_ref(), analysis)
     {
         return Err("Expressions belong to a different SSA snapshot".into());
+    }
+    // Constant facts index the accompanying terms and SSA values, so both
+    // must be the exact allocations the facts were computed from.
+    if let Some(constants) = constants
+        && !expressions.is_some_and(|e| std::ptr::eq(constants.expressions().as_ref(), e))
+    {
+        return Err("Constant facts belong to a different expression snapshot".into());
     }
     let cfg = analysis.cfg();
     let ssa = analysis.ssa();
@@ -623,13 +661,13 @@ fn write_report(
             .collect(),
         natural_loops,
         expressions: expressions.map(crate::expression_report::Report),
+        constants: constants.map(crate::constant_report::Report),
     };
-    let mut output = LimitedOutput::new(maximum, "P-code analysis JSON exceeds 64 MiB");
-    serde_json::to_writer_pretty(&mut output, &report).map_err(|e| e.to_string())?;
-    Ok(output.into_bytes())
+    serde_json::to_writer_pretty(output, &report).map_err(|e| e.to_string())
 }
 
 pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
+    let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
     write_report(
         analysis,
         Initializers {
@@ -638,11 +676,13 @@ pub(crate) fn symbolic_json(analysis: &PcodeSsa) -> Result<Vec<u8>, String> {
             applied: false,
         },
         None,
-        MAX_OUTPUT,
-    )
+        None,
+        &mut output,
+    )?;
+    Ok(output.into_bytes())
 }
 
-fn role(role: EdgeRole) -> &'static str {
+pub(crate) fn role(role: EdgeRole) -> &'static str {
     match role {
         EdgeRole::Fallthrough => "fallthrough",
         EdgeRole::Branch => "branch",
@@ -713,7 +753,7 @@ impl Write for LimitedOutput {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ghidra_pcode::{Opcode, PcodeOperation, SpaceId, Varnode};
     use serde_json::Value;
@@ -728,6 +768,7 @@ mod tests {
         instruction_uniques: false,
         havoc_unknown: false,
         expressions: true,
+        constants: false,
     };
     /// A report with `--expressions`, checked against its own SSA IDs.
     fn expression_report(input: ExecutionInput, options: CommandOptions) -> Value {
@@ -1297,6 +1338,333 @@ mod tests {
         let plain = analyze(input(), CommandOptions::default()).unwrap().len();
         assert!(plain < exact);
         assert!(analyze_within(input(), CommandOptions::default(), plain).is_ok());
+    }
+
+    const CONSTANTS: CommandOptions = CommandOptions {
+        instruction_uniques: false,
+        havoc_unknown: false,
+        expressions: false,
+        constants: true,
+    };
+    /// A report with `--constants`, checked against its own SSA and term IDs.
+    fn constant_report(input: ExecutionInput, options: CommandOptions) -> Value {
+        let report = report(
+            input,
+            CommandOptions {
+                constants: true,
+                ..options
+            },
+        );
+        validate_references(&report);
+        crate::expression_report::tests::validate(&report, &report["expressions"]);
+        crate::constant_report::tests::validate(
+            &report,
+            &report["expressions"],
+            &report["constants"],
+        );
+        report
+    }
+    fn op(opcode: Opcode, output: Option<Varnode>, inputs: Vec<Varnode>) -> PcodeOperation {
+        PcodeOperation {
+            opcode,
+            output,
+            inputs,
+        }
+    }
+    fn instruction(address: u64, ops: Vec<PcodeOperation>) -> PcodeInstruction {
+        PcodeInstruction {
+            address,
+            length: 4,
+            ops,
+        }
+    }
+    /// 0x1000 decides a known-constant CBRANCH, so 0x1004 is unreached and the
+    /// join's phi folds over its one feasible input. 0x1010 divides by zero,
+    /// loads through a constant pointer and branches on an entry input.
+    pub(crate) fn constant_program() -> ExecutionInput {
+        let mut program = input();
+        let reg = |offset, size| var(2, offset, size);
+        let con = |value, size| var(0, value, size);
+        let label = |address| var(1, address, 8);
+        program.instructions = vec![
+            instruction(
+                0x1000,
+                vec![
+                    op(Opcode::Copy, Some(reg(0, 4)), vec![con(5, 4)]),
+                    op(Opcode::Copy, Some(reg(8, 4)), vec![con(9, 4)]),
+                    op(
+                        Opcode::IntEqual,
+                        Some(reg(64, 1)),
+                        vec![reg(0, 4), con(5, 4)],
+                    ),
+                    op(Opcode::Cbranch, None, vec![label(0x1010), reg(64, 1)]),
+                ],
+            ),
+            instruction(
+                0x1004,
+                vec![
+                    op(Opcode::Copy, Some(reg(8, 4)), vec![con(7, 4)]),
+                    op(Opcode::Branch, None, vec![label(0x1010)]),
+                ],
+            ),
+            instruction(
+                0x1010,
+                vec![
+                    op(Opcode::IntAdd, Some(reg(48, 4)), vec![reg(8, 4), con(1, 4)]),
+                    op(Opcode::IntDiv, Some(reg(16, 4)), vec![reg(0, 4), con(0, 4)]),
+                    op(Opcode::Copy, Some(reg(32, 8)), vec![con(0x2000, 8)]),
+                    op(Opcode::Load, Some(reg(24, 4)), vec![con(1, 4), reg(32, 8)]),
+                    op(
+                        Opcode::IntEqual,
+                        Some(reg(65, 1)),
+                        vec![reg(40, 4), con(0, 4)],
+                    ),
+                    op(Opcode::Cbranch, None, vec![label(0x1020), reg(65, 1)]),
+                ],
+            ),
+            instruction(0x1014, vec![op(Opcode::Return, None, vec![con(0x9000, 8)])]),
+            instruction(0x1020, vec![op(Opcode::Return, None, vec![reg(0, 8)])]),
+        ];
+        program
+    }
+    /// The fact of the single value defined by `opcode` at `address`.
+    fn output_fact<'a>(report: &'a Value, address: u64, opcode: &str) -> &'a Value {
+        let operation = report["expressions"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["point"]["address"] == address && o["opcode"] == opcode)
+            .unwrap_or_else(|| panic!("{opcode} at {address:x}"));
+        let definitions = operation["definitions"].as_array().unwrap();
+        assert_eq!(definitions.len(), 1, "{operation}");
+        &report["constants"]["values"][definitions[0].as_u64().unwrap() as usize]
+    }
+    fn edges_from(report: &Value, address: u64) -> Vec<(String, bool)> {
+        let mut edges: Vec<_> = report["cfg"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e["source"]["address"] == address)
+            .map(|(id, e)| {
+                (
+                    e["role"].as_str().unwrap().to_string(),
+                    report["constants"]["cfg_edge_feasible"][id]
+                        .as_bool()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        edges.sort();
+        edges
+    }
+    fn pair(role: &str, feasible: bool) -> (String, bool) {
+        (role.to_string(), feasible)
+    }
+
+    #[test]
+    fn known_conditions_prune_only_their_outcome_and_unknowns_never_become_zero() {
+        let report = constant_report(constant_program(), CommandOptions::default());
+        let constants = &report["constants"];
+        assert_eq!(constants["schema"], "ghidra-rs.constants");
+        assert_eq!(constants["schema_version"], 1);
+        assert_eq!(constants["policies"]["analysis"]["unique_scope"], "program");
+        assert_eq!(
+            constants["policies"]["analysis"]["entry"]["registers"],
+            "input"
+        );
+        // The known condition keeps only its taken outcome.
+        assert_eq!(
+            edges_from(&report, 0x1000),
+            [pair("condition_false", false), pair("condition_true", true)]
+        );
+        // The skipped block and its definition are unreached, not zero.
+        let skipped = output_fact(&report, 0x1004, "COPY");
+        assert_eq!(skipped["fact"], "unreached");
+        assert!(skipped.get("hex").is_none());
+        assert_eq!(edges_from(&report, 0x1004), [pair("branch", false)]);
+        // The join's phi folds over its single feasible input.
+        assert!(
+            report["expressions"]["values"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v["definition"]["kind"] == "phi")
+                .map(|v| &constants["values"][v["id"].as_u64().unwrap() as usize])
+                .any(|v| v["fact"] == "constant" && v["hex"] == "0x9")
+        );
+        let sum = output_fact(&report, 0x1010, "INT_ADD");
+        assert_eq!(sum["fact"], "constant");
+        assert_eq!(sum["hex"], "0xa");
+        assert_eq!(sum["bytes"], 4);
+        // Division by zero is a reported fault; its result stays unknown and
+        // later operations and both outcomes of the next CBRANCH stay feasible.
+        let faults = constants["faults"].as_array().unwrap();
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0]["opcode"], "INT_DIV");
+        assert_eq!(faults[0]["point"]["address"], 0x1010);
+        assert_eq!(faults[0]["point"]["operation_index"], 1);
+        assert!(
+            faults[0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("division by zero")
+        );
+        assert_eq!(output_fact(&report, 0x1010, "INT_DIV")["fact"], "unknown");
+        // Memory is not modeled: a constant pointer still loads an unknown.
+        assert_eq!(output_fact(&report, 0x1010, "COPY")["hex"], "0x2000");
+        assert_eq!(output_fact(&report, 0x1010, "LOAD")["fact"], "unknown");
+        // An entry-input condition is unknown and keeps both outcomes.
+        assert_eq!(output_fact(&report, 0x1010, "INT_EQUAL")["fact"], "unknown");
+        assert_eq!(
+            edges_from(&report, 0x1010),
+            [pair("condition_false", true), pair("condition_true", true)]
+        );
+        // RETURN outcomes are control transfers, not ABI return values.
+        for address in [0x1014, 0x1020] {
+            assert_eq!(edges_from(&report, address), [pair("return", true)]);
+        }
+        assert_eq!(constants["policies"]["abi_return_values"], false);
+        let counts = &constants["counts"];
+        assert_eq!(counts["faults"], 1);
+        assert!(counts["work"].as_u64().unwrap() > 0);
+        assert!(counts["def_use_work"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn constants_are_opt_in_include_their_expressions_and_leave_other_fields_unchanged() {
+        let plain = report(constant_program(), CommandOptions::default());
+        assert!(plain.get("expressions").is_none() && plain.get("constants").is_none());
+        let terms = report(constant_program(), EXPRESSIONS);
+        assert!(terms.get("constants").is_none());
+        let mut with = constant_report(constant_program(), CommandOptions::default());
+        let both = constant_report(
+            constant_program(),
+            CommandOptions {
+                expressions: true,
+                ..CONSTANTS
+            },
+        );
+        assert_eq!(with, both);
+        with.as_object_mut().unwrap().remove("constants");
+        assert_eq!(with, terms);
+    }
+
+    #[test]
+    fn instruction_resets_and_opaque_calls_stay_unknown_and_call_outcomes_stay_feasible() {
+        let mut looped = input();
+        looped.instructions[0]
+            .ops
+            .push(branch(Opcode::Branch, var(1, 0x1000, 8)));
+        let report = constant_report(
+            looped,
+            CommandOptions {
+                instruction_uniques: true,
+                ..Default::default()
+            },
+        );
+        let fact = |report: &Value, value: &Value| {
+            report["constants"]["values"][value["id"].as_u64().unwrap() as usize]["fact"].clone()
+        };
+        let resets: Vec<_> = report["expressions"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["definition"]["kind"] == "undefined_reset")
+            .collect();
+        assert!(!resets.is_empty());
+        assert!(resets.iter().all(|v| fact(&report, v) == "unknown"));
+        let mut called = input();
+        called.instructions[0]
+            .ops
+            .insert(0, branch(Opcode::Call, var(1, 0x8000, 8)));
+        called.instructions[0].ops.pop();
+        let report = constant_report(
+            called,
+            CommandOptions {
+                havoc_unknown: true,
+                ..Default::default()
+            },
+        );
+        let opaque: Vec<_> = report["expressions"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["definition"]["kind"] == "opaque")
+            .collect();
+        assert!(!opaque.is_empty());
+        assert!(opaque.iter().all(|v| fact(&report, v) == "unknown"));
+        let calls = edges_from(&report, 0x1000);
+        assert!(calls.contains(&pair("call_return", true)));
+        assert!(calls.contains(&pair("call_no_return", true)));
+        assert_eq!(report["constants"]["policies"]["summarizes_calls"], false);
+        assert_eq!(
+            report["constants"]["policies"]["analysis"]["unknown_effects"],
+            "havoc_all_observed_storage"
+        );
+    }
+
+    #[test]
+    fn constant_flag_parsing_exact_bounds_and_snapshot_identity() {
+        let parse = |args: &[&str]| CommandOptions::parse(args.iter().map(OsString::from));
+        let parsed = parse(&["--constants"]).unwrap();
+        assert!(parsed.constants && !parsed.expressions);
+        assert!(parse(&["--constants", "--expressions"]).is_ok());
+        assert!(parse(&["--expressions", "--constants", "--havoc-unknown"]).is_ok());
+        assert!(parse(&["--constants", "--constants"]).is_err());
+        assert!(parse(&["--constants", "--expressions", "--expressions"]).is_err());
+        assert!(parse(&["--constant"]).is_err());
+        assert!(!parse(&[]).unwrap().constants);
+        // The cap covers the whole stdout document, including its newline.
+        let exact = analyze(constant_program(), CONSTANTS).unwrap();
+        assert!(exact.ends_with(b"}\n"));
+        assert_eq!(
+            analyze_within(constant_program(), CONSTANTS, exact.len()).unwrap(),
+            exact
+        );
+        assert!(
+            analyze_within(constant_program(), CONSTANTS, exact.len() - 1)
+                .unwrap_err()
+                .contains("64 MiB")
+        );
+        let terms = analyze(constant_program(), EXPRESSIONS).unwrap().len();
+        assert!(terms < exact.len());
+        // Facts must belong to the exact expression snapshot being reported.
+        let (first, _) = verified_snapshot(constant_program(), CONSTANTS).unwrap();
+        let (second, _) = verified_snapshot(constant_program(), CONSTANTS).unwrap();
+        let first_terms = Arc::new(crate::expression_report::build(first.clone()).unwrap());
+        let second_terms = Arc::new(crate::expression_report::build(second.clone()).unwrap());
+        let facts = crate::constant_report::build(first_terms.clone()).unwrap();
+        assert!(Arc::ptr_eq(facts.expressions(), &first_terms));
+        assert!(Arc::ptr_eq(facts.analysis(), &first));
+        let initializers = || Initializers {
+            regions: 0,
+            bytes: 0,
+            applied: false,
+        };
+        let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
+        assert!(
+            write_report(
+                &second,
+                initializers(),
+                Some(&second_terms),
+                Some(&facts),
+                &mut output
+            )
+            .unwrap_err()
+            .contains("different expression snapshot")
+        );
+        assert!(write_report(&first, initializers(), None, Some(&facts), &mut output).is_err());
+        assert!(output.into_bytes().is_empty());
+        let mut output = LimitedOutput::new(MAX_OUTPUT, OUTPUT_TOO_LARGE);
+        write_report(
+            &first,
+            initializers(),
+            Some(&first_terms),
+            Some(&facts),
+            &mut output,
+        )
+        .unwrap();
     }
 
     #[test]

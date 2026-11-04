@@ -95,6 +95,60 @@ fn recovered_binary_function_is_lifted_to_verified_native_ssa_with_source_bytes(
         serde_json::from_slice::<serde_json::Value>(&exported).unwrap(),
         json["expressions"]
     );
+    // Constants share the worker's exact expression and SSA allocations.
+    assert!(Arc::ptr_eq(
+        result.constants.expressions(),
+        &result.expressions
+    ));
+    assert!(Arc::ptr_eq(result.constants.analysis(), &result.analysis));
+    crate::constant_report::tests::validate(
+        &json["analysis"],
+        &json["expressions"],
+        &json["constants"],
+    );
+    let exported = crate::constant_report::json(&result.constants, MAX_JSON, "cap").unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&exported).unwrap(),
+        json["constants"]
+    );
+    assert_eq!(
+        result.constant_values,
+        result
+            .constants
+            .constants()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    );
+    let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "analysis",
+            "constants",
+            "expressions",
+            "function",
+            "schema",
+            "schema_version"
+        ]
+    );
+    // `rax = zext(1)` is a known constant; the RETURN target read from rip is
+    // entry state and stays unknown rather than becoming zero.
+    let return_target = operations.iter().find(|o| o["opcode"] == "RETURN").unwrap()["operands"][0]
+        ["node"]
+        .as_u64()
+        .unwrap() as usize;
+    assert_ne!(
+        json["constants"]["terms"][return_target]["fact"],
+        "constant"
+    );
+    assert!(
+        json["constants"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["fact"] == "constant" && v["hex"] == "0x1" && v["bytes"] == 8)
+    );
     assert!(
         result
             .analysis
@@ -258,6 +312,23 @@ fn unknown_calls_are_explicitly_rejected_or_conservatively_marked() {
     assert_eq!(result.analysis.cfg().calls().len(), 1);
     let json: serde_json::Value = serde_json::from_str(&result.json).unwrap();
     crate::expression_report::tests::validate(&json["analysis"], &json["expressions"]);
+    crate::constant_report::tests::validate(
+        &json["analysis"],
+        &json["expressions"],
+        &json["constants"],
+    );
+    // Calls are not summarized, so both call outcomes stay feasible.
+    let mut call_outcomes = 0;
+    for (id, edge) in result.analysis.cfg().edges().iter().enumerate() {
+        if matches!(
+            edge.role,
+            ghidra_cfg::EdgeRole::CallReturn | ghidra_cfg::EdgeRole::CallNoReturn
+        ) {
+            call_outcomes += 1;
+            assert!(result.constants.is_cfg_edge_feasible(id).unwrap());
+        }
+    }
+    assert_eq!(call_outcomes, 2);
     let call = result
         .expressions
         .operations()
@@ -275,6 +346,8 @@ fn unknown_calls_are_explicitly_rejected_or_conservatively_marked() {
             result.expressions.definition(*value).unwrap(),
             ghidra_analysis::ExpressionDefinition::Opaque { .. }
         ));
+        // Opaque outputs are unknown, never a guessed constant.
+        assert!(result.constants.value(*value).unwrap().is_unknown());
     }
     assert!(
         result
@@ -300,24 +373,39 @@ fn unknown_calls_are_explicitly_rejected_or_conservatively_marked() {
 }
 
 #[test]
-fn function_json_reserves_exactly_and_serializes_expressions_into_the_remaining_cap() {
+fn function_json_reserves_exactly_and_serializes_reports_into_the_remaining_cap() {
     let metadata = br#"{"entry":1}"#;
     let dataflow = br#"{"schema":"ghidra-rs.pcode-analysis"}"#;
     let report = br#"{"schema":"ghidra-rs.expressions"}"#;
+    let facts = br#"{"schema":"ghidra-rs.constants"}"#;
     let fixed = FUNCTION_PREFIX.len()
         + metadata.len()
         + ANALYSIS_KEY.len()
         + dataflow.len()
         + EXPRESSIONS_KEY.len()
+        + CONSTANTS_KEY.len()
         + 1;
-    let exact = fixed + report.len();
-    let mut offered = None;
-    let json = function_json(metadata, dataflow, exact, |remaining| {
-        offered = Some(remaining);
-        Ok(report.to_vec())
-    })
+    let exact = fixed + report.len() + facts.len();
+    let mut offered = (None, None);
+    let json = function_json(
+        metadata,
+        dataflow,
+        exact,
+        |remaining| {
+            offered.0 = Some(remaining);
+            Ok(report.to_vec())
+        },
+        |remaining| {
+            offered.1 = Some(remaining);
+            Ok(facts.to_vec())
+        },
+    )
     .unwrap();
-    assert_eq!(offered, Some(report.len()));
+    // Constants receive exactly what the expressions left.
+    assert_eq!(
+        offered,
+        (Some(report.len() + facts.len()), Some(facts.len()))
+    );
     assert_eq!(json.len(), exact);
     assert_eq!(json.capacity(), exact);
     let parsed: serde_json::Value = serde_json::from_slice(&json).unwrap();
@@ -325,30 +413,67 @@ fn function_json_reserves_exactly_and_serializes_expressions_into_the_remaining_
     assert_eq!(parsed["function"]["entry"], 1);
     assert_eq!(parsed["analysis"]["schema"], "ghidra-rs.pcode-analysis");
     assert_eq!(parsed["expressions"]["schema"], "ghidra-rs.expressions");
-    // The expression writer receives the remaining budget and enforces it.
-    let error = function_json(metadata, dataflow, exact - 1, |remaining| {
-        let mut output = crate::analysis_cli::LimitedOutput::new(remaining, FUNCTION_TOO_LARGE);
-        std::io::Write::write_all(&mut output, report).map_err(|e| e.to_string())?;
-        Ok(output.into_bytes())
-    })
-    .unwrap_err();
-    assert!(error.contains("64 MiB"));
-    // A writer that ignores its budget is still rejected.
+    assert_eq!(parsed["constants"]["schema"], "ghidra-rs.constants");
+    let bounded = |bytes: &'static [u8]| {
+        move |remaining: usize| {
+            let mut output = crate::analysis_cli::LimitedOutput::new(remaining, FUNCTION_TOO_LARGE);
+            std::io::Write::write_all(&mut output, bytes).map_err(|e| e.to_string())?;
+            Ok(output.into_bytes())
+        }
+    };
+    // Each writer receives the remaining budget and enforces it.
+    for maximum in [exact - 1, exact - facts.len() - 1] {
+        let error = function_json(metadata, dataflow, maximum, bounded(report), bounded(facts))
+            .unwrap_err();
+        assert!(error.contains("64 MiB"), "{error}");
+    }
+    // Writers that ignore their budgets are still rejected.
     assert!(
-        function_json(metadata, dataflow, exact - 1, |_| Ok(report.to_vec()))
-            .unwrap_err()
-            .contains("64 MiB")
+        function_json(
+            metadata,
+            dataflow,
+            exact - 1,
+            |_| Ok(report.to_vec()),
+            |_| Ok(facts.to_vec())
+        )
+        .unwrap_err()
+        .contains("64 MiB")
     );
-    // No expression budget remains once the fixed parts exceed the cap.
-    let mut called = false;
+    let mut constants_called = false;
     assert!(
-        function_json(metadata, dataflow, fixed - 1, |_| {
-            called = true;
-            Ok(Vec::new())
-        })
+        function_json(
+            metadata,
+            dataflow,
+            fixed + report.len() - 1,
+            |_| Ok(report.to_vec()),
+            |_| {
+                constants_called = true;
+                Ok(Vec::new())
+            }
+        )
         .is_err()
     );
-    assert!(!called);
+    assert!(!constants_called);
+    // No report budget remains once the fixed parts exceed the cap.
+    let called = std::cell::Cell::new(false);
+    assert!(
+        function_json(
+            metadata,
+            dataflow,
+            fixed - 1,
+            |_| {
+                called.set(true);
+                Ok(Vec::new())
+            },
+            |_| {
+                called.set(true);
+                Ok(Vec::new())
+            }
+        )
+        .is_err()
+    );
+    assert!(!called.get());
+    assert_eq!(MAX_DOCUMENT + 1, MAX_JSON);
 }
 
 #[test]
@@ -420,6 +545,52 @@ fn upstream_x86_function_lifts_to_ssa_and_executes_pcode() {
     // its loop phis as definitions rather than expanded terms.
     let json: serde_json::Value = serde_json::from_str(&result.json).unwrap();
     crate::expression_report::tests::validate(&json["analysis"], &json["expressions"]);
+    // Constant facts reference the same SSA and term IDs; checked structurally
+    // rather than against incidental fact counts.
+    assert!(Arc::ptr_eq(
+        result.constants.expressions(),
+        &result.expressions
+    ));
+    assert!(Arc::ptr_eq(result.constants.analysis(), &result.analysis));
+    crate::constant_report::tests::validate(
+        &json["analysis"],
+        &json["expressions"],
+        &json["constants"],
+    );
+    assert_eq!(
+        result.constant_values,
+        result
+            .constants
+            .constants()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    );
+    // The loop's carried values merge distinct constants or inputs, so at least
+    // one loop phi is unknown; entry state is never a constant.
+    let constants = &json["constants"];
+    assert!(
+        json["expressions"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| {
+                v["definition"]["kind"] == "phi"
+                    && constants["values"][v["id"].as_u64().unwrap() as usize]["fact"] == "unknown"
+            })
+    );
+    assert!(
+        json["constants"]["node_executable"][json["analysis"]["entry"].as_u64().unwrap() as usize]
+            == true
+    );
+    eprintln!(
+        "real x86 constants: {} known, {} unknown, {} unreached values; {}/{} CFG edges feasible; {} faults",
+        constants["counts"]["constant_values"],
+        constants["counts"]["unknown_values"],
+        constants["counts"]["unreached_values"],
+        constants["counts"]["feasible_cfg_edges"],
+        constants["counts"]["cfg_edges"],
+        constants["counts"]["faults"]
+    );
     assert!(
         json["expressions"]["values"]
             .as_array()

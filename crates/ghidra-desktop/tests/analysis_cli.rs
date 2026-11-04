@@ -100,6 +100,105 @@ fn expression_export_is_opt_in_java_free_and_fails_without_partial_stdout() {
 }
 
 #[test]
+fn constants_export_is_opt_in_java_free_and_fails_without_partial_stdout() {
+    let mut command = binary();
+    command
+        .arg("--analyze-pcode")
+        .arg(example())
+        .arg("--constants")
+        .env("JAVA_HOME", "");
+    #[cfg(windows)]
+    {
+        command.env(
+            "PATH",
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32"),
+        );
+    }
+    #[cfg(not(windows))]
+    command.env("PATH", "/nonexistent");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    // One document followed by exactly one newline.
+    assert!(output.stdout.ends_with(b"}\n") && !output.stdout.ends_with(b"\n\n"));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema"], "ghidra-rs.pcode-analysis");
+    // Constants imply the expressions their term IDs index.
+    assert_eq!(report["expressions"]["schema"], "ghidra-rs.expressions");
+    let constants = &report["constants"];
+    assert_eq!(constants["schema"], "ghidra-rs.constants");
+    assert_eq!(constants["schema_version"], 1);
+    assert_eq!(
+        constants["values"].as_array().unwrap().len(),
+        report["values"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        constants["terms"].as_array().unwrap().len(),
+        report["expressions"]["nodes"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        constants["cfg_edge_feasible"].as_array().unwrap().len(),
+        report["cfg"]["edges"].as_array().unwrap().len()
+    );
+    // The loop counter starts at a known constant but merges to unknown.
+    let facts: Vec<_> = constants["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["fact"].as_str().unwrap())
+        .collect();
+    assert!(facts.contains(&"constant") && facts.contains(&"unknown"));
+    let both = binary()
+        .arg("--analyze-pcode")
+        .arg(example())
+        .args(["--expressions", "--constants"])
+        .output()
+        .unwrap();
+    assert!(both.status.success());
+    assert_eq!(both.stdout, output.stdout);
+    let terms = binary()
+        .arg("--analyze-pcode")
+        .arg(example())
+        .arg("--expressions")
+        .output()
+        .unwrap();
+    let terms: serde_json::Value = serde_json::from_slice(&terms.stdout).unwrap();
+    assert!(terms.get("constants").is_none());
+
+    for flags in [
+        &["--constants", "--constants"][..],
+        &["--constants", "--expressions", "--constants"],
+        &["--constants", "--folding"],
+    ] {
+        let output = binary()
+            .arg("--analyze-pcode")
+            .arg(example())
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flags:?}");
+        assert!(output.stdout.is_empty());
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(16 * 1024 * 1024 + 1).unwrap();
+    let output = binary()
+        .arg("--analyze-pcode")
+        .arg(file.path())
+        .arg("--constants")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("16 MiB"));
+    let output = binary().arg("--help").output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("[--expressions] [--constants]"));
+}
+
+#[test]
 fn command_rejects_bad_arguments_or_input_without_partial_stdout() {
     let output = binary().arg("--analyze-pcode").output().unwrap();
     assert_eq!(output.status.code(), Some(2));

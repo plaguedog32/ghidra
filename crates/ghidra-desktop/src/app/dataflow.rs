@@ -6,6 +6,7 @@ use ghidra_analysis::{AdaptedStatement, AppliedEffects};
 use ghidra_cfg::NodeKind;
 use std::sync::Arc;
 
+mod constants;
 mod expressions;
 
 /// Dataflow inspection modes over one completed function analysis.
@@ -15,6 +16,7 @@ pub(super) enum Inspect {
     ControlFlow,
     Storage,
     Expressions,
+    Constants,
 }
 
 #[derive(Default)]
@@ -28,6 +30,7 @@ pub(super) struct State {
     havoc_unknown: bool,
     inspect: Inspect,
     expression: expressions::Selection,
+    constant: constants::Selection,
 }
 
 impl State {
@@ -59,6 +62,7 @@ impl State {
                 self.selected_node = view.analysis.ssa().entry();
                 self.expression.value = 0;
                 self.expression.operation = 0;
+                self.constant.reset();
                 self.view = Some((response.key, view));
                 self.error = None;
             }
@@ -187,6 +191,7 @@ impl Workbench {
                 (Inspect::ControlFlow, "CFG & SSA"),
                 (Inspect::Storage, "Storage variables"),
                 (Inspect::Expressions, "Expressions"),
+                (Inspect::Constants, "Constants"),
             ] {
                 ui.selectable_value(&mut self.dataflow.inspect, mode, label);
             }
@@ -203,7 +208,7 @@ impl Workbench {
             ui.colored_label(GOLD, error);
         }
         let Some((_, view)) = &self.dataflow.view else {
-            ui.label("Analyze a function to inspect native control flow, SSA and typed P-code expressions. Structured decompiled code is still in development.");
+            ui.label("Analyze a function to inspect native control flow, SSA, typed P-code expressions and conservative constant facts. Structured decompiled code is still in development.");
             return;
         };
         let analysis = Arc::clone(&view.analysis);
@@ -222,6 +227,8 @@ impl Workbench {
         ui.label(format!("{} native instructions · {} graph nodes · {} storage variables · {} SSA values · {} phis",
             view.native.len(), analysis.ssa().graph().node_count(), analysis.layout().variables().len(), analysis.ssa().values().len(), analysis.ssa().phi_count()));
         debug_assert!(Arc::ptr_eq(&analysis, view.expressions.analysis()));
+        debug_assert!(Arc::ptr_eq(&view.expressions, view.constants.expressions()));
+        let facts = Arc::clone(&view.constants);
         if !view.complete {
             ui.colored_label(GOLD, "Binary function recovery is incomplete. This result covers the recovered instructions.");
         }
@@ -236,6 +243,15 @@ impl Workbench {
                 return;
             };
             if let Some(address) = expressions::panel(ui, &mut self.dataflow.expression, view) {
+                self.navigate_address(address);
+            }
+            return;
+        }
+        if self.dataflow.inspect == Inspect::Constants {
+            let Some((_, view)) = &self.dataflow.view else {
+                return;
+            };
+            if let Some(address) = constants::panel(ui, &mut self.dataflow.constant, view) {
                 self.navigate_address(address);
             }
             return;
@@ -288,11 +304,16 @@ impl Workbench {
                 return;
             };
             ui.label(format!(
-                "Node {node} · {}",
+                "Node {node} · {} · constant propagation: {}",
                 if block.is_reachable() {
                     "reachable"
                 } else {
                     "unreachable"
+                },
+                match facts.is_node_executable(node) {
+                    Ok(true) => constants::FEASIBLE,
+                    Ok(false) => constants::NOT_FEASIBLE,
+                    Err(_) => "unavailable",
                 }
             ));
             ui.label(format!(
@@ -661,6 +682,127 @@ mod tests {
         assert!(app.dataflow.view.is_none());
         render(&mut app, &context);
         assert_eq!(app.dataflow.inspect, Inspect::Expressions);
+    }
+
+    fn render_production(app: &mut Workbench, font_size: f32) {
+        let context = egui::Context::default();
+        context.style_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+            style.spacing.button_padding = egui::vec2(12.0, 7.0);
+            for (text_style, font) in [
+                (
+                    egui::TextStyle::Monospace,
+                    egui::FontId::monospace(font_size),
+                ),
+                (egui::TextStyle::Body, egui::FontId::proportional(font_size)),
+                (
+                    egui::TextStyle::Button,
+                    egui::FontId::proportional(font_size),
+                ),
+            ] {
+                style.text_styles.insert(text_style, font);
+            }
+        });
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 650.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.dataflow_view(ui));
+            },
+        );
+        assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn constant_mode_renders_every_row_kind_clamps_selections_and_never_mutates_the_project() {
+        let fixture = crate::function_analysis::tests::fixture();
+        let result = crate::function_analysis::tests::analyze(&fixture.request).unwrap();
+        // The facts share the worker's expression and SSA allocations.
+        assert!(Arc::ptr_eq(
+            result.constants.expressions(),
+            &result.expressions
+        ));
+        assert!(Arc::ptr_eq(result.constants.analysis(), &result.analysis));
+        assert!(!result.constant_values.is_empty());
+        let (mut app, fingerprint) = completed(result);
+        let context = egui::Context::default();
+        app.dataflow.inspect = Inspect::Constants;
+        let limit = |app: &Workbench, rows| {
+            let view = &app.dataflow.view.as_ref().unwrap().1;
+            match rows {
+                constants::Rows::Values => view.analysis.ssa().values().len(),
+                constants::Rows::Known => view.constant_values.len(),
+                constants::Rows::Edges => view.analysis.cfg().edges().len(),
+                constants::Rows::Faults => view.constants.faults().len(),
+            }
+        };
+        for rows in [
+            constants::Rows::Values,
+            constants::Rows::Known,
+            constants::Rows::Edges,
+            constants::Rows::Faults,
+        ] {
+            app.dataflow.constant.rows = rows;
+            // Selections from an older, larger view are clamped, not indexed.
+            for selected in [0, 1, usize::MAX] {
+                let selection = &mut app.dataflow.constant;
+                selection.value = selected;
+                selection.known = selected;
+                selection.edge = selected;
+                selection.fault = selected;
+                render(&mut app, &context);
+                for font_size in [14.0, 28.0] {
+                    render_production(&mut app, font_size);
+                }
+                let selection = &app.dataflow.constant;
+                let current = match rows {
+                    constants::Rows::Values => selection.value,
+                    constants::Rows::Known => selection.known,
+                    constants::Rows::Edges => selection.edge,
+                    constants::Rows::Faults => selection.fault,
+                };
+                assert!(current < limit(&app, rows).max(1), "{rows:?} {current}");
+            }
+        }
+        // The CFG view also reports conservative node feasibility.
+        app.dataflow.inspect = Inspect::ControlFlow;
+        render(&mut app, &context);
+        app.dataflow.inspect = Inspect::Constants;
+        // A new result resets selections but keeps the chosen row kind.
+        app.dataflow.constant.rows = constants::Rows::Edges;
+        app.dataflow.constant.edge = 3;
+        let result = crate::function_analysis::tests::analyze(&fixture.request).unwrap();
+        let key = RequestKey {
+            id: 2,
+            generation: fingerprint.0,
+            revision: fingerprint.1,
+            entry: result.entry,
+        };
+        app.dataflow.waiting = Some(key);
+        app.dataflow.accept(
+            FunctionResponse {
+                key,
+                result: Ok(result),
+            },
+            fingerprint,
+        );
+        assert_eq!(app.dataflow.constant.edge, 0);
+        assert_eq!(app.dataflow.constant.rows, constants::Rows::Edges);
+        render(&mut app, &context);
+        assert!(!app.dirty);
+        assert_eq!(app.revision, 0);
+        assert!(app.loaded.as_ref().unwrap().metadata.annotations.is_empty());
+        // Image/processor changes drop the facts with the rest of the view.
+        app.dataflow
+            .poll(&context, (fingerprint.0, fingerprint.1 + 1));
+        assert!(app.dataflow.view.is_none());
+        render(&mut app, &context);
+        assert_eq!(app.dataflow.inspect, Inspect::Constants);
     }
 
     #[test]

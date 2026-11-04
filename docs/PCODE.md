@@ -30,6 +30,8 @@ cargo run -p ghidra-desktop -- --analyze-pcode \
   examples/pcode/alias-branch.json --instruction-uniques
 cargo run -p ghidra-desktop -- --analyze-pcode \
   examples/pcode/alias-branch.json --expressions
+cargo run -p ghidra-desktop -- --analyze-pcode \
+  examples/pcode/sum-loop.json --constants
 ```
 
 Input uses the same `ExecutionInput` JSON format as `--run-pcode`. The analysis is
@@ -84,10 +86,18 @@ SSA in that document, so its value, phi and statement IDs index the report's
 and is otherwise unchanged. The 64 MiB output cap applies to the whole
 document, including expressions.
 
+`--constants` is also opt-in. It adds a top-level `constants` field (described
+in [Constant propagation inspection](#constant-propagation-inspection)) and
+implies `expressions`, because constant facts are indexed by term IDs. Both
+are computed from the one verified SSA snapshot in the document. Each flag
+may be given once, in any order; `--expressions --constants` produces the
+same document as `--constants`. Without `--constants` the report has no
+`constants` field and is otherwise unchanged.
+
 Input is limited to a regular JSON file of 16 MiB. Native analysis phases have
 separate instruction, operation, operand, graph, storage, phi and work limits.
-Output is buffered under a 64 MiB cap before writing to stdout, so analysis or
-serialization-limit errors leave stdout empty. Status 1 reports those failures;
+Output, including the final newline, is buffered under a 64 MiB cap before
+writing to stdout, so analysis or serialization-limit errors leave stdout empty. Status 1 reports those failures;
 status 2 reports missing or invalid command arguments. The command uses no Java
 runtime, JNI, external decompiler process or native target execution.
 
@@ -97,10 +107,11 @@ Choose a matching x86 catalog language in **P-code**, select an instruction in a
 recovered function, then open **Dataflow** and choose **Analyze selected function**.
 The background worker reuses source compilation and keeps only the newest queued
 request. Image, processor and effect-policy changes invalidate stale results.
-The view has three modes: **CFG & SSA** (nodes, terminal exits, phi values and
-SSA operations), **Storage variables**, and **Expressions** (see
-[Typed expression inspection](#typed-expression-inspection)). **Copy analysis
-JSON** exports the result. Analysis does not modify project metadata or
+The view has four modes: **CFG & SSA** (nodes, terminal exits, phi values and
+SSA operations), **Storage variables**, **Expressions** (see
+[Typed expression inspection](#typed-expression-inspection)) and **Constants**
+(see [Constant propagation inspection](#constant-propagation-inspection)).
+**Copy analysis JSON** exports the result. Analysis does not modify project metadata or
 annotations.
 
 The same pipeline is available without a window:
@@ -138,18 +149,23 @@ explicit, including branches outside the supplied domain. Output uses
 disassembly, recovery status, declared language version, context and boundary
 policy; `analysis` contains the P-code analysis schema described above;
 `expressions` contains the `ghidra-rs.expressions` version 1 report built from
-that same analysis. `expressions` is an additive field: the function schema
-version remains 1, and earlier fields are unchanged. The command always
-includes it.
+that same analysis; `constants` contains the `ghidra-rs.constants` version 1
+report built from those same expressions. `expressions` and `constants` are
+additive fields: the function schema version remains 1, and earlier fields are
+unchanged. The command and **Copy analysis JSON** always include both.
 
 Each function is limited to 5,000 native instructions, 100,000 lifted operations,
 4,096 bytes of display text per instruction and 4 MiB total display text, plus
-the native analysis and expression budgets and a 64 MiB JSON cap. The cap covers
-the complete document: expressions are serialized into the bytes left after the
-fixed prefix, function metadata, analysis report and closing brace, and the
-final buffer is reserved once at its exact size. SSA uses liveness pruning.
+the native analysis, expression and constant budgets and a 64 MiB JSON cap.
+The cap covers the complete command output, including its final newline, so the
+document itself is at most 64 MiB minus one byte; the desktop copy uses the
+same document. Expressions are serialized into the bytes left after the fixed
+prefix, function metadata, analysis report, field names and closing brace;
+constants are serialized into what then remains. The final buffer is reserved
+once at its exact size. A constant-propagation limit or error fails the whole
+analysis; there is no result without facts. SSA uses liveness pruning.
 There is no ABI/type recovery, indirect-target resolution, expression
-simplification or structured decompiled output yet. Instruction-boundary checks
+simplification, IR rewriting or structured decompiled output yet. Instruction-boundary checks
 and SSA verification do not establish complete instruction-semantic parity.
 
 An opt-in probe compiles the real x86-64 source, lifts a recovered loop function
@@ -159,6 +175,10 @@ P-code to produce 3:
 ```sh
 cargo test -p ghidra-desktop upstream_x86_function -- --ignored
 ```
+
+The probe also checks that the function's constant facts share its expression
+and SSA allocations and that every fact, feasibility entry and fault refers to
+the same snapshot's IDs. It does not assert incidental fact counts.
 
 ## Typed expression inspection
 
@@ -251,6 +271,83 @@ Expression construction uses separate limits: 500,000 graph nodes and
 statements, 2,000,000 values, 4,000,000 term nodes, 8,000,000 references,
 16 MiB of literal bytes and 100,000,000 work units. Exhaustion fails the
 analysis with no partial result.
+
+## Constant propagation inspection
+
+`ghidra_analysis::PcodeConstants` runs sparse conditional constant
+propagation over an immutable `PcodeExpressions` snapshot. The desktop, the
+function command and `--analyze-pcode --constants` use that one engine and one
+report module. Function analysis builds the facts on its background worker,
+after expression reconstruction, from the same expression allocation, which in
+turn shares the verified SSA allocation.
+
+Each SSA value and term has one whole-value fact: **known constant** (every
+statically feasible definition yields exactly that bit pattern), **unknown**
+or **unreached** (no definition is feasible in the supplied CFG). Entry
+inputs, undefined entry state, instruction-temporary resets, memory states,
+loads and opaque call/userop/runtime definitions are always unknown, never
+zero. A block-ending CBRANCH with a known constant condition enables only its
+taken outcome; an unknown condition keeps both. Call return and no-return
+outcomes both stay feasible. A known constant BRANCHIND/CALLIND target adds no
+edges. A pure operation whose inputs are all known constants but whose
+evaluation fails, such as division by zero, is an evaluation fault: its result
+is unknown, the term is unchanged and control is not cut. Only faults in the
+final fixpoint are reported.
+
+**Feasible (conservative)** means statically feasible over the recovered CFG
+under these rules. It is not a proof that a path runs, and the CFG can itself
+omit unresolved indirect targets. Facts do not rewrite or simplify terms, and
+recover no types, calling convention or ABI return value. RETURN targets
+remain control addresses. This is not decompiled code or code optimization.
+
+**Dataflow → Constants** has four virtualized row kinds:
+
+- **SSA values**: every value's ID, width, storage, fact and definition tag.
+- **Known constants**: only values with a known constant. The list is
+  collected once on the worker, not per frame.
+- **Control-flow edges**: every semantic CFG edge with its source point,
+  role, endpoints and feasibility. Infeasible edges say whether their source
+  is unreached or a known constant condition pruned them.
+- **Evaluation faults**: statement, point, opcode, term and error.
+
+The detail panel shows the selected value's fact with up to 128 hexadecimal
+digits, its definition, whether its defining statement or phi node is
+feasible, one level of input facts or phi inputs with incoming-edge
+feasibility, and **Go to** its source. Edge details show endpoint
+feasibility, a CBRANCH condition's fact and the policy for the edge's role.
+Rows show literals with at most 16 hexadecimal digits; details list at most
+16 phi inputs and 8 term inputs. Terms are never expanded recursively.
+Selections are clamped when the view changes and reset for each new result.
+The **CFG & SSA** node detail also shows conservative node feasibility.
+Constant inspection does not modify project metadata or annotations.
+
+### `ghidra-rs.constants` version 1
+
+The report is streamed from borrowed facts and contains:
+
+| Field | Contents |
+| --- | --- |
+| `schema`, `schema_version` | `"ghidra-rs.constants"`, `1` |
+| `policies` | Accompanying SSA (`ghidra-rs.pcode-analysis` v1) and expression (`ghidra-rs.expressions` v1) schemas; the snapshot's `analysis` options (`unique_scope`, `unknown_effects`, `entry.{registers,program_uniques,memory}`, `phi_placement`); the fixed engine policy flags `models_memory`, `models_opaque_effects`, `prunes_constant_branches`, `resolves_indirect_targets`, `summarizes_calls` and `faults_cut_control`, read from `PcodeConstants::policy()`; and fixed statements: `entry_values` and `undefined_resets` are `unknown_never_zero`, feasibility is conservative static analysis over the supplied CFG, only final-fixpoint faults are reported, and `rewrites_terms`, `type_recovery`, `abi_return_values` and `decompiled_output` are `false` |
+| `limits` | The propagation limits used, including the nested `def_use` limits |
+| `counts` | `values`, `constant_values`, `unknown_values`, `unreached_values`, `terms`, `graph_nodes`, `executable_nodes`, `executable_graph_edges` (augmented SSA graph), `cfg_edges`, `feasible_cfg_edges`, `executed_statements`, `faults`, evaluated `constant_bytes`, `evaluations`, `value_changes`, `phi_folds`, `notifications`, `plan_records`, `queue_peak`, propagation `work` and, separately, nested `def_use_work` |
+| `values` | One fact per SSA value, in ID order |
+| `terms` | One fact per expression term, in ID order. An `ssa_value` leaf has its value's fact; any other term is `unreached` unless its statement executed. |
+| `node_executable` | Booleans indexed by SSA graph node ID (the analysis report's `nodes`) |
+| `cfg_edge_feasible` | Booleans indexed by semantic CFG edge ID (the analysis report's `cfg.edges`). An edge split by a reset node reports its first hop. |
+| `faults` | `{statement {node, index}, point {address, operation_index}, term, opcode, error}` in discovery order |
+
+A fact is `{"id":N,"fact":"constant","bytes":B,"hex":"0x..."}`,
+`{"id":N,"fact":"unknown"}` or `{"id":N,"fact":"unreached"}`. `hex` is the
+unsigned bit pattern and `bytes` its width; unknown and unreached facts have
+no literal and are never omitted. A statement executes exactly when its graph
+node does. Value, term, node, statement and edge IDs index the SSA and
+expression reports in the same document; the producer rejects facts that
+were not computed from those exact snapshots.
+
+Propagation uses the engine's default limits except 16 MiB of evaluated
+constant bytes, matching the expression literal budget. Exhaustion or an
+inconsistent snapshot fails the analysis with no partial output.
 
 ## Source-based instruction lifting
 

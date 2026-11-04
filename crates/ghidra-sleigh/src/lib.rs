@@ -93,6 +93,12 @@ pub struct NamedRegister {
     pub size: u32,
 }
 
+#[derive(Clone, Copy)]
+enum ExtentKind {
+    Storage,
+    DirectDestination,
+}
+
 impl SleighLanguage {
     pub fn from_spec(spec_path: &Path, context: &BTreeMap<String, u64>) -> Result<Self, Error> {
         guard(|| Self::compile(spec_path, context))
@@ -401,7 +407,8 @@ impl SleighLanguage {
             let inputs = operation
                 .inputs
                 .into_iter()
-                .map(|varnode| self.adapt_varnode(varnode))
+                .enumerate()
+                .map(|(index, varnode)| self.adapt_input(opcode, index, varnode))
                 .collect::<Result<Vec<_>, _>>()?;
             // Some source specifications use sext/zext at a width that depends
             // on the selected processor variant. The source lowerer retains
@@ -461,7 +468,26 @@ impl SleighLanguage {
     }
 
     fn adapt_varnode(&self, source: sleigh::Varnode) -> Result<Varnode, Error> {
-        let (space, offset, size) = self.adapt_extent(source)?;
+        self.adapt_operand(source, ExtentKind::Storage)
+    }
+
+    fn adapt_input(
+        &self,
+        opcode: Opcode,
+        index: usize,
+        source: sleigh::Varnode,
+    ) -> Result<Varnode, Error> {
+        let kind =
+            if index == 0 && matches!(opcode, Opcode::Branch | Opcode::Cbranch | Opcode::Call) {
+                ExtentKind::DirectDestination
+            } else {
+                ExtentKind::Storage
+            };
+        self.adapt_operand(source, kind)
+    }
+
+    fn adapt_operand(&self, source: sleigh::Varnode, kind: ExtentKind) -> Result<Varnode, Error> {
+        let (space, offset, size) = self.adapt_extent_for(source, kind)?;
         let result = Varnode {
             space,
             offset,
@@ -472,6 +498,14 @@ impl SleighLanguage {
     }
 
     fn adapt_extent(&self, source: sleigh::Varnode) -> Result<(SpaceId, u64, u32), Error> {
+        self.adapt_extent_for(source, ExtentKind::Storage)
+    }
+
+    fn adapt_extent_for(
+        &self,
+        source: sleigh::Varnode,
+        kind: ExtentKind,
+    ) -> Result<(SpaceId, u64, u32), Error> {
         let space = space_id(source.space)?;
         let definition = self
             .spaces
@@ -486,7 +520,13 @@ impl SleighLanguage {
         if definition.kind != SpaceKind::Constant {
             // Use an extended exclusive end so an extent ending at u64::MAX
             // fits, while one extending beyond it is still rejected.
-            let end = u128::from(source.offset) + u128::from(size);
+            // A direct destination carries the exported width but does not
+            // access that many storage bytes. Only its address must fit.
+            let bytes = match kind {
+                ExtentKind::Storage => u128::from(size),
+                ExtentKind::DirectDestination => 1,
+            };
+            let end = u128::from(source.offset) + bytes;
             if end > byte_extent(definition) {
                 return Err(Error::AddressOverflow);
             }
@@ -603,6 +643,62 @@ fn adapt_opcode(source: sleigh::Opcode) -> Result<Opcode, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_direct_input_zero_uses_address_bounds_instead_of_storage_bounds() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wide_registers.slaspec");
+        let mut language = SleighLanguage::from_spec(&path, &BTreeMap::new()).unwrap();
+        let register = language.spec.register("r0").unwrap();
+        let mut source = language.spec.register_varnode(register.id).unwrap();
+        source.offset = u64::MAX;
+        source.size = 2;
+        for opcode in [Opcode::Branch, Opcode::Cbranch, Opcode::Call] {
+            let target = language.adapt_input(opcode, 0, source).unwrap();
+            assert_eq!((target.offset, target.size), (u64::MAX, 2));
+        }
+        // Conditions, computed targets and ordinary values still read storage.
+        for (opcode, index) in [
+            (Opcode::Cbranch, 1),
+            (Opcode::Branchind, 0),
+            (Opcode::Callind, 0),
+            (Opcode::Return, 0),
+            (Opcode::Copy, 0),
+        ] {
+            assert!(matches!(
+                language.adapt_input(opcode, index, source),
+                Err(Error::AddressOverflow)
+            ));
+        }
+        // Outputs and declared registers also retain their full extent check.
+        assert!(matches!(
+            language.adapt_varnode(source),
+            Err(Error::AddressOverflow)
+        ));
+        assert!(matches!(
+            language.adapt_extent(source),
+            Err(Error::AddressOverflow)
+        ));
+        let id = space_id(source.space).unwrap();
+        language
+            .spaces
+            .iter_mut()
+            .find(|s| s.id == id)
+            .unwrap()
+            .address_size = 1;
+        source.offset = 256;
+        source.size = 1;
+        assert!(matches!(
+            language.adapt_input(Opcode::Branch, 0, source),
+            Err(Error::AddressOverflow)
+        ));
+        source.offset = 255;
+        source.size = 0;
+        assert!(matches!(
+            language.adapt_input(Opcode::Branch, 0, source),
+            Err(Error::Unsupported(_))
+        ));
+    }
 
     #[test]
     fn legacy_extract_slot_is_not_silently_reinterpreted_as_new_zpull() {

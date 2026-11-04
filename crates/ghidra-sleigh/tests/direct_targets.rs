@@ -1,8 +1,9 @@
 //! Direct branch and call targets through sub-table exports.
 //!
 //! Native SLEIGH branches to an exported operand's fixed handle: for
-//! `export *[aux]:2 0x10:1` that is two bytes at address unit 0x10 of `aux`,
+//! `export *[aux]:2 0x10:1` retains width 2 and address unit 0x10 of `aux`,
 //! byte offset 0x10 * word size (`HandleTpl::fix`, `AddrSpace::addressToByte`).
+//! The destination width does not describe a storage read.
 //! The expected offsets below are that product, worked by hand.
 
 use std::collections::BTreeMap;
@@ -57,6 +58,102 @@ fn space(language: &SleighLanguage, name: &str) -> SpaceId {
         .find(|space| space.name == name)
         .unwrap()
         .id
+}
+
+fn boundary_source(big: bool, word_and_width: Option<(u32, u32)>, pointer: u32) -> String {
+    let order = if big { "big" } else { "little" };
+    let (declaration, target) = match word_and_width {
+        None => (String::new(), format!("*:2 0x{pointer:x}:1")),
+        Some((word, width)) => (
+            format!("define space aux type=ram_space size=1 wordsize={word};"),
+            format!("*[aux]:{width} 0x{pointer:x}:1"),
+        ),
+    };
+    format!(
+        r#"
+define endian={order};
+define space ram type=ram_space size=1 default;
+define space register type=register_space size=1;
+{declaration}
+define register offset=0 size=1 [r0];
+define token encoding(8) op=(0,7);
+tgt: is epsilon {{ export {target}; }}
+:jb is op=1 & tgt {{ goto tgt; }}
+:cb is op=2 & tgt {{ if (r0 == 0) goto tgt; }}
+:cl is op=3 & tgt {{ call tgt; }}
+"#
+    )
+}
+
+#[test]
+fn direct_code_destinations_at_the_last_byte_do_not_read_the_exported_extent() {
+    for big in [false, true] {
+        let mut language = compile(&boundary_source(big, None, 255));
+        for (encoding, opcode) in [(1, Opcode::Branch), (2, Opcode::Cbranch), (3, Opcode::Call)] {
+            let lifted = language.decode(0, &[encoding]).unwrap();
+            let operation = lifted
+                .instruction
+                .ops
+                .iter()
+                .find(|op| op.opcode == opcode)
+                .unwrap();
+            assert_eq!(
+                operation.inputs[0],
+                Varnode {
+                    space: language.code_space(),
+                    offset: 255,
+                    size: 2
+                }
+            );
+            // The CFG also treats the label as an address, without a storage read.
+            assert!(
+                Cfg::new(
+                    CfgInput::new(
+                        language.spaces().to_vec(),
+                        language.code_space(),
+                        0,
+                        vec![lifted.instruction]
+                    ),
+                    Limits::default()
+                )
+                .is_ok()
+            );
+        }
+    }
+}
+
+#[test]
+fn auxiliary_destinations_preserve_width_at_the_last_word_and_wrap_independently() {
+    for big in [false, true] {
+        for (word, width, expected) in [(1, 2, 255), (3, 4, 765), (8, 16, 2040)] {
+            for pointer in [255, 256] {
+                let mut language = compile(&boundary_source(big, Some((word, width)), pointer));
+                let aux = space(&language, "aux");
+                for (encoding, opcode) in
+                    [(1, Opcode::Branch), (2, Opcode::Cbranch), (3, Opcode::Call)]
+                {
+                    let lifted = language.decode(0, &[encoding]).unwrap();
+                    let operation = lifted
+                        .instruction
+                        .ops
+                        .iter()
+                        .find(|op| op.opcode == opcode)
+                        .unwrap();
+                    assert_eq!(
+                        operation.inputs[0],
+                        Varnode {
+                            space: aux,
+                            offset: if pointer == 255 { expected } else { 0 },
+                            size: width
+                        }
+                    );
+                    assert!(
+                        matches!(Cfg::new(CfgInput::new(language.spaces().to_vec(), language.code_space(), 0, vec![lifted.instruction]), Limits::default()), Err(CfgError::InvalidOperand {problem: OperandError::CrossSpaceLabel {space}, ..}) if space == aux)
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

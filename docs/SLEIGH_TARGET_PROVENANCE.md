@@ -7,7 +7,7 @@ contract below; independent review is still required.
 ## Reproduction and loss
 
 A sub-table exporting `*[aux]:2 0x10:1`, used as a direct `goto` or `call`
-target, currently lowers to a default-`ram` target with offset `0x10` and
+target, lowered at the unpatched baseline to a default-`ram` target with offset `0x10` and
 size 1. The correct target retains `aux`, exported size 2, and byte offset
 `0x10` for word size 1 or `0x30` for word size 3. The defect also exists for
 byte-addressed auxiliary spaces; it predates word-storage support.
@@ -250,4 +250,24 @@ enum is larger.
 (`ContextScope::At(u64)` has no space). Dynamic starred exports, which native
 lowers with a `LOAD`, and the other unstarred handle shapes need their own
 source semantics. Cross-space execution and CFG construction remain refused.
-The CI workflow's path filter does not yet include `vendor/**`.
+The CI workflow includes `vendor/**` and runs the isolated fork-suite helper
+on stable and Rust 1.88. Direct-destination adaptation checks the target
+address independently of its exported width; ordinary storage extents,
+computed targets and branch-condition reads retain their full extent checks.
+
+### Integration review and address bounds
+
+Independent review found no fork provenance or native-arithmetic defect, but
+requested one P2 adapter correction: `ram:255:2` in a 256-byte space is a valid
+direct destination, not a two-byte memory read. The adapter now distinguishes
+input 0 of BRANCH, CBRANCH and CALL from storage operands. Conditions,
+computed targets, outputs and register declarations retain full extent checks;
+zero widths and out-of-domain destination offsets are still refused.
+
+Three regressions cover the distinction at the 64-bit boundary, last-byte
+code targets and last-word auxiliary targets in both byte orders, with
+exported widths independent of wrapping. Cross-space execution/CFG refusal
+is unchanged. The combined tree passes 871 default tests and 24 doctests on
+stable and Rust 1.88, workspace Clippy, all 11 opt-in source probes on Rust
+1.88 release, and Java-free release report baselines. The adapter correction
+still needs a fresh independent re-check.

@@ -183,8 +183,8 @@ application was launched or changed during that attempt. The headless egui
 checks do not establish native window, file-dialog or display-scaling
 behavior. Restore the desktop helper and verify binary opening, navigation,
 disassembly and Dataflow inspection in the real window before closing that
-milestone gate. Windows Rust 1.88 validation is now recorded below;
-Linux/macOS execution of the latest increments awaits the new CI matrix.
+milestone gate. Rust 1.88 and stable CI validation on Windows, Linux and
+macOS is now recorded below.
 
 ### Minimum Rust version validation
 
@@ -207,9 +207,12 @@ above 1.88; metadata compatibility alone does not prove those platforms build.
 The workflow adds exact Rust 1.88.0 all-target and documentation tests on all
 three hosts, retaining the separate stable checks/source probes/release builds.
 The workflow passes actionlint, and an independent configuration review found
-no actionable findings. Linux/macOS execution remains pending until those
-hosted runs complete. Historical checkpoints below retain the validation limits
-that applied when they were recorded.
+no actionable findings. [CI run 41833473619](https://github.com/plaguedog32/ghidra/actions/runs/41833473619)
+passed all six jobs for source commit `816047b9c0`: Rust 1.88 tests/doc examples
+and stable checks/source probes/release builds on Windows, Linux and macOS.
+Native executables are available in that run's artifacts. These checks do not
+verify native window interaction or full Ghidra parity. Historical checkpoints
+below retain the validation limits that applied when they were recorded.
 
 ### Active continuation: compiler storage
 

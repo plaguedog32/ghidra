@@ -47,6 +47,8 @@ only metatype filters would not meet this gate.
 
 The minimum Rust version gate now has local Windows Rust 1.88.0 evidence:
 all workspace targets, 660 tests, 16 doctests and the release executable pass.
-MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch;
-three-host locked Rust 1.88 CI tests are configured. Linux/macOS execution and
-future increments must pass their own runs before inheriting that claim.
+MSRV-aware dependency resolution fixes a Linux-only UUID dependency mismatch.
+CI run 41833473619 passed the locked Rust 1.88 tests/doc examples and stable
+checks/source probes/release builds on Windows, Linux and macOS at source
+commit `816047b9c0`. Future increments must pass their own runs before
+inheriting that claim; native GUI interaction remains a separate open gate.
